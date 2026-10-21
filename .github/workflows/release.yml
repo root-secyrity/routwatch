@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  static-binary:
+    name: portable static binary (musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          cd target/x86_64-unknown-linux-musl/release
+          cp routwatch "routwatch-${GITHUB_REF_NAME}-x86_64-linux-musl"
+          sha256sum "routwatch-${GITHUB_REF_NAME}-x86_64-linux-musl" > "routwatch-${GITHUB_REF_NAME}-x86_64-linux-musl.sha256"
+          file routwatch
+
+      - name: Smoke test
+        run: |
+          cd target/x86_64-unknown-linux-musl/release
+          ./routwatch --version
+          ./routwatch preview --tab bands --fixture "$GITHUB_WORKSPACE/fixtures/sample-snapshot.json" --size 100x20 | grep -q presets
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd target/x86_64-unknown-linux-musl/release
+          gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME" 2>/dev/null || true
+          gh release upload "$GITHUB_REF_NAME" \
+            "routwatch-${GITHUB_REF_NAME}-x86_64-linux-musl" \
+            "routwatch-${GITHUB_REF_NAME}-x86_64-linux-musl.sha256" \
+            --clobber

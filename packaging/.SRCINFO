@@ -1,0 +1,21 @@
+pkgbase = routwatch-git
+	pkgdesc = Huawei LTE/5G CPE manager in the terminal — live signal, traffic, clients, bands and DNS
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/root-secyrity/routwatch
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = git
+	makedepends = rust
+	makedepends = cargo
+	depends = glibc
+	depends = libgcc
+	provides = routwatch
+	conflicts = routwatch
+	options = !lto
+	options = !strip
+	source = routwatch::git+https://github.com/root-secyrity/routwatch.git
+	sha256sums = SKIP
+
+pkgname = routwatch-git

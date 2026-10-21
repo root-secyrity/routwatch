@@ -1,0 +1,24 @@
+# rust build output
+/target
+*.rwr
+
+# a real config never belongs in the repo
+config.toml
+
+# makepkg artefacts (the PKGBUILD lives in packaging/)
+/packaging/src/
+/packaging/pkg/
+/packaging/*.pkg.tar.*
+/packaging/*.tar.gz
+/packaging/*.tar.zst
+
+# internal, not published
+/PLAN.md
+/prompts/
+/tests/
+
+# static binaries from packaging/musl-build.sh
+/dist/
+
+# `routwatch dump` writes here by default
+routwatch-dump*.json

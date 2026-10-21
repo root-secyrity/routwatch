@@ -1,0 +1,58 @@
+# Maintainer: root-secyrity <root-secyrity@users.noreply.github.com>
+#
+# VCS package, same shape as syswatch / netwatch-tui / diskwatch:
+# binary + README + LICENSE, no man page and no completion (the family ships
+# neither, `--help` and `--completion <shell>` are the interface).
+#
+# makepkg is run *here* on purpose: its $srcdir is `src/`, and this repository
+# already has a `src/` of its own.
+
+pkgname=routwatch-git
+_pkgname=routwatch
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Huawei LTE/5G CPE manager in the terminal — live signal, traffic, clients, bands and DNS"
+arch=('x86_64' 'aarch64')
+url="https://github.com/root-secyrity/routwatch"
+license=('MIT')
+depends=('glibc' 'libgcc')
+makedepends=('git' 'rust' 'cargo')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+options=('!lto' '!strip')
+source=("$_pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+	cd "$_pkgname"
+	printf '%s.r%s.%s' "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" \
+		"$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+	cd "$_pkgname"
+	export RUSTUP_TOOLCHAIN=stable
+	cargo fetch --locked
+}
+
+build() {
+	cd "$_pkgname"
+	export CARGO_TARGET_DIR=target
+	export RUSTUP_TOOLCHAIN=stable
+	cargo build --frozen --release
+}
+
+check() {
+	cd "$_pkgname"
+	export CARGO_TARGET_DIR=target
+	export RUSTUP_TOOLCHAIN=stable
+	cargo test --frozen --release
+}
+
+package() {
+	cd "$_pkgname"
+	install -Dm755 "target/release/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+	install -Dm644 README.md -t "$pkgdir/usr/share/doc/$_pkgname/"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+	install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
+}
