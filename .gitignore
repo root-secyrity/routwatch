@@ -13,8 +13,7 @@ config.toml
 /packaging/*.tar.zst
 
 # internal, not published
-/PLAN.md
-/prompts/
+/DOCK/
 /tests/
 
 # static binaries from packaging/musl-build.sh
