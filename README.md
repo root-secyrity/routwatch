@@ -60,12 +60,19 @@ and mean it.
 
 ## Install
 
-**Arch / CachyOS / Manjaro (VCS package):**
+**Arch / CachyOS / Manjaro — no build needed:**
+
+```sh
+pacman -U https://github.com/root-secyrity/routwatch/releases/download/v0.1.0/routwatch-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+or build it yourself, either the tracking recipe (`packaging/PKGBUILD`, package
+`routwatch-git`) or the pinned release recipe (`packaging/PKGBUILD.release`,
+package `routwatch`):
 
 ```sh
 git clone https://github.com/root-secyrity/routwatch.git
-cd routwatch/packaging
-makepkg -si
+cd routwatch/packaging && makepkg -si
 ```
 
 **Debian / Ubuntu / Fedora / anything with a toolchain** — Rust 1.88+ is
