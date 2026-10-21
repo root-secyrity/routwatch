@@ -33,6 +33,8 @@ jobs:
         run: |
           cd target/x86_64-unknown-linux-musl/release
           ./routwatch --version
+          # preview reads a config (0600) — a fresh runner has none
+          ./routwatch --generate-config
           ./routwatch preview --tab bands --fixture "$GITHUB_WORKSPACE/fixtures/sample-snapshot.json" --size 100x20 | grep -q presets
 
       - name: Attach to the release
