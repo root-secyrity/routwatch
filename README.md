@@ -63,7 +63,7 @@ and mean it.
 **Arch / CachyOS / Manjaro — no build needed:**
 
 ```sh
-pacman -U https://github.com/root-secyrity/routwatch/releases/download/v0.1.0/routwatch-0.1.0-1-x86_64.pkg.tar.zst
+pacman -U https://github.com/root-secyrity/routwatch/releases/download/v0.1.1/routwatch-0.1.1-1-x86_64.pkg.tar.zst
 ```
 
 or build it yourself, either the tracking recipe (`packaging/PKGBUILD`, package

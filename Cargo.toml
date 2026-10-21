@@ -1,6 +1,6 @@
 [package]
 name = "routwatch"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Huawei LTE/5G CPE manager in the terminal — live signal, traffic, clients, bands and DNS"
