@@ -275,4 +275,4 @@ See [NOTICE](NOTICE) for the complete attribution and the reproduced MIT text.
 
 ## License
 
-MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+MIT - see [LICENSE](LICENSE) and [NOTICE](NOTICE).
