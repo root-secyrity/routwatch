@@ -13,7 +13,7 @@
 # routwatch-git recipe) instead.
 
 pkgname=routwatch
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Huawei LTE/5G CPE manager in the terminal — live signal, traffic, clients, bands and DNS"
 arch=('x86_64' 'aarch64')
@@ -25,7 +25,7 @@ provides=('routwatch')
 conflicts=('routwatch-git')
 options=('!lto' '!strip')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('cc149e5bb618ebb72c488f8d2b4f4832b74c66cf50b45389f6ac1a8e59afd0b6')
+sha256sums=('8aa6f84f57463113764eccbac786bba5c4c09b3210361e24d41a89645bcfe37e')
 
 build() {
 	cd "$pkgname-$pkgver"
