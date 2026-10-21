@@ -10,15 +10,15 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
 
       - name: Format
         run: cargo fmt --all --check
@@ -41,7 +41,7 @@ jobs:
   # The same source must build on the distributions people actually run, each
   # with its own libc and a rustup toolchain (distro rustc is older than 1.88).
   distros:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +52,7 @@ jobs:
           - fedora:41
           - alpine:3.20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and smoke-test in ${{ matrix.image }}
         run: |
