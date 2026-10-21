@@ -262,7 +262,17 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             return Err(ApiError::Config(e));
         }
     }
-    let cfg = config::load(cli.config.clone())?;
+    // Offline commands must work without a config file; everything that talks
+    // to the router keeps the strict loader (and its 0600 check).
+    let offline = matches!(
+        cli.cmd,
+        Some(Cmd::Preview { .. }) | Some(Cmd::Replay { .. })
+    );
+    let cfg = if offline {
+        config::load_or_default(cli.config.clone())?
+    } else {
+        config::load(cli.config.clone())?
+    };
 
     // Captured before the match moves `cli.cmd`: replay needs to build an App.
     let ui_opts = UiOpts {

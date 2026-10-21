@@ -72,11 +72,12 @@ jobs:
             cargo build --release --locked
             BIN=/tmp/target/release/routwatch
             $BIN --version
-            # preview reads a config (0600); a fresh container has none, and a
-            # missing one is exit 3 by design. Generate, then render.
-            $BIN --generate-config
-            $BIN preview --tab bands --fixture fixtures/sample-snapshot.json --size 100x20 | grep -q presets
-            # doctor exits 3 when a check is "failed", and a container has no
-            # credentials; the ladder only needs *a* value to report ready.
-            ROUTWATCH_PASSWORD=ci-placeholder $BIN doctor --json | grep -q '"helpers"'
+            # A layout review must work with no config at all — point it at an
+            # absent path so the behaviour stays locked.
+            $BIN preview --tab bands --fixture fixtures/sample-snapshot.json \
+              --config /tmp/absent/config.toml --size 100x20 | grep -q presets
+            # doctor reports *on* the file, so it needs a real one (0600), and
+            # a placeholder credential: a "failed" check exits 3 by design.
+            $BIN --config /tmp/rt.toml --generate-config
+            ROUTWATCH_PASSWORD=ci-placeholder $BIN --config /tmp/rt.toml doctor --json | grep -q '"helpers"'
             '

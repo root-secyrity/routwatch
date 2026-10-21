@@ -178,6 +178,23 @@ pub fn load(explicit: Option<PathBuf>) -> Result<Config, ApiError> {
     Ok(cfg)
 }
 
+/// Load the config, or the built-in defaults when the file simply does not
+/// exist.
+///
+/// Only the commands that never touch the router use this (`preview`,
+/// `replay`): a layout review on a fresh machine — or on a CI runner — must not
+/// require `--generate-config` first. A file that exists but is unreadable,
+/// world-readable or malformed is still an error, so the 0600 guarantee is not
+/// weakened.
+pub fn load_or_default(explicit: Option<PathBuf>) -> Result<Config, ApiError> {
+    let path = config_path(explicit)?;
+    match fs::metadata(&path) {
+        Ok(_) => load(Some(path)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(ApiError::Config(format!("{}: {e}", path.display()))),
+    }
+}
+
 /// Password ladder, in the documented order. Empty means "not provided here".
 pub fn resolve_password(cfg_password: &str) -> Result<String, ApiError> {
     if let Ok(v) = std::env::var("ROUTWATCH_PASSWORD") {
@@ -263,6 +280,29 @@ budget_gb = 100
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].name, "B1+B3+B20", "name is derived and sorted");
         assert_eq!(presets[0].bands, vec![1, 3, 20]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_missing_file_falls_back_to_defaults_but_a_bad_one_does_not() {
+        let dir = std::env::temp_dir().join(format!("routwatch-default-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let absent = dir.join("config.toml");
+
+        // No file at all: defaults, so preview/replay work on a fresh machine.
+        let cfg = load_or_default(Some(absent.clone())).expect("defaults without a file");
+        assert_eq!(cfg.router.ip, "192.168.8.1");
+        assert_eq!(cfg.app.theme, "terminal");
+        assert!(cfg.app.presets.is_none());
+
+        // A file that exists but is world-readable is still refused.
+        std::fs::write(&absent, "[router]\nip = \"10.0.0.1\"\nusername = \"u\"\n").unwrap();
+        std::fs::set_permissions(&absent, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            load_or_default(Some(absent.clone())).is_err(),
+            "0600 must still be enforced when the file exists"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

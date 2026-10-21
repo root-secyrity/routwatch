@@ -210,7 +210,8 @@ panel background). Aliases: `system`/`ansi` → `terminal`, `light`/`minimal` �
 `paper`. Pick one with `--theme <name>` or cycle with `t` inside the settings
 overlay.
 
-`preview` renders a frame without a TTY; `--ansi` keeps the colours:
+`preview` renders a frame without a TTY (and without a config file — it falls
+back to the built-in defaults); `--ansi` keeps the colours:
 
 ```sh
 routwatch preview --tab bands --size 120x30 --ansi
