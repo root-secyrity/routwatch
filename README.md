@@ -11,7 +11,7 @@
 routwatch is the fourth member of the `syswatch` / `netwatch` / `diskwatch`
 family: same config file shape, same themes, same keys. It talks to a Huawei
 CPE (tested on the H122-373, WEBUI 11.0.2.21) over its own HTTP API and gives
-you signal, traffic, clients, bands, DNS and device state in one screen — plus
+you signal, traffic, clients, bands, DNS and device state in one screen - plus
 a headless mode for Waybar and scripts.
 
 ```
@@ -60,7 +60,7 @@ and mean it.
 
 ## Install
 
-**Arch / CachyOS / Manjaro — no build needed:**
+**Arch / CachyOS / Manjaro - no build needed:**
 
 ```sh
 pacman -U https://github.com/root-secyrity/routwatch/releases/download/v0.1.1/routwatch-0.1.1-1-x86_64.pkg.tar.zst
@@ -75,7 +75,7 @@ git clone https://github.com/root-secyrity/routwatch.git
 cd routwatch/packaging && makepkg -si
 ```
 
-**Debian / Ubuntu / Fedora / anything with a toolchain** — Rust 1.88+ is
+**Debian / Ubuntu / Fedora / anything with a toolchain** - Rust 1.88+ is
 required, and the distributions ship older compilers (Debian 12 has 1.63,
 Ubuntu 22.04 has 1.66, Fedora 41 has 1.82), so install rustup first:
 
@@ -86,7 +86,7 @@ git clone https://github.com/root-secyrity/routwatch.git && cd routwatch
 sudo make install              # or: make install PREFIX=$HOME/.local
 ```
 
-**Any distribution, no build, no glibc worry** — a static musl build links
+**Any distribution, no build, no glibc worry** - a static musl build links
 nothing at all and runs on Arch, Debian, Ubuntu, Fedora, Alpine, Raspberry Pi
 OS:
 
@@ -116,7 +116,7 @@ What *does* differ per distribution is the optional helpers:
 | `wl-copy` / `xclip` / `xsel` | `wl-clipboard` · `xclip` · `xsel` | copying a client MAC (first one found wins) |
 | `secret-tool` | `libsecret-tools` (Debian/Ubuntu) · `libsecret` (Arch) | password keyring (falls back to env/config) |
 
-Missing helpers never break routwatch — `routwatch doctor --json` reports a
+Missing helpers never break routwatch - `routwatch doctor --json` reports a
 `helpers` capability that says which ones were found, and what to install.
 
 **glibc floor.** A binary built against a distribution's glibc only runs on that
@@ -253,16 +253,16 @@ device names, MACs, WAN address and identifiers are placeholders.
 ## Credits and prior art
 
 routwatch is the fourth member of the family that already had **netwatch**,
-**syswatch** and **diskwatch** — all three by [Matt Hartley
+**syswatch** and **diskwatch** - all three by [Matt Hartley
 (matthart1983)](https://github.com/matthart1983), all three MIT. They are the
 explicit inspiration for this tool: the `~/.config/<tool>/config.toml` shape,
 `theme = "terminal"`, the `V`/`L` view cycle, `--tab`/`--graph`, the
 `doctor --json` capability schema and the habit of stating a limitation instead
 of showing a plausible zero all come from them.
 
-- [netwatch](https://github.com/matthart1983/netwatch) — real-time network diagnostics
-- [syswatch](https://github.com/matthart1983/syswatch) — system diagnostics, twelve tabs
-- [diskwatch](https://github.com/matthart1983/diskwatch) — disk diagnostics, eight tabs
+- [netwatch](https://github.com/matthart1983/netwatch) - real-time network diagnostics
+- [syswatch](https://github.com/matthart1983/syswatch) - system diagnostics, twelve tabs
+- [diskwatch](https://github.com/matthart1983/diskwatch) - disk diagnostics, eight tabs
 
 The eight palettes in `src/theme.rs` are **derived byte-for-byte from
 netwatch's** theme module (slot names are ours, the colour values are not), so
