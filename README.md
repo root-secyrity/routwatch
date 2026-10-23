@@ -151,6 +151,11 @@ budget_gb = 100         # local budget only; this firmware reports no monthly qu
 Password ladder: `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-tool` →
 `config.toml`. The file is refused unless it is `0600`.
 
+Reports are redacted by default: serial, IMEI, WAN IP, MAC, SSID and client
+names are replaced with `(hidden)` in both the tables and the raw JSON block.
+`report_identity = true` in `config.toml`, `--report-identity`, or `i` in the
+settings overlay writes the full version instead.
+
 ## Headless
 
 ```sh
@@ -198,8 +203,11 @@ Exit codes: `0` ok · `2` network/unreachable (the Waybar document still prints,
 | `s` `c` | Clients | sort (name/ip/band/time) · copy MAC |
 | `e` / `R` | SMS/Device | read extras (inbox, SIM, data switch) |
 | `x` `b` | Device | dump all endpoints to JSON · restart router (type `REBOOT`) |
+| `e` | every section except SMS/Device | write a Markdown report to `~/.local/share/routwatch/reports/` |
+| `i` | settings overlay (`,`) | switch the report between `redacted` (default) and `full` |
 
-Every section also lists its own keys in the status bar.
+Every section also lists its own keys in the status bar. `e` stays "read extras"
+on SMS and Device, where the inbox is what you actually want.
 
 ## Themes
 
@@ -236,11 +244,14 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
   flag are reliable there; the UI switches to a bars panel instead of faking
   dBm.
 - **No monthly quota**: this firmware answers `100003`. The budget bar is local.
+- **Reports leave the machine**: `e` writes `0600` files in a `0700` directory,
+  and hides identity unless you opt into `full` — a redacted report is the
+  default because these files get pasted in public.
 
 ## Development
 
 ```sh
-cargo test                 # 111 unit tests, no router and no fixtures on disk
+cargo test                 # 118 unit tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```

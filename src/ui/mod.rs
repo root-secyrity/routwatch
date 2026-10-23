@@ -81,6 +81,16 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
         ("graph", app.graph.name().to_string(), "g cycles"),
         ("refresh", format!("{} ms", app.refresh_ms), "[ / ] adjust"),
         ("budget", format!("{:.0} GB", app.budget_gb), "- / + adjust"),
+        (
+            "report",
+            if app.report_identity {
+                "full"
+            } else {
+                "redacted"
+            }
+            .to_string(),
+            "i identity · e writes it",
+        ),
     ];
     let w = 56.min(area.width);
     let h = (rows.len() as u16 + 5).min(area.height);
@@ -710,6 +720,27 @@ mod tests {
         assert!(text.contains("offline"), "link-drop warning missing");
         app.cancel_confirm();
         assert!(matches!(app.write, crate::write::WriteState::Idle));
+    }
+
+    #[test]
+    fn the_settings_overlay_names_the_report_mode() {
+        let mut app = fixture_app();
+        app.settings_open = true;
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("report"), "no report row\n{text}");
+        assert!(text.contains("redacted"), "mode not named\n{text}");
+        app.report_identity = true;
+        let full = render_to_string(&app, 100, 30);
+        assert!(full.contains("full"));
+    }
+
+    #[test]
+    fn every_dashboard_hint_advertises_the_report_key_but_sms_keeps_e_for_extras() {
+        use crate::app::Tab;
+        assert!(Tab::Dashboard.hints().contains("e report"));
+        assert!(Tab::Bands.hints().contains("e report"));
+        assert!(!Tab::Sms.hints().contains("e report"));
+        assert!(!Tab::Device.hints().contains("e report"));
     }
 
     #[test]

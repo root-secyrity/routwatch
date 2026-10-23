@@ -70,6 +70,9 @@ pub struct App {
     pub view: String,
     pub graph_style: String,
     pub budget_gb: u64,
+    /// `true` includes serial/IMEI/WAN/client identities in `e` reports.
+    #[serde(default)]
+    pub report_identity: bool,
     #[serde(default)]
     pub secure_trust: bool,
     /// `None` = the key was never written, so the built-in merges are used.
@@ -87,6 +90,7 @@ impl Default for App {
             view: "full".into(),
             graph_style: "dots".into(),
             budget_gb: 100,
+            report_identity: false,
             secure_trust: false,
             presets: None,
         }
