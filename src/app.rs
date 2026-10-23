@@ -549,6 +549,13 @@ impl App {
         bands::to_hex(bands::mask_from_bands(&self.bands_selected))
     }
 
+    /// Both sides of the pending write, for the confirm modal. `None` when no
+    /// write is awaiting confirmation.
+    pub fn preflight(&self) -> Option<crate::preflight::Preflight> {
+        let intent = self.write.intent()?;
+        Some(crate::preflight::for_intent(intent, self.snap.as_ref()))
+    }
+
     pub fn band_toggle(&mut self) {
         if self.write.is_busy() || matches!(self.write, WriteState::Confirming(_)) {
             return;
@@ -1389,5 +1396,25 @@ mod tests {
         }
         .label()
         .contains("stabilize"));
+    }
+
+    #[test]
+    fn a_confirmed_band_write_carries_its_preflight() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.snap = Some(crate::model::Snapshot::default());
+        app.bands_selected = vec![1, 3];
+        assert!(app.begin_confirm());
+        let p = app.preflight().expect("preflight for a confirming write");
+        assert!(p
+            .rows
+            .iter()
+            .any(|(k, v)| k == "bands after" && v == "B1,B3"));
+        assert!(p.warning.unwrap_or_default().contains("offline"));
     }
 }
