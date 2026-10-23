@@ -16,6 +16,9 @@ config.toml
 /DOCK/
 /tests/
 
+# planning artefacts written by the agent runtime (local-only, like DOCK/)
+/.hermes/
+
 # static binaries from packaging/musl-build.sh
 /dist/
 
