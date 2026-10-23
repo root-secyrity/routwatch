@@ -58,6 +58,10 @@ struct Cli {
     #[arg(long, global = true)]
     graph: Option<String>,
 
+    /// Include serial, IMEI, WAN IP and client identities in `e` reports
+    #[arg(long, global = true)]
+    report_identity: bool,
+
     /// Start on a tab: dashboard, bands, traffic, network, clients, sms, device
     #[arg(long, global = true)]
     tab: Option<String>,
@@ -939,6 +943,7 @@ impl UiOpts {
         if let Some(presets) = &cfg.app.presets {
             app.band_presets = presets.clone();
         }
+        app.report_identity = cfg.app.report_identity;
         app.config_path = self.config_path.clone();
         app
     }
@@ -970,6 +975,7 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> App {
     if let Some(presets) = &cfg.app.presets {
         app.band_presets = presets.clone();
     }
+    app.report_identity = cli.report_identity || cfg.app.report_identity;
     app.config_path = cli.config.clone();
     app
 }
@@ -1135,6 +1141,7 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             KeyCode::Char('-') => app.adjust_budget(-10.0),
             KeyCode::Char('+') => app.adjust_budget(10.0),
             KeyCode::Char('w') => save_settings(app),
+            KeyCode::Char('i') => app.report_identity = !app.report_identity,
             _ => {}
         }
         return;
@@ -1230,6 +1237,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             app.mark_extras_requested();
             app.note("reading inbox + SIM state…");
         }
+        // Must stay AFTER the SMS/Device arm above: those two sections own `e`.
+        KeyCode::Char('e') => export_report(app),
         KeyCode::Char('p') => {
             app.paused = !app.paused;
             let _ = tx.send(WorkerCmd::Pause(app.paused));
@@ -1370,6 +1379,7 @@ fn save_settings(app: &mut App) {
         cfg.app.graph_style = app.graph.name().to_string();
         cfg.app.refresh_ms = app.refresh_ms;
         cfg.app.budget_gb = app.budget_gb as u64;
+        cfg.app.report_identity = app.report_identity;
         routwatch::config::save(app.config_path.clone(), &cfg)
     });
     match result {
@@ -1386,6 +1396,36 @@ fn persist_presets(app: &mut App) -> Result<std::path::PathBuf, String> {
             routwatch::config::save(app.config_path.clone(), &cfg)
         })
         .map_err(|e| e.to_string())
+}
+
+/// `e`: write the last sample as a Markdown report. Redacted unless the user
+/// opted into identity (`--report-identity`, the config key, or `i` in settings).
+fn export_report(app: &mut App) {
+    let Some(snap) = app.snap.clone() else {
+        app.note("no sample yet — nothing to report");
+        return;
+    };
+    let Some(dir) = routwatch::report::dir() else {
+        app.note("no data directory; report not written");
+        return;
+    };
+    let when = routwatch::record::now_unix();
+    let redaction = app.report_redaction();
+    let mode = if redaction.identity {
+        "full"
+    } else {
+        "redacted"
+    };
+    match routwatch::report::write(&snap, &dir, when, redaction) {
+        Ok(path) => {
+            app.note(format!("{mode} report written: {}", path.display()));
+            app.log(
+                routwatch::app::LogLevel::Info,
+                format!("report ({mode}): {}", path.display()),
+            );
+        }
+        Err(e) => app.note(format!("report failed: {e}")),
+    }
 }
 
 fn dump_path() -> std::path::PathBuf {

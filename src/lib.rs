@@ -11,6 +11,7 @@ pub mod headless;
 pub mod model;
 pub mod preflight;
 pub mod record;
+pub mod report;
 pub mod router;
 pub mod theme;
 pub mod ui;

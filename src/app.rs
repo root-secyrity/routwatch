@@ -72,15 +72,17 @@ impl Tab {
     /// tab says what it accepts without a help overlay.
     pub fn hints(&self) -> &'static str {
         match self {
-            Tab::Dashboard => "v view · g graph · r refresh · p pause",
-            Tab::Bands => "space tick · j/k · n preset · s save · x del · m mode · o opt · a apply",
-            Tab::Traffic => "d edit DNS · D auto DNS",
-            Tab::Network => "t ping host",
-            Tab::Clients => "j/k select · s sort · c copy mac",
+            Tab::Dashboard => "v view · g graph · r refresh · p pause · e report",
+            Tab::Bands => {
+                "space tick · j/k · n preset · s save · x del · m mode · o opt · a apply · e report"
+            }
+            Tab::Traffic => "d edit DNS · D auto DNS · e report",
+            Tab::Network => "t ping host · e report",
+            Tab::Clients => "j/k select · s sort · c copy mac · e report",
             Tab::Sms => "R read inbox",
             Tab::Device => "x dump json · b restart · R extras",
-            Tab::Dns => "j/k choose · Enter apply · d type · D auto",
-            Tab::Signal => "v view · g graph",
+            Tab::Dns => "j/k choose · Enter apply · d type · D auto · e report",
+            Tab::Signal => "v view · g graph · e report",
         }
     }
 
@@ -313,6 +315,9 @@ pub struct App {
     pub error_log: VecDeque<String>,
     pub budget_gb: f64,
     pub refresh_ms: u64,
+    /// `true` writes serial/IMEI/WAN/client identities into `e` reports. Off by
+    /// default: a report is meant to be pasted in public.
+    pub report_identity: bool,
     // --- bands tab (M3 write path) ---
     pub bands_supported: Vec<u32>,
     pub bands_selected: Vec<u8>,
@@ -402,6 +407,7 @@ impl App {
             error_log: VecDeque::new(),
             budget_gb: budget_gb as f64,
             refresh_ms,
+            report_identity: false,
             bands_supported: Vec::new(),
             bands_selected: Vec::new(),
             band_cursor: 0,
@@ -788,6 +794,13 @@ impl App {
     pub fn sort_next(&mut self) {
         self.client_sort = self.client_sort.next();
         self.client_sel = 0;
+    }
+
+    /// Which report mode `e` will write. Never defaults to `full`.
+    pub fn report_redaction(&self) -> crate::report::Redaction {
+        crate::report::Redaction {
+            identity: self.report_identity,
+        }
     }
 
     pub fn note(&mut self, msg: impl Into<String>) {
@@ -1396,6 +1409,23 @@ mod tests {
         }
         .label()
         .contains("stabilize"));
+    }
+
+    #[test]
+    fn a_report_is_redacted_until_the_user_opts_in() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        assert!(
+            !app.report_redaction().identity,
+            "a fresh app must redact reports"
+        );
+        app.report_identity = true;
+        assert!(app.report_redaction().identity);
     }
 
     #[test]
