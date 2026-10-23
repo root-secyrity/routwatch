@@ -240,7 +240,7 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
 ## Development
 
 ```sh
-cargo test                 # 106 unit tests, no router and no fixtures on disk
+cargo test                 # 111 unit tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```

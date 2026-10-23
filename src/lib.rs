@@ -9,6 +9,7 @@ pub mod config;
 pub mod error;
 pub mod headless;
 pub mod model;
+pub mod preflight;
 pub mod record;
 pub mod router;
 pub mod theme;

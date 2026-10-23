@@ -130,17 +130,29 @@ fn draw_write_modal(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let (title, body, colour) = match &app.write {
         WriteState::Idle => return,
-        WriteState::Confirming(intent) => (
-            " apply bands? ",
-            vec![
-                intent.label(),
-                String::new(),
-                "changing bands restarts the radio: expect 10-30s offline.".into(),
-                String::new(),
-                "y confirm   ·   n / Esc cancel".into(),
-            ],
-            t.warn,
-        ),
+        WriteState::Confirming(intent) => {
+            use crate::write::WriteIntent;
+            let p = app.preflight().unwrap_or(crate::preflight::Preflight {
+                rows: Vec::new(),
+                warning: None,
+            });
+            let title = match intent {
+                WriteIntent::ApplyBands { .. } => " apply bands? ",
+                WriteIntent::SetDns { .. } => " set dns? ",
+                WriteIntent::ResetDns => " reset dns? ",
+            };
+            let mut body = vec![intent.label(), String::new()];
+            for (key, value) in &p.rows {
+                body.push(format!("  {key:<12} {value}"));
+            }
+            if let Some(warning) = &p.warning {
+                body.push(String::new());
+                body.push(warning.clone());
+            }
+            body.push(String::new());
+            body.push("y confirm   ·   n / Esc cancel".into());
+            (title, body, t.warn)
+        }
         WriteState::Pending { .. } | WriteState::Verifying { .. } => (
             " working ",
             vec![
@@ -698,6 +710,21 @@ mod tests {
         assert!(text.contains("offline"), "link-drop warning missing");
         app.cancel_confirm();
         assert!(matches!(app.write, crate::write::WriteState::Idle));
+    }
+
+    #[test]
+    fn the_confirm_modal_shows_the_after_state_and_the_outage() {
+        let mut app = fixture_app();
+        app.tab = Tab::Bands;
+        app.bands_selected = vec![1, 3];
+        assert!(app.begin_confirm());
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("bands after"), "no after-state\n{text}");
+        assert!(
+            text.contains("B1,B3"),
+            "after-state is not the selection\n{text}"
+        );
+        assert!(text.contains("offline"), "outage line missing\n{text}");
     }
 
     #[test]
