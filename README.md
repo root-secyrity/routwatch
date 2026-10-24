@@ -212,7 +212,9 @@ on SMS and Device, where the inbox is what you actually want.
 The header always names the session state — `● live`, `● restarting`,
 `● recovering #3 8s`, `● disconnected` — plus `paused` when polling is paused,
 the age of the last sample (`stale 45s` when it is old) and, on wide terminals,
-the polling interval. The state is the last thing dropped on a narrow terminal.
+the polling interval. While a scan is in flight it also shows which endpoint is
+being read and how far it got (`✓ plmn 3/10`); an idle header shows nothing
+there. The state is the last thing dropped on a narrow terminal.
 
 ## Themes
 
@@ -262,7 +264,7 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
 ## Development
 
 ```sh
-cargo test                 # 128 unit tests, no router and no fixtures on disk
+cargo test                 # 134 unit tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```

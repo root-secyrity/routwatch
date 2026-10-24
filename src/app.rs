@@ -2,6 +2,7 @@
 //! test can build an `App` from a fixture and render it.
 
 use crate::config::BandPreset;
+use crate::headless::{Phase, PhaseState};
 use crate::model::{Client, DeviceExtras, Snapshot};
 use crate::router::bands;
 use crate::theme::{GraphStyle, Theme};
@@ -333,6 +334,8 @@ pub struct App {
     /// `true` writes serial/IMEI/WAN/client identities into `e` reports. Off by
     /// default: a report is meant to be pasted in public.
     pub report_identity: bool,
+    /// What `headless::collect_traced` has read so far in the current scan.
+    pub phases: [PhaseState; 10],
     // --- bands tab (M3 write path) ---
     pub bands_supported: Vec<u32>,
     pub bands_selected: Vec<u8>,
@@ -423,6 +426,7 @@ impl App {
             budget_gb: budget_gb as f64,
             refresh_ms,
             report_identity: false,
+            phases: [PhaseState::Waiting; 10],
             bands_supported: Vec::new(),
             bands_selected: Vec::new(),
             band_cursor: 0,
@@ -809,6 +813,37 @@ impl App {
     pub fn sort_next(&mut self) {
         self.client_sort = self.client_sort.next();
         self.client_sel = 0;
+    }
+
+    /// One endpoint read finished (or started). A new scan is announced by the
+    /// first phase starting again, which clears the previous scan's `Done`s.
+    pub fn on_phase(&mut self, phase: Phase, state: PhaseState) {
+        if state == PhaseState::Running && phase == Phase::ALL[0] {
+            self.phases = [PhaseState::Waiting; 10];
+        }
+        self.phases[phase.index()] = state;
+    }
+
+    /// `(done, total)` for the current scan.
+    pub fn phase_progress(&self) -> (usize, usize) {
+        let done = self
+            .phases
+            .iter()
+            .filter(|state| **state == PhaseState::Done)
+            .count();
+        (done, Phase::ALL.len())
+    }
+
+    /// The phase being read right now, if any.
+    pub fn current_phase(&self) -> Option<Phase> {
+        Phase::ALL
+            .iter()
+            .copied()
+            .find(|phase| self.phases[phase.index()] == PhaseState::Running)
+    }
+
+    pub fn is_scanning(&self) -> bool {
+        self.current_phase().is_some()
     }
 
     /// Which report mode `e` will write. Never defaults to `full`.
@@ -1413,6 +1448,35 @@ mod tests {
         assert_eq!(app.refresh_ms, 10_000);
         app.adjust_budget(-500.0);
         assert_eq!(app.budget_gb, 1.0);
+    }
+
+    #[test]
+    fn a_new_scan_resets_and_reports_its_progress() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_phase(Phase::Signal, PhaseState::Running);
+        app.on_phase(Phase::Signal, PhaseState::Done);
+        app.on_phase(Phase::Status, PhaseState::Done);
+        app.on_phase(Phase::Traffic, PhaseState::Running);
+        assert_eq!(app.phase_progress(), (2, 10));
+        assert_eq!(app.current_phase(), Some(Phase::Traffic));
+        assert!(app.is_scanning());
+
+        // The next poll starts at the first phase again: yesterday's ticks go.
+        app.on_phase(Phase::Signal, PhaseState::Running);
+        assert_eq!(app.phase_progress(), (0, 10));
+
+        for phase in Phase::ALL {
+            app.on_phase(phase, PhaseState::Done);
+        }
+        assert!(!app.is_scanning());
+        assert_eq!(app.current_phase(), None);
+        assert_eq!(app.phase_progress(), (10, 10));
     }
 
     #[test]

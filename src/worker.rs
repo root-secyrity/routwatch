@@ -54,6 +54,11 @@ pub enum Ev {
     Ping(PingOutcome),
     /// PIN / mobile-data / inbox, fetched on demand.
     Extras(Box<crate::model::DeviceExtras>),
+    /// One endpoint read inside the current scan: what the header shows.
+    Phase {
+        phase: crate::headless::Phase,
+        state: crate::headless::PhaseState,
+    },
     /// One-line message for the status bar (dump written, restart accepted…).
     Notice(String),
 }
@@ -326,7 +331,10 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
         }
 
         let started = Instant::now();
-        match headless::collect(&mut client, &cfg.router.ip) {
+        let mut trace = |phase, state| {
+            let _ = ev_tx.send(Ev::Phase { phase, state });
+        };
+        match headless::collect_traced(&mut client, &cfg.router.ip, &mut trace) {
             Ok(snap) => {
                 let _ = ev_tx.send(Ev::Snapshot {
                     snap: Box::new(snap),

@@ -339,6 +339,16 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         right.push(Span::styled(" · paused", Style::default().fg(t.warn)));
     }
     right.push(Span::styled(format!(" · {age_text}"), age_style));
+    // The endpoint being read right now, and how far the scan got. Hidden when
+    // no scan is in flight, so an idle header stays quiet.
+    if let Some(phase) = app.current_phase() {
+        let (done, total) = app.phase_progress();
+        let tick = if done > 0 { "✓ " } else { "" };
+        right.push(Span::styled(
+            format!(" · {tick}{} {done}/{total}", phase.label()),
+            Style::default().fg(t.accent),
+        ));
+    }
     let mut right_width: u16 = right
         .iter()
         .map(|span| span.content.chars().count() as u16)
@@ -987,6 +997,32 @@ mod tests {
             "state was dropped before the clock: {head}"
         );
         assert!(!head.contains("poll"), "poll should yield first: {head}");
+    }
+
+    #[test]
+    fn a_running_scan_shows_its_phase_and_count_in_the_header() {
+        use crate::headless::{Phase, PhaseState};
+        let mut app = fixture_app();
+        for phase in Phase::ALL.iter().take(4) {
+            app.on_phase(*phase, PhaseState::Done);
+        }
+        app.on_phase(Phase::Device, PhaseState::Running);
+        let text = render_to_string(&app, 120, 30);
+        let head = text.lines().next().unwrap_or_default();
+        assert!(head.contains("device"), "phase missing from header: {head}");
+        assert!(head.contains("4/10"), "count missing from header: {head}");
+        assert!(
+            head.contains('✓'),
+            "no tick for the finished phases: {head}"
+        );
+    }
+
+    #[test]
+    fn an_idle_header_says_nothing_about_phases() {
+        let app = fixture_app();
+        let head = render_to_string(&app, 120, 30);
+        let head = head.lines().next().unwrap_or_default();
+        assert!(!head.contains("/10"), "idle header shows a scan: {head}");
     }
 
     #[test]
