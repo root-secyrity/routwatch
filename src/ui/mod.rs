@@ -12,22 +12,105 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
+/// The smallest frame that still says something: below this `too_small` speaks.
+pub fn min_size() -> (u16, u16) {
+    (24, 6)
+}
+
+/// A row the body needs more than the tab bar does. At nine rows the tabs cost
+/// the difference between one usable panel and none.
+pub fn shows_tabbar(area: Rect) -> bool {
+    area.height >= 12
+}
+
+fn too_small(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let (mw, mh) = min_size();
+    let number = |value: u16, need: u16| {
+        Span::styled(
+            value.to_string(),
+            Style::default().fg(if value < need { t.danger } else { t.fg }),
+        )
+    };
+    // A 20-column window cannot hold "Needed: Width = 24  Height = 6"; say the
+    // same thing in the room that exists instead of truncating it.
+    let roomy = area.width >= 32 && area.height >= 5;
+    let mut lines = vec![Line::from(Span::styled(
+        if roomy {
+            "routwatch: terminal too small"
+        } else {
+            "too small"
+        },
+        Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+    ))];
+    if roomy {
+        lines.push(Line::from(vec![
+            Span::styled("Width = ", Style::default().fg(t.dim)),
+            number(area.width, mw),
+            Span::styled("   Height = ", Style::default().fg(t.dim)),
+            number(area.height, mh),
+        ]));
+        lines.push(Line::from(format!("Needed: Width = {mw}  Height = {mh}")));
+        lines.push(Line::from(Span::styled(
+            "80x24 is comfortable; 120x40 is roomy",
+            Style::default().fg(t.dim),
+        )));
+    } else {
+        lines.push(Line::from(vec![
+            Span::raw("W="),
+            number(area.width, mw),
+            Span::raw(" H="),
+            number(area.height, mh),
+        ]));
+        lines.push(Line::from(format!("Needed: {mw}x{mh}")));
+    }
+    let top = area.y + area.height.saturating_sub(lines.len() as u16) / 2;
+    for (offset, line) in lines.into_iter().enumerate() {
+        let y = top + offset as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        f.render_widget(
+            Paragraph::new(line).alignment(ratatui::layout::Alignment::Center),
+            Rect {
+                y,
+                height: 1,
+                ..area
+            },
+        );
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
-    if area.width < 24 || area.height < 6 {
-        f.render_widget(Paragraph::new("terminal too small"), area);
+    let (mw, mh) = min_size();
+    if area.width < mw || area.height < mh {
+        too_small(f, area, app);
         return;
     }
-    let [header, tabbar, body, status] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(3),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let (header, tabbar, body, status) = if shows_tabbar(area) {
+        let [h, tb, b, s] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        (h, Some(tb), b, s)
+    } else {
+        let [h, b, s] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        (h, None, b, s)
+    };
 
     draw_header(f, header, app);
-    draw_tabbar(f, tabbar, app);
+    if let Some(tabbar) = tabbar {
+        draw_tabbar(f, tabbar, app);
+    }
     tabs::body(f, body, app);
     if app.input.is_some() {
         draw_input(f, status, app);
@@ -240,30 +323,58 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         None => ("waiting".to_string(), Style::default().fg(t.dim)),
     };
 
-    let left = Line::from(vec![
-        Span::styled(
-            " routwatch ",
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("· {plmn} · {net}"), Style::default().fg(t.fg)),
-    ]);
-    let right = Line::from(vec![
-        Span::styled(age_text, age_style),
-        Span::styled(
-            format!(" · poll {}ms ", app.last_poll_ms),
-            Style::default().fg(t.dim),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(left), area);
-    f.render_widget(
-        Paragraph::new(right).alignment(ratatui::layout::Alignment::Right),
-        area,
-    );
+    // The right side is drawn over the same row, so the left side has to know
+    // how much room it may take — otherwise " routwatch " and "waiting" merge
+    // into "routwaiting" on a narrow terminal.
+    let right_text = format!("{age_text} · poll {}ms ", app.last_poll_ms);
+    let right_width = right_text.chars().count() as u16;
+    let room = area.width.saturating_sub(right_width + 1);
+    let mut left = vec![Span::styled(
+        " routwatch ",
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    )];
+    let detail = format!("· {plmn} · {net}");
+    let brand = 11u16;
+    if room > brand + 6 {
+        left.push(Span::styled(
+            truncate(&detail, room.saturating_sub(brand) as usize),
+            Style::default().fg(t.fg),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(left)), area);
+    if area.width >= 30 {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(right_text, age_style)))
+                .alignment(ratatui::layout::Alignment::Right),
+            area,
+        );
+    }
 }
 
 fn draw_tabbar(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let mut spans: Vec<Span> = Vec::new();
+    // Nine abbreviated labels need 76 columns (measured): below that, show
+    // where you are and how to move instead of a clipped list of nine.
+    if area.width < 76 {
+        let index = app.tab.index() + 1;
+        let label = format!(
+            " {index}/{} {} · Tab next ",
+            Tab::ALL.len(),
+            app.tab.short()
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                label,
+                Style::default()
+                    .fg(active_text_colour(t))
+                    .bg(t.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            area,
+        );
+        return;
+    }
     // Eight full titles need ~96 columns; below that, abbreviate instead of clipping.
     let narrow = area.width < 96;
     for (i, tab) in Tab::ALL.iter().enumerate() {
@@ -294,6 +405,27 @@ fn draw_tabbar(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
+    // Keys outrank every other fact: below 40 columns they get the whole row,
+    // because a clipped "q quit" is a key the user cannot find.
+    let keys = " · q quit · ? help";
+    if area.width < 60 {
+        // Narrow terminals: one fact plus the keys, never a truncated key line.
+        let room = (area.width as usize).saturating_sub(keys.chars().count() + 1);
+        let mut spans = Vec::new();
+        if area.width >= 34 {
+            let (text, style) = match app.live_notice() {
+                Some(note) => (truncate(note, room), Style::default().fg(t.accent)),
+                None => (
+                    truncate(&app.session.label(), room),
+                    Style::default().fg(t.fg),
+                ),
+            };
+            spans.push(Span::styled(format!(" {text}"), style));
+        }
+        spans.push(Span::styled(keys, Style::default().fg(t.dim)));
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
     let session = app.session.label();
     let session_style = match &app.session {
         crate::app::SessionState::Live => Style::default().fg(t.ok),
@@ -675,6 +807,78 @@ mod tests {
                 text.to_lowercase().contains(&tab.title().to_lowercase()),
                 "tab title missing on {:?}",
                 tab
+            );
+        }
+    }
+
+    #[test]
+    fn the_too_small_screen_names_the_numbers_it_needs() {
+        let app = fixture_app();
+        let text = render_to_string(&app, 20, 5);
+        assert!(text.contains("too small"), "no verdict line\n{text}");
+        assert!(text.contains("Needed"), "no requirement line\n{text}");
+        assert!(text.contains("24"), "width requirement missing\n{text}");
+        assert!(text.contains("24x6"), "requirement missing\n{text}");
+    }
+
+    #[test]
+    fn a_short_terminal_drops_the_tab_bar_and_keeps_the_status_line() {
+        let app = fixture_app();
+        let text = render_to_string(&app, 100, 9);
+        assert!(!text.contains("Bands"), "tab bar should be gone:\n{text}");
+        assert!(text.contains("q quit"), "status line must survive:\n{text}");
+    }
+
+    #[test]
+    fn a_tall_terminal_keeps_the_tab_bar() {
+        let app = fixture_app();
+        let text = render_to_string(&app, 100, 24);
+        assert!(text.contains("Bands"), "tab bar missing at 100x24:\n{text}");
+    }
+
+    /// Every section, at the smallest supported sizes: nothing may panic, and
+    /// the keys must stay on screen in all of them.
+    #[test]
+    fn every_section_survives_the_smallest_supported_size() {
+        let mut app = fixture_app();
+        for (w, h) in [(24, 6), (40, 10), (50, 45)] {
+            for tab in Tab::ALL {
+                app.select_tab(tab);
+                let text = render_to_string(&app, w, h);
+                assert!(
+                    text.contains("q quit") || text.contains("Tab"),
+                    "{tab:?} at {w}x{h} lost its key hints:\n{text}"
+                );
+            }
+        }
+    }
+
+    /// Landscape, portrait, small, medium and large: the chrome must survive and
+    /// nothing may panic or lose its last line.
+    #[test]
+    fn the_frame_survives_the_sizes_it_claims_to_support() {
+        let app = fixture_app();
+        for (w, h) in [
+            (24, 6),
+            (40, 10),
+            (50, 45),
+            (60, 20),
+            (80, 24),
+            (120, 40),
+            (160, 24),
+            (200, 60),
+        ] {
+            let text = render_to_string(&app, w, h);
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines.len(), h as usize, "{w}x{h} lost rows");
+            assert!(
+                text.contains("q quit"),
+                "{w}x{h} lost the status line:\n{text}"
+            );
+            assert!(
+                text.chars()
+                    .any(|c| c == '│' || c == '─' || c.is_alphanumeric()),
+                "{w}x{h} rendered nothing"
             );
         }
     }
