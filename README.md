@@ -209,6 +209,11 @@ Exit codes: `0` ok · `2` network/unreachable (the Waybar document still prints,
 Every section also lists its own keys in the status bar. `e` stays "read extras"
 on SMS and Device, where the inbox is what you actually want.
 
+The header always names the session state — `● live`, `● restarting`,
+`● recovering #3 8s`, `● disconnected` — plus `paused` when polling is paused,
+the age of the last sample (`stale 45s` when it is old) and, on wide terminals,
+the polling interval. The state is the last thing dropped on a narrow terminal.
+
 ## Themes
 
 Eight, identical to the rest of the family and byte-for-byte the same palettes:
@@ -257,7 +262,7 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
 ## Development
 
 ```sh
-cargo test                 # 123 unit tests, no router and no fixtures on disk
+cargo test                 # 128 unit tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```

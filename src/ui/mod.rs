@@ -311,41 +311,68 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         })
         .unwrap_or_default();
 
+    // The state word already says "live"; repeating it here would read
+    // "● live · live 0s". Only staleness needs its own word.
     let (age_text, age_style) = match app.age() {
         Some(a) => {
             let secs = a.as_secs();
             if app.stale() {
-                (format!("stale {}s", secs), Style::default().fg(t.warn))
+                (format!("stale {secs}s"), Style::default().fg(t.warn))
             } else {
-                (format!("live {}s", secs), Style::default().fg(t.ok))
+                (format!("{secs}s"), Style::default().fg(t.ok))
             }
         }
         None => ("waiting".to_string(), Style::default().fg(t.dim)),
     };
 
+    // The state comes first and is the last thing dropped: "restarting" tells
+    // you why the numbers are frozen, "poll 2000ms" does not.
+    let state = app.session.short();
+    let state_style = match &app.session {
+        crate::app::SessionState::Live => Style::default().fg(t.ok),
+        crate::app::SessionState::Disconnected(_) => Style::default().fg(t.danger),
+        crate::app::SessionState::Restarting => Style::default().fg(t.warn),
+        _ => Style::default().fg(t.accent),
+    };
+    let mut right = vec![Span::styled(format!("● {state}"), state_style)];
+    if app.paused {
+        right.push(Span::styled(" · paused", Style::default().fg(t.warn)));
+    }
+    right.push(Span::styled(format!(" · {age_text}"), age_style));
+    let mut right_width: u16 = right
+        .iter()
+        .map(|span| span.content.chars().count() as u16)
+        .sum();
+    let poll = format!(" · poll {}ms ", app.last_poll_ms);
+    // Keep at least 34 columns for the left side: the PLMN is worth more than
+    // the polling interval.
+    if right_width + poll.chars().count() as u16 + 34 <= area.width {
+        right.push(Span::styled(poll.clone(), Style::default().fg(t.dim)));
+        right_width += poll.chars().count() as u16;
+    }
     // The right side is drawn over the same row, so the left side has to know
     // how much room it may take — otherwise " routwatch " and "waiting" merge
     // into "routwaiting" on a narrow terminal.
-    let right_text = format!("{age_text} · poll {}ms ", app.last_poll_ms);
-    let right_width = right_text.chars().count() as u16;
     let room = area.width.saturating_sub(right_width + 1);
-    let mut left = vec![Span::styled(
-        " routwatch ",
-        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-    )];
-    let detail = format!("· {plmn} · {net}");
     let brand = 11u16;
-    if room > brand + 6 {
+    let mut left = Vec::new();
+    if room >= brand {
         left.push(Span::styled(
-            truncate(&detail, room.saturating_sub(brand) as usize),
-            Style::default().fg(t.fg),
+            " routwatch ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
         ));
+        let detail = format!("· {plmn} · {net}");
+        if room > brand + 6 {
+            left.push(Span::styled(
+                truncate(&detail, room.saturating_sub(brand) as usize),
+                Style::default().fg(t.fg),
+            ));
+        }
     }
     f.render_widget(Paragraph::new(Line::from(left)), area);
     if area.width >= 30 {
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(right_text, age_style)))
-                .alignment(ratatui::layout::Alignment::Right),
+            Paragraph::new(Line::from(right)).alignment(ratatui::layout::Alignment::Right),
             area,
         );
     }
@@ -416,8 +443,8 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
             let (text, style) = match app.live_notice() {
                 Some(note) => (truncate(note, room), Style::default().fg(t.accent)),
                 None => (
-                    truncate(&app.session.label(), room),
-                    Style::default().fg(t.fg),
+                    truncate(app.tab.short(), room),
+                    Style::default().fg(t.accent),
                 ),
             };
             spans.push(Span::styled(format!(" {text}"), style));
@@ -426,14 +453,12 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }
-    let session = app.session.label();
-    let session_style = match &app.session {
-        crate::app::SessionState::Live => Style::default().fg(t.ok),
-        crate::app::SessionState::Disconnected(_) => Style::default().fg(t.danger),
-        _ => Style::default().fg(t.warn),
-    };
+    // The session state lives in the header now; this row is keys and notes.
     let mut spans = vec![
-        Span::styled(format!(" {session} "), session_style),
+        Span::styled(
+            format!(" {} ", app.tab.short()),
+            Style::default().fg(t.accent),
+        ),
         Span::styled(
             format!(
                 "· {} · refresh {}ms",
@@ -924,6 +949,56 @@ mod tests {
         assert!(text.contains("offline"), "link-drop warning missing");
         app.cancel_confirm();
         assert!(matches!(app.write, crate::write::WriteState::Idle));
+    }
+
+    #[test]
+    fn the_header_names_the_session_state_not_only_the_age() {
+        let mut app = fixture_app();
+        app.session = crate::app::SessionState::Restarting;
+        let text = render_to_string(&app, 120, 30);
+        let head = text.lines().next().unwrap_or_default();
+        assert!(
+            head.to_lowercase().contains("restarting"),
+            "header says nothing about the state: {head}"
+        );
+        assert!(text.contains("q quit"), "keys stay in the status line");
+    }
+
+    #[test]
+    fn a_paused_session_says_paused_in_the_header() {
+        let mut app = fixture_app();
+        app.paused = true;
+        let text = render_to_string(&app, 120, 30);
+        let head = text.lines().next().unwrap_or_default();
+        assert!(head.contains("paused"), "header hid the pause: {head}");
+    }
+
+    #[test]
+    fn the_header_keeps_the_state_when_the_line_is_short() {
+        let mut app = fixture_app();
+        app.session = crate::app::SessionState::Recovering {
+            attempt: 3,
+            wait_s: 8,
+        };
+        let text = render_to_string(&app, 60, 20);
+        let head = text.lines().next().unwrap_or_default();
+        assert!(
+            head.contains("recovering #3"),
+            "state was dropped before the clock: {head}"
+        );
+        assert!(!head.contains("poll"), "poll should yield first: {head}");
+    }
+
+    #[test]
+    fn the_status_line_drops_the_session_and_names_the_section() {
+        let app = fixture_app();
+        let text = render_to_string(&app, 120, 30);
+        let status = text.lines().last().unwrap_or_default();
+        assert!(status.contains("Dash"), "section missing: {status}");
+        assert!(
+            !status.contains("connecting") && !status.contains("live"),
+            "session state duplicated in the status bar: {status}"
+        );
     }
 
     #[test]

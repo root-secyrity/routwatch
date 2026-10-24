@@ -174,6 +174,21 @@ impl SessionState {
             SessionState::Disconnected(e) => format!("disconnected: {e}"),
         }
     }
+
+    /// The same state in a header slot: the full label is a sentence
+    /// (`restarting — waiting for the router to stabilize…`, 49 columns) and
+    /// would push the PLMN out of a normal terminal.
+    pub fn short(&self) -> String {
+        match self {
+            SessionState::Connecting => "connecting".into(),
+            SessionState::Live => "live".into(),
+            SessionState::Restarting => "restarting".into(),
+            SessionState::Recovering { attempt, wait_s } => {
+                format!("recovering #{attempt} {wait_s}s")
+            }
+            SessionState::Disconnected(_) => "disconnected".into(),
+        }
+    }
 }
 
 /// What a preset row does when the user applies it.
@@ -1398,6 +1413,34 @@ mod tests {
         assert_eq!(app.refresh_ms, 10_000);
         app.adjust_budget(-500.0);
         assert_eq!(app.budget_gb, 1.0);
+    }
+
+    #[test]
+    fn session_short_labels_fit_a_header() {
+        let cases = [
+            (SessionState::Connecting, "connecting"),
+            (SessionState::Live, "live"),
+            (SessionState::Restarting, "restarting"),
+            (
+                SessionState::Recovering {
+                    attempt: 3,
+                    wait_s: 8,
+                },
+                "recovering #3 8s",
+            ),
+            (
+                SessionState::Disconnected("auth denied".into()),
+                "disconnected",
+            ),
+        ];
+        for (state, want) in cases {
+            let short = state.short();
+            assert_eq!(short, want, "short label for {state:?}");
+            assert!(
+                short.chars().count() <= 18,
+                "{short} is too wide for a header"
+            );
+        }
     }
 
     #[test]
