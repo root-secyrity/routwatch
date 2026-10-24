@@ -177,6 +177,10 @@ pub struct Snapshot {
     pub sms: Option<SmsCount>,
     #[serde(default)]
     pub dns: Option<DnsInfo>,
+    /// Router-reported temperature in °C. `None` means this firmware has no
+    /// `device/temperature` endpoint — never render it as 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
     /// LTE bands this firmware reports as supported (read from net-mode-list).
     #[serde(default)]
     pub supported_bands: Vec<u32>,

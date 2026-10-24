@@ -99,6 +99,10 @@ pub fn collect_traced(
     let plmn = parse::parse_plmn(&step(trace, Phase::Plmn, || c.get("net/current-plmn"))?);
     let device = parse::parse_device(&step(trace, Phase::Device, || c.get("device/information"))?);
     let net_mode = parse::parse_net_mode(&step(trace, Phase::NetMode, || c.get("net/net-mode"))?);
+    // Optional sensor: a firmware without it answers an error, which is not a
+    // failed scan — the TEMP tile simply does not exist.
+    let temperature = step(trace, Phase::Device, || c.get("device/temperature").ok())
+        .and_then(|node| parse::parse_temperature(&node));
     // Optional extras: their absence must not fail the snapshot.
     let clients = step(trace, Phase::Clients, || c.get("wlan/host-list").ok())
         .map(|n| parse::parse_clients(&n))
@@ -134,6 +138,7 @@ pub fn collect_traced(
         clients,
         sms,
         dns,
+        temperature,
         supported_bands,
         all_bands_mask,
     })
@@ -768,6 +773,23 @@ mod status_tests {
 #[cfg(test)]
 mod phase_tests {
     use super::*;
+
+    #[test]
+    fn a_snapshot_without_a_sensor_omits_the_temperature_key() {
+        let cold = Snapshot::default();
+        let json = serde_json::to_string(&cold).expect("serialize");
+        assert!(
+            !json.contains("temperature"),
+            "absent temperature must not be serialized: {json}"
+        );
+
+        let warm = Snapshot {
+            temperature: Some(41.0),
+            ..Snapshot::default()
+        };
+        let json = serde_json::to_string(&warm).expect("serialize");
+        assert!(json.contains("\"temperature\":41.0"), "{json}");
+    }
 
     #[test]
     fn a_phase_is_running_before_the_work_and_done_after_it() {

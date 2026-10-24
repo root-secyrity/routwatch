@@ -1,6 +1,7 @@
 //! Frame composition: header, tab bar, body, status line, help overlay.
 
 pub mod tabs;
+pub mod tiles;
 pub mod widgets;
 
 use crate::app::{App, Tab};
@@ -1014,6 +1015,41 @@ mod tests {
         assert!(
             head.contains('✓'),
             "no tick for the finished phases: {head}"
+        );
+    }
+
+    #[test]
+    fn a_running_scan_fits_the_header_at_eighty_columns() {
+        use crate::headless::{Phase, PhaseState};
+        let mut app = fixture_app();
+        app.session = crate::app::SessionState::Live;
+        for phase in Phase::ALL.iter().take(5) {
+            app.on_phase(*phase, PhaseState::Done);
+        }
+        app.on_phase(Phase::Clients, PhaseState::Running);
+        let text = render_to_string(&app, 80, 30);
+        let head = text.lines().next().unwrap_or_default();
+        assert!(head.contains("clients"), "phase lost at 80 cols: {head}");
+        assert!(head.contains("5/10"), "count lost at 80 cols: {head}");
+        let state_at = head.find('●').expect("state marker");
+        assert!(state_at > 0, "state lost at 80 cols: {head}");
+        assert_eq!(
+            head[..state_at].chars().last(),
+            Some(' '),
+            "left and right ran into each other: {head}"
+        );
+    }
+
+    #[test]
+    fn a_short_dashboard_drops_the_instrument_band() {
+        let mut app = fixture_app();
+        let mut snap = crate::model::Snapshot::default();
+        snap.signal.rsrp_dbm = Some(-95.0);
+        app.snap = Some(snap);
+        let text = render_to_string(&app, 100, 24);
+        assert!(
+            !text.contains("SIGNAL MAP"),
+            "band shown without rows for it: {text}"
         );
     }
 

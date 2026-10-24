@@ -251,6 +251,11 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
   flag are reliable there; the UI switches to a bars panel instead of faking
   dBm.
 - **No monthly quota**: this firmware answers `100003`. The budget bar is local.
+- **Instrument band**: the dashboard shows RSRP, SINR, clients and a signal map
+  on rows 3–9. `UPTIME` and `TEMP` appear only when the router reports them — a
+  firmware without a `device/temperature` sensor simply has no `TEMP` tile, and
+  the band re-flows to four, five or six equal cells instead of leaving a hole.
+  The band needs 27 body rows; below that the dashboard blocks keep the space.
 - **Small terminals**: the frame degrades in a fixed order instead of clipping.
   The tab bar becomes `1/9 Dash · Tab next` below 12 rows or 76 columns; below
   60 columns the status line keeps one fact plus the keys, and below 40 only the
@@ -264,7 +269,7 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
 ## Development
 
 ```sh
-cargo test                 # 134 unit tests, no router and no fixtures on disk
+cargo test                 # 143 unit tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
