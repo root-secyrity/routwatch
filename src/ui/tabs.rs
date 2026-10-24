@@ -53,7 +53,74 @@ pub fn body(f: &mut Frame, area: Rect, app: &App) {
 
 // ---------------------------------------------------------------- dashboard
 
+/// Four blocks want 25 rows. Below that each tier drops the least useful block
+/// instead of squeezing all four into one row each.
 pub fn dashboard(f: &mut Frame, area: Rect, app: &App) {
+    if area.height >= 25 {
+        dashboard_roomy(f, area, app);
+    } else if area.height >= 14 {
+        dashboard_compact(f, area, app);
+    } else {
+        dashboard_tight(f, area, app);
+    }
+}
+
+/// Minimum height: one panel that still answers "is the link alive?".
+fn dashboard_tight(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    f.render_widget(
+        Paragraph::new(signal_lines(app)).block(panel("SIGNAL".into(), theme)),
+        area,
+    );
+}
+
+/// Short terminal: signal, speed and the throughput history; no 5G/connection
+/// blocks, no host or error lists — they are a `2`/`5` key away.
+fn dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let [top, graph] = Layout::vertical([Constraint::Length(8), Constraint::Min(4)]).areas(area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(top);
+    f.render_widget(
+        Paragraph::new(signal_lines(app)).block(panel("SIGNAL · 4G".into(), theme)),
+        left,
+    );
+    f.render_widget(
+        Paragraph::new(speed_lines(app)).block(panel("SPEED".into(), theme)),
+        right,
+    );
+    let mut lines = vec![Line::from(vec![
+        Span::styled("down ", Style::default().fg(theme.dim)),
+        Span::styled(bps(last(&app.history_dl)), Style::default().fg(theme.ok)),
+    ])];
+    lines.extend(spark(
+        &app.history_dl,
+        graph.width.saturating_sub(8) as usize,
+        1,
+        app.graph,
+        theme.ok,
+    ));
+    lines.push(Line::from(vec![
+        Span::styled("up   ", Style::default().fg(theme.dim)),
+        Span::styled(
+            bps(last(&app.history_ul)),
+            Style::default().fg(theme.accent),
+        ),
+    ]));
+    lines.extend(spark(
+        &app.history_ul,
+        graph.width.saturating_sub(8) as usize,
+        1,
+        app.graph,
+        theme.accent,
+    ));
+    f.render_widget(
+        Paragraph::new(lines).block(panel("THROUGHPUT".into(), theme)),
+        graph,
+    );
+}
+
+fn dashboard_roomy(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let [top, mid, graph, bottom] = Layout::vertical([
         Constraint::Length(8),
