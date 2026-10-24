@@ -46,7 +46,8 @@ struct Cli {
     password_stdin: bool,
 
     /// Colour theme: terminal (default), dark, ocean, solarized, dracula,
-    /// nord, sky, paper. Aliases: system/ansi = terminal, light/minimal = paper
+    /// nord, sky, paper, or auto (follow the running desktop's theme).
+    /// Aliases: system/ansi = terminal, light/minimal = paper
     #[arg(long, global = true)]
     theme: Option<String>,
 

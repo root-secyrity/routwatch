@@ -225,6 +225,19 @@ panel background). Aliases: `system`/`ansi` → `terminal`, `light`/`minimal` �
 `paper`. Pick one with `--theme <name>` or cycle with `t` inside the settings
 overlay.
 
+`auto` is not a ninth palette: it follows whatever the running desktop
+publishes, and falls back to `terminal` when there is nothing to read. The
+ladder is: `$ROUTWATCH_THEME_FILE` (any TOML with `background`/`foreground` and
+friends) → the running Ryoku desktop's `theme.name` + `scheme.json` → an
+Omarchy `~/.local/state/omarchy/current/theme/colors.toml` → `terminal`. The
+desktop that is actually running wins, because a Ryoku box also carries an
+Omarchy-compatible copy that can be stale. Nothing is forced: the default is
+still `terminal`, and every derived palette is checked for 4.5:1 body contrast.
+
+```sh
+ROUTWATCH_THEME_FILE=~/mine.toml routwatch --theme auto
+```
+
 `preview` renders a frame without a TTY (and without a config file — it falls
 back to the built-in defaults); `--ansi` keeps the colours:
 
@@ -269,7 +282,7 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
 ## Development
 
 ```sh
-cargo test                 # 143 unit tests, no router and no fixtures on disk
+cargo test                 # 151 unit tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
