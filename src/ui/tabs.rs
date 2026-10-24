@@ -69,7 +69,9 @@ pub fn dashboard(f: &mut Frame, area: Rect, app: &App) {
 fn dashboard_tight(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     f.render_widget(
-        Paragraph::new(signal_lines(app)).block(panel("SIGNAL".into(), theme)),
+        Paragraph::new(signal_lines(app))
+            .wrap(Wrap { trim: true })
+            .block(panel("SIGNAL".into(), theme)),
         area,
     );
 }
@@ -82,7 +84,9 @@ fn dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(top);
     f.render_widget(
-        Paragraph::new(signal_lines(app)).block(panel("SIGNAL · 4G".into(), theme)),
+        Paragraph::new(signal_lines(app))
+            .wrap(Wrap { trim: true })
+            .block(panel("SIGNAL · 4G".into(), theme)),
         left,
     );
     f.render_widget(
@@ -133,7 +137,9 @@ fn dashboard_roomy(f: &mut Frame, area: Rect, app: &App) {
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
 
     f.render_widget(
-        Paragraph::new(signal_lines(app)).block(panel("SIGNAL · 4G".into(), theme)),
+        Paragraph::new(signal_lines(app))
+            .wrap(Wrap { trim: true })
+            .block(panel("SIGNAL · 4G".into(), theme)),
         left,
     );
     let speed = Paragraph::new(speed_lines(app)).block(panel("SPEED".into(), theme));

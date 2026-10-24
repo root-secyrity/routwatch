@@ -354,9 +354,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 fn draw_tabbar(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    // Nine sections need ~60 columns even abbreviated: below that, show where
-    // you are and how to move instead of a clipped list of nine.
-    if area.width < 60 {
+    // Nine abbreviated labels need 76 columns (measured): below that, show
+    // where you are and how to move instead of a clipped list of nine.
+    if area.width < 76 {
         let index = app.tab.index() + 1;
         let label = format!(
             " {index}/{} {} · Tab next ",

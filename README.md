@@ -245,10 +245,11 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
   dBm.
 - **No monthly quota**: this firmware answers `100003`. The budget bar is local.
 - **Small terminals**: the frame degrades in a fixed order instead of clipping.
-  Below 12 rows the tab bar becomes `1/9 Dash · Tab next`; below 60 columns the
-  status line keeps one fact plus the keys; the dashboard drops from four blocks
-  to signal + speed + history (under 25 rows) and to a single signal panel at
-  the 24x6 floor, where `too small` names the size it needs.
+  The tab bar becomes `1/9 Dash · Tab next` below 12 rows or 76 columns; below
+  60 columns the status line keeps one fact plus the keys, and below 40 only the
+  keys; the dashboard drops from four blocks to signal + speed + history (under
+  25 rows) and to one signal panel at the 24x6 floor, where `too small` names
+  the size it needs.
 - **Reports leave the machine**: `e` writes `0600` files in a `0700` directory,
   and hides identity unless you opt into `full` — a redacted report is the
   default because these files get pasted in public.
