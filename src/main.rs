@@ -1219,8 +1219,41 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
     // (D = DNS reset, R = lazy extras), and each of those also has a case-free
     // alias below so nothing depends on holding Shift.
     let code = normalise_key(k.code);
+
+    // While the feed is open it owns j/k/space and its own Esc. `i` toggles it
+    // in both directions, and everything else (q, digits, Tab) still works.
+    if app.events_open {
+        match code {
+            KeyCode::Char('i') | KeyCode::Esc => {
+                app.events_open = false;
+                return;
+            }
+            KeyCode::Char(' ') => {
+                app.events_paused = !app.events_paused;
+                if !app.events_paused {
+                    app.events_back = 0;
+                }
+                return;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                app.event_move(1);
+                return;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                app.event_move(-1);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match code {
         KeyCode::Char('q') => app.quit = true,
+        KeyCode::Char('i') => {
+            app.events_open = true;
+            app.events_paused = false;
+            app.events_back = 0;
+        }
         KeyCode::Char('?') => app.help = !app.help,
         KeyCode::Esc => app.help = false,
         KeyCode::Char('v') => app.cycle_view(),
@@ -1630,9 +1663,58 @@ fn human_bytes(v: u64) -> String {
 
 #[cfg(test)]
 mod key_tests {
+    use super::handle_key;
     use super::normalise_key;
     use ratatui::crossterm::event::KeyCode;
+    use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+    use routwatch::app::{App, Tab, View};
     use routwatch::ui::tab_from_key;
+
+    #[test]
+    fn the_feed_key_owns_j_k_space_and_esc_only_while_it_is_open() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        for i in 0..3 {
+            app.log(routwatch::app::LogLevel::Info, format!("line {i}"));
+        }
+
+        // `i` opens the feed and starts following.
+        handle_key(&mut app, key(KeyCode::Char('i')), &tx);
+        assert!(app.events_open, "i must open the feed");
+        assert!(!app.events_paused);
+
+        // `j` moves inside the feed instead of moving a client selection.
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_eq!(app.event_cursor(), Some(1));
+        assert!(app.events_paused, "moving pauses");
+        let clients_before = app.client_sel;
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_ne!(app.event_cursor(), Some(1), "j did not move the feed");
+        assert_eq!(app.client_sel, clients_before, "j leaked to the clients");
+
+        // space pauses and resumes; resuming returns to the newest line.
+        handle_key(&mut app, key(KeyCode::Char(' ')), &tx);
+        assert!(!app.events_paused);
+        assert_eq!(app.event_cursor(), Some(0));
+
+        // digits still reach a section while the feed is open.
+        handle_key(&mut app, key(KeyCode::Char('3')), &tx);
+        assert_eq!(app.tab, Tab::Traffic);
+
+        // Esc closes the feed, not the help panel.
+        handle_key(&mut app, key(KeyCode::Esc), &tx);
+        assert!(!app.events_open);
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
 
     #[test]
     fn letters_collapse_to_lowercase_and_nothing_else_moves() {

@@ -359,6 +359,11 @@ pub struct App {
     pub extras: Option<DeviceExtras>,
     pub extras_requested: bool,
     pub event_log: VecDeque<LogEntry>,
+    /// The events feed: a window over `event_log` that can hold its place.
+    pub events_open: bool,
+    pub events_paused: bool,
+    /// Index counted from the newest line, so appends never shift it.
+    pub events_back: usize,
     pub settings_open: bool,
     /// Where `w` writes the settings (set by the CLI, never guessed here).
     pub config_path: Option<std::path::PathBuf>,
@@ -445,6 +450,9 @@ impl App {
             extras: None,
             extras_requested: false,
             event_log: VecDeque::new(),
+            events_open: false,
+            events_paused: false,
+            events_back: 0,
             settings_open: false,
             config_path: None,
             started: Instant::now(),
@@ -528,6 +536,33 @@ impl App {
         while self.event_log.len() > 200 {
             self.event_log.pop_back();
         }
+        // An unpaused feed follows the newest line; a paused one holds still,
+        // otherwise `space` would be a button with no effect.
+        if !self.events_paused {
+            self.events_back = 0;
+        }
+    }
+
+    /// Where the reader is in the log, counted from the newest line.
+    pub fn event_cursor(&self) -> Option<usize> {
+        if self.event_log.is_empty() {
+            None
+        } else {
+            Some(self.events_back.min(self.event_log.len() - 1))
+        }
+    }
+
+    pub fn event_select(&mut self, back: usize) {
+        self.events_back = back.min(self.event_log.len().saturating_sub(1));
+    }
+
+    /// `j`/`k` in the feed. Moving is a decision to stop following: otherwise
+    /// the next event would yank the reader back to the top.
+    pub fn event_move(&mut self, delta: isize) {
+        let max = self.event_log.len().saturating_sub(1) as isize;
+        let next = (self.events_back as isize + delta).clamp(0, max.max(0));
+        self.events_back = next as usize;
+        self.events_paused = true;
     }
 
     pub fn on_extras(&mut self, extras: DeviceExtras) {
@@ -1390,6 +1425,73 @@ mod tests {
         assert!(!restart_allowed("REBOOT "));
         assert!(!restart_allowed("yes"));
         assert!(!restart_allowed(""));
+    }
+
+    #[test]
+    fn the_feed_keeps_the_selected_line_when_new_events_arrive() {
+        let mut app = App::new(
+            crate::theme::by_name("dark"),
+            crate::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.events_open = true;
+        app.events_paused = true;
+        for i in 0..5 {
+            app.log(LogLevel::Info, format!("event {i}"));
+        }
+        app.event_select(2);
+        let before = app.event_cursor().expect("cursor");
+        app.log(LogLevel::Warn, "newer event".to_string());
+        assert_eq!(
+            app.event_cursor(),
+            Some(before),
+            "the selection moved under the reader"
+        );
+    }
+
+    #[test]
+    fn a_running_feed_stays_on_the_newest_line() {
+        let mut app = App::new(
+            crate::theme::by_name("dark"),
+            crate::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.events_open = true;
+        for i in 0..4 {
+            app.log(LogLevel::Info, format!("event {i}"));
+        }
+        assert_eq!(app.event_cursor(), Some(0), "an unpaused feed must follow");
+        app.event_move(2);
+        assert!(app.events_paused, "moving pauses");
+        app.log(LogLevel::Info, "newer".to_string());
+        assert_eq!(app.event_cursor(), Some(2), "a paused feed holds its place");
+    }
+
+    #[test]
+    fn the_feed_cursor_never_leaves_the_log() {
+        let mut app = App::new(
+            crate::theme::by_name("dark"),
+            crate::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        assert_eq!(app.event_cursor(), None, "an empty log has no cursor");
+        for i in 0..3 {
+            app.log(LogLevel::Info, format!("event {i}"));
+        }
+        app.event_move(-5);
+        assert_eq!(app.event_cursor(), Some(0));
+        app.event_move(99);
+        assert_eq!(
+            app.event_cursor(),
+            Some(2),
+            "the cursor stops at the oldest"
+        );
     }
 
     #[test]
