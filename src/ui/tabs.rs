@@ -22,7 +22,7 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-fn panel(title: String, theme: &Theme) -> Block<'static> {
+pub(crate) fn panel(title: String, theme: &Theme) -> Block<'static> {
     Block::bordered()
         .title(Span::styled(format!(" {title} "), title_style(theme.title)))
         .border_style(Style::default().fg(theme.border))
@@ -56,6 +56,22 @@ pub fn body(f: &mut Frame, area: Rect, app: &App) {
 /// Four blocks want 25 rows. Below that each tier drops the least useful block
 /// instead of squeezing all four into one row each.
 pub fn dashboard(f: &mut Frame, area: Rect, app: &App) {
+    // The instrument band needs its own rows; without them the blocks below
+    // keep the whole area rather than every panel losing a row.
+    if area.height >= crate::ui::tiles::HEIGHT + 20 {
+        let [band, rest] = Layout::vertical([
+            Constraint::Length(crate::ui::tiles::HEIGHT),
+            Constraint::Min(20),
+        ])
+        .areas(area);
+        crate::ui::tiles::instruments(f, band, app);
+        dashboard_blocks(f, rest, app);
+        return;
+    }
+    dashboard_blocks(f, area, app);
+}
+
+fn dashboard_blocks(f: &mut Frame, area: Rect, app: &App) {
     if area.height >= 25 {
         dashboard_roomy(f, area, app);
     } else if area.height >= 14 {

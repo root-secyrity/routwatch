@@ -26,6 +26,10 @@ pub const PROBE: &[Spec] = &[
         path: "device/basic_information",
     },
     Spec {
+        group: "device",
+        path: "device/temperature",
+    },
+    Spec {
         group: "status",
         path: "monitoring/status",
     },

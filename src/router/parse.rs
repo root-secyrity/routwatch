@@ -246,6 +246,12 @@ pub fn parse_device(n: &Node) -> Device {
     }
 }
 
+/// `device/temperature` answers `<temperature>41</temperature>` on firmwares that
+/// have the sensor; a missing or absurd value is `None`, never zero.
+pub fn parse_temperature(n: &Node) -> Option<f32> {
+    f32_of(n, "temperature").filter(|t| *t > -40.0 && *t < 120.0)
+}
+
 pub fn parse_net_mode(n: &Node) -> NetMode {
     NetMode {
         network_mode: s_of(n, "NetworkMode"),
@@ -333,6 +339,18 @@ pub fn parse_sms_count(n: &Node) -> SmsCount {
 mod tests {
     use super::*;
     use crate::xml::parse;
+
+    #[test]
+    fn a_temperature_outside_the_sane_range_is_not_trusted() {
+        let ok = parse("<response><temperature>41</temperature></response>").expect("xml");
+        assert_eq!(parse_temperature(&ok), Some(41.0));
+
+        let bogus = parse("<response><temperature>999</temperature></response>").expect("xml");
+        assert_eq!(parse_temperature(&bogus), None);
+
+        let absent = parse("<response></response>").expect("xml");
+        assert_eq!(parse_temperature(&absent), None);
+    }
 
     /// Scrubbed capture: the real device output with names, MACs, IPs
     /// and identifiers replaced. Kept inline so no private data ships.
