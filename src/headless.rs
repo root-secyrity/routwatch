@@ -8,34 +8,116 @@ use crate::router::{bands, endpoints, parse, HuaweiClient};
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// One endpoint read inside `collect_traced`. The order is the wire order: a
+/// phase only starts after the previous one answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Signal,
+    Status,
+    Traffic,
+    Plmn,
+    Device,
+    NetMode,
+    Clients,
+    Sms,
+    Dns,
+    Bands,
+}
+
+impl Phase {
+    pub const ALL: [Phase; 10] = [
+        Phase::Signal,
+        Phase::Status,
+        Phase::Traffic,
+        Phase::Plmn,
+        Phase::Device,
+        Phase::NetMode,
+        Phase::Clients,
+        Phase::Sms,
+        Phase::Dns,
+        Phase::Bands,
+    ];
+
+    pub fn index(self) -> usize {
+        Phase::ALL.iter().position(|p| *p == self).unwrap_or(0)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Phase::Signal => "signal",
+            Phase::Status => "status",
+            Phase::Traffic => "traffic",
+            Phase::Plmn => "plmn",
+            Phase::Device => "device",
+            Phase::NetMode => "net-mode",
+            Phase::Clients => "clients",
+            Phase::Sms => "sms",
+            Phase::Dns => "dns",
+            Phase::Bands => "bands",
+        }
+    }
+}
+
+/// What the header needs to know about each phase. `Waiting` exists so a new
+/// scan can be shown as "not read yet" instead of the previous scan's `Done`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseState {
+    Waiting,
+    Running,
+    Done,
+}
+
+/// Announce a phase around the work that belongs to it. `Done` is reported even
+/// when the read failed — the phase is finished either way.
+pub fn step<T>(
+    trace: &mut impl FnMut(Phase, PhaseState),
+    phase: Phase,
+    work: impl FnOnce() -> T,
+) -> T {
+    trace(phase, PhaseState::Running);
+    let value = work();
+    trace(phase, PhaseState::Done);
+    value
+}
+
+/// `collect` with no observer: the CLI and every existing call site.
 pub fn collect(c: &mut HuaweiClient, ip: &str) -> Result<Snapshot, ApiError> {
-    let signal = parse::parse_signal(&c.get("device/signal")?);
-    let status = parse::parse_connection(&c.get("monitoring/status")?);
-    let traffic = parse::parse_traffic(&c.get("monitoring/traffic-statistics")?);
-    let plmn = parse::parse_plmn(&c.get("net/current-plmn")?);
-    let device = parse::parse_device(&c.get("device/information")?);
-    let net_mode = parse::parse_net_mode(&c.get("net/net-mode")?);
+    collect_traced(c, ip, &mut |_, _| {})
+}
+
+pub fn collect_traced(
+    c: &mut HuaweiClient,
+    ip: &str,
+    trace: &mut impl FnMut(Phase, PhaseState),
+) -> Result<Snapshot, ApiError> {
+    let signal = parse::parse_signal(&step(trace, Phase::Signal, || c.get("device/signal"))?);
+    let status =
+        parse::parse_connection(&step(trace, Phase::Status, || c.get("monitoring/status"))?);
+    let traffic = parse::parse_traffic(&step(trace, Phase::Traffic, || {
+        c.get("monitoring/traffic-statistics")
+    })?);
+    let plmn = parse::parse_plmn(&step(trace, Phase::Plmn, || c.get("net/current-plmn"))?);
+    let device = parse::parse_device(&step(trace, Phase::Device, || c.get("device/information"))?);
+    let net_mode = parse::parse_net_mode(&step(trace, Phase::NetMode, || c.get("net/net-mode"))?);
     // Optional extras: their absence must not fail the snapshot.
-    let clients = c
-        .get("wlan/host-list")
+    let clients = step(trace, Phase::Clients, || c.get("wlan/host-list").ok())
         .map(|n| parse::parse_clients(&n))
         .unwrap_or_default();
-    let sms = c
-        .get("sms/sms-count")
-        .ok()
-        .map(|n| parse::parse_sms_count(&n));
-    let dns = c.get("dhcp/settings").ok().map(|n| parse::parse_dns(&n));
+    let sms =
+        step(trace, Phase::Sms, || c.get("sms/sms-count").ok()).map(|n| parse::parse_sms_count(&n));
+    let dns = step(trace, Phase::Dns, || c.get("dhcp/settings").ok()).map(|n| parse::parse_dns(&n));
 
-    let (supported_bands, all_bands_mask) = match c.get("net/net-mode-list") {
-        Ok(node) => {
-            let (defs, all) = bands::from_net_mode_list(&node);
-            (
-                defs.iter().filter_map(|d| d.band.map(u32::from)).collect(),
-                all.map(bands::to_hex),
-            )
-        }
-        Err(_) => (Vec::new(), None),
-    };
+    let (supported_bands, all_bands_mask) =
+        match step(trace, Phase::Bands, || c.get("net/net-mode-list")) {
+            Ok(node) => {
+                let (defs, all) = bands::from_net_mode_list(&node);
+                (
+                    defs.iter().filter_map(|d| d.band.map(u32::from)).collect(),
+                    all.map(bands::to_hex),
+                )
+            }
+            Err(_) => (Vec::new(), None),
+        };
 
     Ok(Snapshot {
         generated_at: SystemTime::now()
@@ -680,5 +762,49 @@ mod status_tests {
             );
         }
         assert!(!text.contains('\n'), "status --json is one line");
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+
+    #[test]
+    fn a_phase_is_running_before_the_work_and_done_after_it() {
+        let mut seen = Vec::new();
+        let mut trace = |p: Phase, s: PhaseState| seen.push((p, s));
+        let value = step(&mut trace, Phase::Signal, || 7);
+        assert_eq!(value, 7);
+        assert_eq!(
+            seen,
+            vec![
+                (Phase::Signal, PhaseState::Running),
+                (Phase::Signal, PhaseState::Done)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_finished_phase_is_reported_even_when_the_work_fails() {
+        let mut seen = Vec::new();
+        let mut trace = |p: Phase, s: PhaseState| seen.push((p, s));
+        let failed: Result<(), &str> = step(&mut trace, Phase::Device, || Err("boom"));
+        assert!(failed.is_err());
+        assert_eq!(seen.last(), Some(&(Phase::Device, PhaseState::Done)));
+    }
+
+    #[test]
+    fn the_phase_order_matches_the_endpoints_we_call() {
+        let labels: Vec<&str> = Phase::ALL.iter().map(|p| p.label()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "signal", "status", "traffic", "plmn", "device", "net-mode", "clients", "sms",
+                "dns", "bands"
+            ]
+        );
+        for (i, phase) in Phase::ALL.iter().enumerate() {
+            assert_eq!(phase.index(), i, "{phase:?} is out of order");
+        }
     }
 }

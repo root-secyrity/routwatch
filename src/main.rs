@@ -1113,6 +1113,7 @@ fn drain(app: &mut App, rx: &Receiver<Ev>) {
             Ev::Write(state) => app.settle_write(state),
             Ev::Ping(outcome) => app.set_ping(outcome),
             Ev::Extras(extras) => app.on_extras(*extras),
+            Ev::Phase { phase, state } => app.on_phase(phase, state),
             Ev::Notice(msg) => {
                 app.note(msg.clone());
                 app.log(routwatch::app::LogLevel::Info, msg);
