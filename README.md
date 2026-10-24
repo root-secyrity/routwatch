@@ -193,8 +193,9 @@ Exit codes: `0` ok · `2` network/unreachable (the Waybar document still prints,
 | `l` `L` | everywhere | toggle lite, returning to the view you came from |
 | `g` `r` `p` | everywhere | graph style · refresh now · pause polling |
 | `,` or `s` | everywhere | settings overlay (theme, view, graph, refresh, budget); `w` saves |
+| `i` | everywhere | event feed: `j`/`k` select, `space` pause/resume, `Esc` or `i` closes |
 | `?` | everywhere | key help |
-| `space` `j` `k` | Bands | tick a band · move |
+| `space` `j` `k` | Bands | tick a band · move (inside the event feed they belong to the feed) |
 | `n` `s` `x` | Bands | next merge preset · save the ticked merge · delete preset |
 | `m` `o` `a` | Bands | network mode · NR option · apply (confirm with `y`) |
 | `d` `z` | Traffic/DNS | type DNS servers · back to DHCP |
@@ -205,6 +206,13 @@ Exit codes: `0` ok · `2` network/unreachable (the Waybar document still prints,
 | `x` `b` | Device | dump all endpoints to JSON · restart router (type `REBOOT`) |
 | `e` | every section except SMS/Device | write a Markdown report to `~/.local/share/routwatch/reports/` |
 | `i` | settings overlay (`,`) | switch the report between `redacted` (default) and `full` |
+
+`i` opens the event feed — a window over the session log (the same lines the
+Device tab shows, up to 200). The newest line is at the top, and the selection
+is counted **from the newest**, so a line arriving while you read cannot slide
+the text out from under you. `j`/`k` move and pause the feed; `space` resumes
+and jumps back to the newest line. Moving pauses on purpose: following would
+otherwise undo your scroll on the next poll.
 
 Every section also lists its own keys in the status bar. `e` stays "read extras"
 on SMS and Device, where the inbox is what you actually want.
@@ -282,7 +290,7 @@ routwatch preview --tab dashboard --fixture fixtures/sample-snapshot-5g.json
 ## Development
 
 ```sh
-cargo test                 # 151 unit tests, no router and no fixtures on disk
+cargo test                 # 157 unit tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```

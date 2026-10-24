@@ -122,6 +122,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help {
         draw_help(f, area, &app.theme);
     }
+    if app.events_open {
+        draw_events(f, area, app);
+    }
 
     // `sky` and `paper` own a panel fill. Widgets leave most cells with
     // `Reset`, so the fill is applied last: it only replaces cells nobody
@@ -498,7 +501,15 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
 
     // This section's own keys sit next to the global ones. They are the first
     // thing to give up space on a narrow terminal (never `q quit · ? help`).
-    let tail = " · q quit · ? help";
+    // `i events` is discoverability, not a requirement: it is advertised only
+    // when the line can still hold it and still leave room for a hint.
+    const GLOBAL_TAIL: &str = " · q quit · ? help";
+    let wide_tail = " · i events · q quit · ? help";
+    let tail = if (area.width as usize) > used + wide_tail.chars().count() + 6 {
+        wide_tail
+    } else {
+        GLOBAL_TAIL
+    };
     let available = (area.width as usize)
         .saturating_sub(used + tail.chars().count())
         .saturating_sub(1);
@@ -571,10 +582,91 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
+/// The event feed: a window over `app.event_log`, newest line at the top.
+///
+/// The selection is counted from the newest entry (`events_back`), so an event
+/// arriving while the reader is stopped here cannot shift the line they are on.
+fn draw_events(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let w = area.width.saturating_sub(8).clamp(16, 110).min(area.width);
+    let h = (area.height.saturating_sub(6)).max(8).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+
+    // A bordered box loses two rows; the footer and its blank line lose two more.
+    let inner = h.saturating_sub(2) as usize;
+    let visible = inner.saturating_sub(2);
+    let selected = app.events_back;
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, entry) in app
+        .event_log
+        .iter()
+        .skip(selected)
+        .take(visible)
+        .enumerate()
+    {
+        let colour = match entry.level {
+            crate::app::LogLevel::Error => t.danger,
+            crate::app::LogLevel::Warn => t.warn,
+            crate::app::LogLevel::Info => t.fg,
+        };
+        let marker = if i == 0 { "›" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(t.accent)),
+            Span::styled(format!(" {:>5}s ", entry.at), Style::default().fg(t.dim)),
+            Span::styled(entry.msg.clone(), Style::default().fg(colour)),
+        ]));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " no events yet ",
+            Style::default().fg(t.dim),
+        )));
+    }
+    // The footer belongs to the bottom edge, not to the last event.
+    while lines.len() + 2 < inner {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(""));
+    // `events_back > 0` is already a held position, even if nothing toggled the
+    // pause: saying "following" there would be a lie.
+    let state = if app.events_paused || app.events_back > 0 {
+        "paused"
+    } else {
+        "following"
+    };
+    let footer = if w >= 64 {
+        format!(
+            " {} events · {state} · j/k · space pause · i close ",
+            app.event_log.len()
+        )
+    } else {
+        format!(" {} events · {state} · i close ", app.event_log.len())
+    };
+    lines.push(Line::from(Span::styled(footer, Style::default().fg(t.dim))));
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title(Span::styled(
+                    " events ",
+                    Style::default().fg(t.title).add_modifier(Modifier::BOLD),
+                ))
+                .border_style(Style::default().fg(t.accent)),
+        ),
+        rect,
+    );
+}
+
 fn draw_help(f: &mut Frame, area: Rect, theme: &Theme) {
     let rows = [
         ("1..7 / Tab", "switch tab"),
         ("j k / ↑ ↓", "move selection"),
+        ("i", "event feed: j/k reads back, space pauses, Esc closes"),
         ("space / a", "bands: toggle / apply (confirm with y)"),
         ("m / o", "bands: network mode / NR option"),
         (
@@ -855,6 +947,77 @@ mod tests {
         assert!(text.contains("Needed"), "no requirement line\n{text}");
         assert!(text.contains("24"), "width requirement missing\n{text}");
         assert!(text.contains("24x6"), "requirement missing\n{text}");
+    }
+
+    #[test]
+    fn the_feed_names_its_pause_state() {
+        let mut app = fixture_app();
+        app.event_log.clear();
+        app.events_open = true;
+        app.log(crate::app::LogLevel::Info, "scan started".to_string());
+        let live = render_to_string(&app, 100, 30);
+        assert!(live.contains("following"), "a live feed says so:\n{live}");
+        app.events_paused = true;
+        let held = render_to_string(&app, 100, 30);
+        assert!(held.contains("paused"), "a held feed says paused:\n{held}");
+        assert!(held.contains("1 events"), "the count is missing:\n{held}");
+    }
+
+    #[test]
+    fn the_feed_marks_the_line_it_is_reading() {
+        let mut app = fixture_app();
+        app.event_log.clear();
+        app.events_open = true;
+        app.events_paused = true;
+        for i in 0..5 {
+            app.log(crate::app::LogLevel::Info, format!("line {i}"));
+        }
+        // Newest first: line 4, line 3, line 2 … Reading two lines back starts
+        // the window on line 2, with the cursor on that row.
+        app.event_select(2);
+        let text = render_to_string(&app, 100, 30);
+        let rows: Vec<&str> = text.lines().filter(|line| line.contains("line ")).collect();
+        assert!(rows[0].contains('›'), "no cursor mark: {:?}", rows[0]);
+        assert!(
+            rows[0].contains("line 2"),
+            "wrong line selected: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].contains("line 1"),
+            "order is not newest-first: {rows:?}"
+        );
+
+        // Following shows the newest line at the top of the window.
+        app.events_paused = false;
+        app.events_back = 0;
+        let text = render_to_string(&app, 100, 30);
+        let first = text
+            .lines()
+            .find(|line| line.contains("line "))
+            .unwrap_or_default();
+        assert!(
+            first.contains("line 4"),
+            "newest line not on top: {first:?}"
+        );
+    }
+
+    #[test]
+    fn the_feed_fits_a_forty_column_terminal() {
+        let mut app = fixture_app();
+        app.events_open = true;
+        app.log(
+            crate::app::LogLevel::Warn,
+            "a line long enough that it must be clipped by the window".to_string(),
+        );
+        let text = render_to_string(&app, 40, 20);
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= 40,
+                "the feed overflowed 40 columns: {line:?}"
+            );
+        }
+        assert!(text.contains("events"), "the feed did not render:\n{text}");
     }
 
     #[test]
