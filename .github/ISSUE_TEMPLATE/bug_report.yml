@@ -1,0 +1,81 @@
+name: Bug report
+description: A panel renders wrong, an empty section, or a command that failed.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `routwatch doctor --json` is the single most useful thing you can paste: it
+        names every capability as `ready` / `degraded` / `failed` with its reason, and
+        never prints a password, serial, IMEI or SSID. It does print your config path
+        and the router's LAN IP - scrub those if you care.
+
+  - type: input
+    id: router
+    attributes:
+      label: Router model
+      description: The model on the router's label.
+      placeholder: H122-373
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: WebUI / firmware version
+      description: Shown in the router's own web interface, usually at the bottom of the login page.
+      placeholder: WEBUI 11.0.2.21
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: routwatch version
+      description: Output of `routwatch --version`.
+      placeholder: routwatch 0.2.0
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: Distribution, terminal and terminal size
+      description: A layout problem is often only about the size.
+      placeholder: Arch/CachyOS, kitty 0.44, 120x40
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The exact command you ran and what you saw instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: false
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`routwatch doctor --json`"
+      description: Paste the whole JSON in the block below.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: preview
+    attributes:
+      label: Frame problem? `routwatch preview --size <WxH>`
+      description: A rendering problem reproduces without a router - paste the frame here.
+      render: text
+    validations:
+      required: false

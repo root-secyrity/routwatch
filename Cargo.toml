@@ -1,0 +1,30 @@
+[package]
+name = "routwatch"
+version = "0.2.3"
+edition = "2021"
+rust-version = "1.88"
+description = "Huawei LTE/5G CPE manager in the terminal - live signal, traffic, clients, bands and DNS"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/root-secyrity/routwatch"
+keywords = ["huawei", "lte", "5g", "router", "tui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+ureq = { version = "3.4", default-features = false }
+quick-xml = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+dirs = "6"
+sha2 = "0.10"
+base64 = "0.22"
+ratatui = "0.29"
+unicode-width = "0.2"
+libc = "0.2"
+
+[profile.release]
+lto = true
+strip = true

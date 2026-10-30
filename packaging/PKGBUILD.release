@@ -1,0 +1,50 @@
+# Maintainer: root-secyrity <root-secyrity@users.noreply.github.com>
+#
+# Release package: builds the exact tarball GitHub serves for the tag, not
+# whatever `main` happens to be. Use this to reproduce the .pkg.tar.zst that is
+# attached to a GitHub release.
+#
+#   cd packaging && cp PKGBUILD.release PKGBUILD && makepkg -si
+#
+# When a new tag is cut, bump pkgver and refresh the checksum:
+#   updpkgsums
+#
+# For a package that always tracks the latest commit use PKGBUILD (the
+# routwatch-git recipe) instead.
+
+pkgname=routwatch
+pkgver=0.2.3
+pkgrel=1
+pkgdesc="Huawei LTE/5G CPE manager in the terminal - live signal, traffic, clients, bands and DNS"
+arch=('x86_64' 'aarch64')
+url="https://github.com/root-secyrity/routwatch"
+license=('MIT')
+depends=('glibc' 'libgcc')
+makedepends=('rust' 'cargo')
+provides=('routwatch')
+conflicts=('routwatch-git')
+options=('!lto' '!strip')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('46b49afdea9ce72304245b31f2fc6262d06a26132f8c57e4937b7bc55f28c544')
+
+build() {
+	cd "$pkgname-$pkgver"
+	export CARGO_TARGET_DIR=target
+	export RUSTUP_TOOLCHAIN=stable
+	cargo build --frozen --release
+}
+
+check() {
+	cd "$pkgname-$pkgver"
+	export CARGO_TARGET_DIR=target
+	export RUSTUP_TOOLCHAIN=stable
+	cargo test --frozen --release
+}
+
+package() {
+	cd "$pkgname-$pkgver"
+	install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+	install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+	install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
+}

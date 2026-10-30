@@ -1,0 +1,60 @@
+routwatch - third-party attribution
+===================================
+
+routwatch is Copyright (c) 2026 root-secyrity and licensed under MIT (see LICENSE).
+
+
+Design and prior art
+--------------------
+routwatch is the fourth tool in a family that already contained netwatch,
+syswatch and diskwatch. All three are by Matt Hartley (matthart1983) and are
+MIT-licensed:
+
+  netwatch   https://github.com/matthart1983/netwatch
+  syswatch   https://github.com/matthart1983/syswatch
+  diskwatch  https://github.com/matthart1983/diskwatch
+
+From them come the conventions this tool deliberately follows, and which its
+users expect because they run the other three side by side: the
+~/.config/<tool>/config.toml shape with the same keys, `theme = "terminal"`
+defaulting to the terminal's own palette, the V/L/F view cycle, `--tab` and
+`--graph` spellings, the `doctor --json` capability schema (id/state/reason/
+detail/next_check), shell completion emitted by the binary itself, and the
+habit of stating a limitation in the UI instead of showing a plausible zero.
+
+No source code from syswatch or diskwatch was copied into this repository.
+
+The feature set and the router behaviour it encodes (endpoints, band masks,
+what the H122-373 firmware does and does not answer) come from HManagerPy
+2.1.0, the Electron application this tool replaces, written by RoOt-SeC.
+
+
+Theme palettes - derived code
+-----------------------------
+src/theme.rs carries eight palettes whose colour values are taken byte-for-byte
+from netwatch's src/theme.rs (the slot names are routwatch's own, the hex values
+are not ours). netwatch is Copyright (c) Matt Hartley and distributed under the
+MIT license reproduced below. Keeping the values identical is deliberate: the
+same theme must look the same in all four tools.
+
+  MIT License
+
+  Copyright (c) Matt Hartley
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.

@@ -1,0 +1,65 @@
+name: Report another router model
+description: You ran routwatch on a model other than the H122-373 - fully, partly, or not at all.
+title: "[model] <MODEL> - works | partial | refuses"
+labels: ["model report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        routwatch talks to an undocumented HTTP API, so a new model is a report worth
+        having: it tells the next owner of that router what to expect before installing.
+        Nothing here is a commitment that the model will be supported.
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: How far did it get?
+      options:
+        - Everything works
+        - Starts, but some panels are empty
+        - Starts, but writes or login fail
+        - Refuses to start
+        - Not tried yet - just listing a model
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Router model
+      placeholder: B525s-65a
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: WebUI / firmware version
+      placeholder: WEBUI 11.0.2.21
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: routwatch version
+      placeholder: routwatch 0.2.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: sections
+    attributes:
+      label: Which sections are right, wrong or empty
+      description: Dashboard, Bands, Traffic, Network, Clients, SMS, Device, DNS, Signal.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`routwatch share` (or `doctor --json` + `snapshot --json --redact`)"
+      description: One `share` file is enough - it carries the capability map, the endpoint field names and a redacted snapshot. Do not attach screenshots or un-redacted `--raw` output.
+      render: json
+    validations:
+      required: true
