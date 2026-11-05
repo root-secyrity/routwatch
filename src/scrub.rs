@@ -21,18 +21,34 @@ pub const IDENTITY_TAGS: &[&str] = &[
     "wanipaddress",
     "wanipv6address",
     "lanipaddress",
+    "ipaddress",
     "ssid",
     "wifissid",
+    "wifikey",
+    "wifiwpapsk",
+    "wpapsk",
+    "presharedkey",
     "hostname",
+    "actualname",
+    "associatedssid",
+    "fullname",
+    "shortname",
+    "numeric",
 ];
 
 /// What an identity value is replaced with. Same word the report and the parsed
 /// snapshot use, so one grep means "this was hidden" everywhere.
 pub const HIDDEN: &str = "(hidden)";
 
+/// A firmware is free to spell the same field `GuestSsid` or
+/// `Ipv6IpAddress`; the fixed list would miss those. Suffix rules cover the
+/// families without pretending every `*name` is identity (`DeviceName` is not).
 fn is_identity(tag: &str) -> bool {
     let lower = tag.to_ascii_lowercase();
     IDENTITY_TAGS.contains(&lower.as_str())
+        || lower.ends_with("ssid")
+        || lower.ends_with("ipaddress")
+        || lower.ends_with("psk")
 }
 
 /// Replace the *text* of every identity element, leaving the tag names, the
@@ -195,5 +211,57 @@ mod tests {
         );
         assert!(!names.join(",").contains("MOCKSERIAL0001"));
         assert!(!names.join(",").contains("living-room-tv"));
+    }
+
+    /// A wifi key is the worst thing a "shareable" dump can carry: it is the
+    /// network's password, not just a name.
+    #[test]
+    fn wifi_keys_never_survive() {
+        let raw = r#"<response><WifiSsid>HomeNet</WifiSsid><WifiKey>Secret123</WifiKey><WifiWpaPsk>Secret123</WifiWpaPsk><DeviceName>Mock-CPE</DeviceName></response>"#;
+        let out = scrub_xml(raw);
+        assert!(!out.contains("Secret123"), "{out}");
+        assert!(out.contains("<WifiKey>(hidden)</WifiKey>"), "{out}");
+        // The device name identifies nothing a maintainer cannot see.
+        assert!(
+            out.contains("<DeviceName>Mock-CPE</DeviceName>"),
+            "device name must stay: {out}"
+        );
+    }
+
+    /// The real host-list tags are `ActualName` and `IpAddress`, not the two
+    /// spellings the fixed list happened to carry.
+    #[test]
+    fn real_host_list_shapes_are_covered() {
+        let raw = r#"<response><Hosts><Host><HostName>tv</HostName><ActualName>living-room-tv</ActualName><IpAddress>192.168.8.101;fe80::1</IpAddress><MacAddress>02:11:22:33:44:55</MacAddress><AssociatedSsid>HomeNet</AssociatedSsid></Host></Hosts></response>"#;
+        let out = scrub_xml(raw);
+        for secret in [
+            "living-room-tv",
+            "192.168.8.101",
+            "fe80::1",
+            "HomeNet",
+            "02:11:22:33:44:55",
+        ] {
+            assert!(!out.contains(secret), "{secret} survived:\n{out}");
+        }
+        for name in [
+            "<ActualName>",
+            "<IpAddress>",
+            "<AssociatedSsid>",
+            "<HostName>",
+        ] {
+            assert!(out.contains(name), "{name} dropped:\n{out}");
+        }
+    }
+
+    /// The operator name says where a person lives; a new firmware that spells
+    /// the tag `GuestSsid` must still be covered.
+    #[test]
+    fn operator_identity_and_new_ssid_spellings_are_hidden() {
+        let raw = "<response><FullName>OperatorNet</FullName><ShortName>OPN</ShortName><Numeric>00101</Numeric><GuestSsid>HomeNet</GuestSsid></response>";
+        let out = scrub_xml(raw);
+        for s in ["OperatorNet", "OPN", "HomeNet"] {
+            assert!(!out.contains(s), "{out}");
+        }
+        assert!(out.contains("<Numeric>(hidden)</Numeric>"), "{out}");
     }
 }
