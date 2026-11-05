@@ -84,15 +84,14 @@ pub fn append(path: &Path, frame: &RecordFrame) -> std::io::Result<()> {
             }
         }
     }
-    // A recording can hold a client list; keep it to the owner.
-    let existed = path.exists();
+    // A recording can hold a client list; keep it to the owner. A file that
+    // already existed (another tool, an older build) keeps its 0644 bits unless
+    // it is tightened on every append, not only on creation.
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    if !existed {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
-        }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
     }
     let line = serde_json::to_string(frame).map_err(std::io::Error::other)?;
     writeln!(file, "{line}")
@@ -211,6 +210,23 @@ mod tests {
         writeln!(f, "{{\"at\":2,\"snapshot\":{{\"sign").unwrap();
         let frames = load(&path).unwrap();
         assert_eq!(frames.len(), 1, "the partial line is skipped, not fatal");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A file that already existed with 0644 (an older build, another tool) must
+    /// be tightened on the next append: it now carries identity data.
+    #[test]
+    fn an_existing_loose_file_is_tightened_on_append() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmpdir("perm");
+        let path = dir.join("old.rwr");
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        append(&path, &RecordFrame::new(1, Snapshot::default())).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "record kept the world-readable bits");
         let _ = fs::remove_dir_all(&dir);
     }
 }

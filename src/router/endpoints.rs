@@ -124,11 +124,11 @@ pub const PROBE: &[Spec] = &[
     },
     Spec {
         group: "quota",
-        path: "monitoring/month-statistics",
+        path: "monitoring/month_statistics",
     },
     Spec {
         group: "quota",
-        path: "monitoring/start-date",
+        path: "monitoring/start_date",
     },
     Spec {
         group: "device",
@@ -184,6 +184,9 @@ impl Cap {
         match e {
             ApiError::Unsupported(c) => Cap::Unsupported(*c),
             ApiError::Denied(c) => Cap::Denied(*c),
+            // A path the firmware does not serve is a missing capability, not a
+            // broken box: headless::note_unsupported already reads a 404 this way.
+            ApiError::Http(404) => Cap::Unsupported(404),
             other => Cap::Failed(other.to_string()),
         }
     }
@@ -210,4 +213,32 @@ pub fn probe_all(c: &mut HuaweiClient) -> Vec<ProbeResult> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_endpoint_is_unsupported_not_failed() {
+        assert_eq!(Cap::from_err(&ApiError::Http(404)), Cap::Unsupported(404));
+        assert!(matches!(
+            Cap::from_err(&ApiError::Http(500)),
+            Cap::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn the_quota_paths_use_the_firmware_spelling() {
+        for spec in PROBE {
+            if spec.group == "quota" {
+                assert!(
+                    spec.path.contains('_'),
+                    "{} must use the underscore form Huawei serves",
+                    spec.path
+                );
+                assert!(!spec.path.contains('-'), "{} is hyphenated", spec.path);
+            }
+        }
+    }
 }

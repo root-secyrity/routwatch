@@ -490,6 +490,7 @@ mod tests {
             &[1, 3, 5, 8, 20, 28, 32],
             Some("7fffffffffffffff"),
             None,
+            None,
         );
         assert!(
             same_band_target(&current, &same_4g),
@@ -503,6 +504,7 @@ mod tests {
             &[1, 3, 5, 8, 20, 28, 32],
             Some("7fffffffffffffff"),
             None,
+            None,
         );
         assert!(
             !same_band_target(&current, &auto),
@@ -513,7 +515,7 @@ mod tests {
         let mut fiveg_now = current.clone();
         fiveg_now.network_mode = Some("08".into());
         fiveg_now.network_option = Some("0".into());
-        let fiveg_sa = bands::resolve("08", &[1], None, Some("1"));
+        let fiveg_sa = bands::resolve("08", &[1], None, None, Some("1"));
         assert!(!same_band_target(&fiveg_now, &fiveg_sa));
     }
 
@@ -529,7 +531,7 @@ mod tests {
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
         let mut c = HuaweiClient::new(mock.addr(), 2000);
         c.login("admin", "demo").expect("mock login");
-        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], Some("3FFFFFFF"), None);
+        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], None, Some("3FFFFFFF"), None);
         let state = apply_bands(&mut c, &payload, intent(), false, &mut |_| {});
         match state {
             WriteState::Failed { err, .. } => {
@@ -548,7 +550,7 @@ mod tests {
             lte_band: Some("800C5".into()),
             network_option: Some("0".into()),
         };
-        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], Some("3FFFFFFF"), None);
+        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], None, Some("3FFFFFFF"), None);
         assert!(
             !matches_after(&current, &payload),
             "the device still reports mode 03, so nothing was applied"
@@ -563,7 +565,7 @@ mod tests {
             lte_band: Some("800C5".into()),
             network_option: None,
         };
-        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], Some("3FFFFFFF"), None);
+        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], None, Some("3FFFFFFF"), None);
         assert!(matches_after(&current, &payload));
     }
 

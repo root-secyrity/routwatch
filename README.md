@@ -152,7 +152,7 @@ timeout_ms = 3000
 theme = "terminal"      # follows your terminal / desktop theme
 view = "full"           # full · gauges · lite · dense
 graph_style = "dots"    # dots · bars · braille
-budget_gb = 100         # local budget only; this firmware reports no monthly quota
+budget_gb = 100         # local budget only; the monthly counters are not read
 ```
 
 The password ladder is `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-tool`
@@ -274,7 +274,9 @@ routwatch preview --tab bands --size 120x30 --ansi
 - **5G per-field metrics** (`nrrsrp`, `nrsinr`, `nrdlmcs`) are empty on some
   firmware even with ENDC active. Only `SignalIconNr` (0–5 bars) and the ENDC flag
   are reliable there; the UI switches to a bars panel instead of faking dBm.
-- **No monthly quota**: this firmware answers `100003`. The budget bar is local.
+- **The budget is local**: the firmware answers `monitoring/month_statistics`,
+  but routwatch does not read the monthly counters; the bar compares your own
+  `budget_gb` against the traffic it samples.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown in a `0700`
   directory, with IMEI, serial, WAN IP, MACs and SSIDs hidden - these files get
   pasted in public. `report_identity`, `--report-identity` or `i` in the settings
@@ -295,7 +297,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 197 unit + 4 binary + 9 CLI tests, no router and no fixtures on disk
+cargo test                 # 207 unit + 4 binary + 9 CLI tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```

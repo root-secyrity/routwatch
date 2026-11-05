@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 pub enum Cmd {
     Refresh,
     Pause(bool),
+    /// Change the poll interval without respawning the worker: the loop's wait
+    /// is recomputed from this value, so `[`/`]` take effect on the next tick.
+    SetInterval(u64),
     /// Ask the worker to finish: it logs out, acknowledges, then exits. The UI
     /// waits on the acknowledgement so the session is closed before the
     /// process ends (a bare `break` left the router with an open session).
@@ -191,7 +194,7 @@ pub fn spawn(cfg: Config, password: String) -> (Sender<Cmd>, Receiver<Ev>) {
 }
 
 fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) {
-    let interval = Duration::from_millis(cfg.app.refresh_ms.max(500));
+    let mut interval = Duration::from_millis(cfg.app.refresh_ms.max(500));
     let mut client = HuaweiClient::new(&cfg.router.ip, cfg.app.timeout_ms);
     let mut authed = false;
     let mut paused = false;
@@ -218,6 +221,10 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             }
             Ok(Cmd::Pause(p)) => {
                 paused = p;
+                continue;
+            }
+            Ok(Cmd::SetInterval(ms)) => {
+                interval = Duration::from_millis(ms.clamp(500, 10_000));
                 continue;
             }
             Ok(Cmd::ApplyDns {
@@ -410,6 +417,32 @@ mod tests {
             1,
             "the TUI promised logout on quit, and only one session was open"
         );
+    }
+
+    #[test]
+    fn changing_the_interval_takes_effect_without_a_respawn() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
+        let (tx, _rx) = spawn(cfg_for(&mock), "pw".into());
+
+        let mut waited = 0u32;
+        while mock.signals() == 0 && waited < 100 {
+            std::thread::sleep(Duration::from_millis(50));
+            waited += 1;
+        }
+        assert!(mock.signals() >= 1, "the worker never polled");
+
+        tx.send(Cmd::SetInterval(600)).unwrap();
+        let base = mock.signals();
+        std::thread::sleep(Duration::from_millis(2000));
+        let extra = mock.signals() - base;
+        assert!(
+            extra >= 2,
+            "the new interval was ignored: {extra} polls in 2s at 600ms"
+        );
+
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(0);
+        tx.send(Cmd::Stop(ack_tx)).unwrap();
+        let _ = ack_rx.recv_timeout(Duration::from_secs(3));
     }
 
     const SAMPLE: &str = "PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data.\n\
