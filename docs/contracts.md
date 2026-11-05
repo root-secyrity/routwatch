@@ -30,6 +30,9 @@ breaks `cargo test` here rather than leaving the promise unattended.
 | A diagnostic asks the path every firmware actually serves | `doctor_reaches_the_mock_and_keeps_probing` | `src/mock_cpe.rs` |
 | A list the firmware hides is named, never drawn as zero | `a_hidden_client_list_is_recorded_not_zeroed` | `src/mock_cpe.rs` |
 | A redacted dump keeps every field name and no identity value | `identity_values_are_replaced_and_every_field_name_survives` | `src/scrub.rs` |
+| A dump file is private and never overwrites another | `new_files_are_0600_and_existing_ones_are_refused` | `src/output.rs` |
+| Quitting the TUI closes the router session | `stopping_the_worker_logs_out_before_acknowledging` | `src/worker.rs` |
+| The selected client row stays readable in every palette | `every_rgb_theme_keeps_body_and_muted_text_legible` | `src/theme.rs` |
 | The ask-for-a-model document carries no identity | `the_shared_document_has_no_identity_and_keeps_the_shapes` | `src/share.rs` |
 
 ## Adding a contract

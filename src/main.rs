@@ -182,6 +182,9 @@ enum Cmd {
         /// One JSON document: parsed snapshot + every raw response
         #[arg(long)]
         json: bool,
+        /// Replace an existing output file (default: refuse)
+        #[arg(long)]
+        force: bool,
     },
     /// One document to paste in a public issue when asking for a model to be
     /// supported: capabilities, endpoint field names, redacted snapshot
@@ -927,11 +930,12 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             println!("paste it in a model report; it carries no serial, IMEI, MAC or SSID");
             Ok(())
         }
-        Some(Cmd::Dump { out, json }) => {
+        Some(Cmd::Dump { out, json, force }) => {
             let mut client = connect(&cfg, cli.password_stdin)?;
             if json {
                 let path = out.unwrap_or_else(|| std::path::PathBuf::from("routwatch-dump.json"));
-                let bytes = headless::dump_to(&mut client, &cfg.router.ip, &path, cli.redact)?;
+                let bytes =
+                    headless::dump_to(&mut client, &cfg.router.ip, &path, cli.redact, force)?;
                 client.logout();
                 println!("dump written: {} ({bytes} bytes)", path.display());
                 return Ok(());
@@ -955,7 +959,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             client.logout();
             match out {
                 Some(path) => {
-                    std::fs::write(&path, &text)
+                    routwatch::output::write_private(&path, text.as_bytes(), force)
                         .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
                     println!("wrote {}", path.display());
                 }
@@ -1113,10 +1117,44 @@ fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, A
 
 // --------------------------------------------------------------------- TUI
 
+/// Runs the restore closure exactly once, on drop. A `?` between raw mode and
+/// the event loop used to return early and leave the user's terminal without
+/// echo, canonical input or signals.
+struct RestoreOnDrop<F: FnMut()>(Option<F>);
+
+impl<F: FnMut()> Drop for RestoreOnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(mut f) = self.0.take() {
+            f();
+        }
+    }
+}
+
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+}
+
+/// A panic inside the TUI would otherwise unwind past the guard's usefulness
+/// on some paths and print the message into the alternate screen; restoring in
+/// the hook means the backtrace lands on a normal terminal.
+fn install_restore_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            default(info);
+        }));
+    });
+}
+
 fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), ApiError> {
     let (tx, rx) = worker::spawn(cfg, password);
 
+    install_restore_hook();
     enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
+    let _restore = RestoreOnDrop(Some(restore_terminal));
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)
         .map_err(|e| ApiError::Config(format!("alt screen: {e}")))?;
@@ -1138,10 +1176,13 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
         }
     }
 
-    let _ = tx.send(WorkerCmd::Stop);
-    disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    // Wait for the worker to log out; the process must not exit before the
+    // router sees the logout POST.
+    let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(0);
+    let _ = tx.send(WorkerCmd::Stop(ack_tx));
+    let _ = ack_rx.recv_timeout(Duration::from_secs(3));
     drop(terminal);
+    drop(_restore);
     println!(
         "routwatch: session closed (last sample {}s old)",
         app.age().map(|a| a.as_secs()).unwrap_or(0)
@@ -1151,7 +1192,9 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
 
 /// Replay recorded frames into the same UI, with no router contact at all.
 fn run_replay(app: &mut App, frames: Vec<record::RecordFrame>, speed: u64) -> Result<(), ApiError> {
+    install_restore_hook();
     enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
+    let _restore = RestoreOnDrop(Some(restore_terminal));
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)
         .map_err(|e| ApiError::Config(format!("alt screen: {e}")))?;
@@ -1196,9 +1239,8 @@ fn run_replay(app: &mut App, frames: Vec<record::RecordFrame>, speed: u64) -> Re
         idx += 1;
     }
 
-    disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
     drop(terminal);
+    drop(_restore);
     println!(
         "routwatch: replay finished - {} frames",
         frames.len().min(idx)
@@ -1225,11 +1267,6 @@ fn drain(app: &mut App, rx: &Receiver<Ev>) {
 }
 
 fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
-    if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-        app.quit = true;
-        return;
-    }
-
     // The settings overlay is modal for appearance keys.
     if app.settings_open {
         match k.code {
@@ -1295,7 +1332,16 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
 
     // A modal owns the keyboard: only its own answers are accepted.
     let confirming = matches!(app.write, WriteState::Confirming(_));
+    // A write in flight owns the exit keys too: quitting mid-write leaves the
+    // router with a change nobody read back.
     if app.write.is_busy() {
+        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+            app.note("a write is in progress; wait for it to settle");
+        }
+        return;
+    }
+    if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+        app.quit = true;
         return;
     }
     if confirming {
@@ -1766,6 +1812,7 @@ fn human_bytes(v: u64) -> String {
 mod key_tests {
     use super::handle_key;
     use super::normalise_key;
+    use super::RestoreOnDrop;
     use super::TAB_HELP;
     use ratatui::crossterm::event::KeyCode;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
@@ -1854,6 +1901,18 @@ mod key_tests {
             Tab::ALL.len(),
             "the list repeats or misses one"
         );
+    }
+
+    #[test]
+    fn the_guard_restores_once_on_drop() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let hits = Rc::new(Cell::new(0));
+        let h = hits.clone();
+        {
+            let _g = RestoreOnDrop(Some(move || h.set(h.get() + 1)));
+        }
+        assert_eq!(hits.get(), 1);
     }
 
     #[test]

@@ -964,7 +964,10 @@ pub fn clients_tab(f: &mut Frame, area: Rect, app: &App) {
     for (i, c) in clients.iter().enumerate() {
         let selected = Some(i) == app.selected_client();
         let style = if selected {
-            Style::default().fg(t.selected).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(t.selected)
+                .fg(t.fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(t.fg)
         };

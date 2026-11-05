@@ -192,6 +192,7 @@ pub fn dump_to(
     ip: &str,
     path: &std::path::Path,
     redact: bool,
+    force: bool,
 ) -> Result<usize, ApiError> {
     let snap = collect(c, ip)?;
     let mut raw = serde_json::Map::new();
@@ -217,11 +218,7 @@ pub fn dump_to(
     });
     let text = serde_json::to_string_pretty(&doc)
         .map_err(|e| ApiError::Config(format!("serialize dump: {e}")))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| ApiError::Config(format!("{}: {e}", dir.display())))?;
-    }
-    std::fs::write(path, &text)
+    crate::output::write_private(path, text.as_bytes(), force)
         .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
     Ok(text.len())
 }
