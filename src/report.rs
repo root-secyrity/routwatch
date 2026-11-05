@@ -74,6 +74,15 @@ fn hidden(value: &Option<String>) -> Option<String> {
     }
 }
 
+/// Same rule for the fields that are always present: blank them, keep the key.
+fn hidden_str(value: &str) -> String {
+    if value.is_empty() {
+        value.to_string()
+    } else {
+        "(hidden)".to_string()
+    }
+}
+
 /// The shareable half of a snapshot.
 ///
 /// Someone who owns a cellular router and wants it supported has nothing to
@@ -84,6 +93,9 @@ fn hidden(value: &Option<String>) -> Option<String> {
 /// no IMEI.
 pub fn redacted(snap: &Snapshot) -> Snapshot {
     let mut out = snap.clone();
+    out.plmn.name = hidden_str(&out.plmn.name);
+    out.plmn.short = hidden_str(&out.plmn.short);
+    out.plmn.numeric = hidden_str(&out.plmn.numeric);
     out.device.serial = hidden(&out.device.serial);
     out.device.imei = hidden(&out.device.imei);
     out.device.wan_ip = hidden(&out.device.wan_ip);
@@ -95,6 +107,7 @@ pub fn redacted(snap: &Snapshot) -> Snapshot {
         } else {
             None
         };
+        client.ip = hidden(&client.ip);
         client.mac = hidden(&client.mac);
         client.ssid = hidden(&client.ssid);
     }
@@ -348,6 +361,25 @@ mod tests {
             shared.device.serial.is_some(),
             "a present field stays present"
         );
+    }
+
+    /// A client's LAN address and the operator name say where a person lives
+    /// and who they pay; both belong to the hidden half of a shareable snapshot.
+    #[test]
+    fn a_shareable_snapshot_hides_client_ips_and_the_operator() {
+        let mut s = sample();
+        s.plmn.name = "OperatorNet".into();
+        s.plmn.short = "OPN".into();
+        s.plmn.numeric = "00101".into();
+        s.clients[0].ip = Some("192.168.8.101".into());
+
+        let r = redacted(&s);
+        assert_eq!(r.plmn.name, "(hidden)");
+        assert_eq!(r.plmn.short, "(hidden)");
+        assert_eq!(r.plmn.numeric, "(hidden)");
+        assert_eq!(r.clients[0].ip.as_deref(), Some("(hidden)"));
+        assert_eq!(r.clients[0].name.as_deref(), Some("(client 1)"));
+        assert_eq!(s.plmn.name, "OperatorNet", "the input must not be mutated");
     }
 
     /// Absent identity stays absent: "this firmware reports no serial" is a fact.
