@@ -151,6 +151,46 @@ pub fn read_mask(client: &mut HuaweiClient) -> Result<(NetMode, Option<String>),
     Ok((mode, mask))
 }
 
+/// The whole device state a write must reproduce, not just the mask.
+pub fn read_mode(client: &mut HuaweiClient) -> Result<NetMode, ApiError> {
+    let node = client.get("net/net-mode")?;
+    Ok(parse::parse_net_mode(&node))
+}
+
+/// Does the device now match every field the payload asked for?
+///
+/// The pre-write no-op guard keeps `same_band_target`; this one is the
+/// post-write truth and compares `NetworkBand` with the payload as well,
+/// because in Auto mode `NetworkBand` and `LTEBand` carry different masks.
+pub fn matches_after(current: &NetMode, payload: &BandPayload) -> bool {
+    let hex_eq = |have: Option<&str>, want: &str| {
+        have.and_then(bands::from_hex)
+            .zip(bands::from_hex(want))
+            .map(|(a, b)| a == b)
+            .unwrap_or(false)
+    };
+    let mode_ok = current.network_mode.as_deref() == Some(payload.network_mode.as_str());
+    let band_ok = hex_eq(current.network_band.as_deref(), &payload.network_band)
+        && hex_eq(current.lte_band.as_deref(), &payload.lte_band);
+    let want_opt = payload
+        .network_option
+        .clone()
+        .unwrap_or_else(|| "0".to_string());
+    let have_opt = current
+        .network_option
+        .clone()
+        .unwrap_or_else(|| "0".to_string());
+    mode_ok && band_ok && want_opt == have_opt
+}
+
+/// A refused request and a lost response are different facts; the message says which.
+fn write_cause(e: &ApiError) -> String {
+    match e {
+        ApiError::Network(_) => format!("response lost ({e})"),
+        _ => format!("router refused ({e})"),
+    }
+}
+
 /// The no-op test: the device is only "already there" when the mode, the mask
 /// and the NR option all match. Comparing the mask alone once treated a
 /// 4G→auto switch as a no-op and silently sent nothing.
@@ -215,37 +255,49 @@ pub fn apply_bands(
         since: Instant::now(),
     });
 
-    // Guard 2: verify by reading back. This is also the "response lost" path  -
-    // we never re-send, we only look at what the device actually reports.
-    let verification = read_mask(client);
-    let got = match &verification {
-        Ok((_, Some(m))) => bands::from_hex(m).unwrap_or(0),
-        _ => 0,
-    };
+    // Guard 2: the device is the truth. Never re-send: read back and compare
+    // mode, both masks and the NR option with what was asked for.
+    let after = read_mode(client);
 
-    match (sent, got == target) {
-        (_, true) => WriteState::Success {
-            intent,
-            note: format!("verified, device mask 0x{}", bands::to_hex(target)),
-        },
-        (Err(e), false) => WriteState::Failed {
-            intent,
-            err: match &verification {
-                Err(ve) => format!("{e}; read-back failed too: {ve}"),
-                Ok(_) => format!("{e}; device still reports a different mask"),
-            },
-        },
-        (Ok(_), false) => {
-            let detail = match verification {
-                Ok((_, Some(m))) => format!("wanted 0x{} got 0x{m}", bands::to_hex(target)),
-                _ => "wanted a change, read-back gave nothing".to_string(),
-            };
-            WriteState::Failed {
+    if let Ok(current) = &after {
+        if matches_after(current, payload) {
+            return WriteState::Success {
                 intent,
-                err: format!("mismatch after write: {detail}"),
-            }
+                note: match &sent {
+                    Ok(_) => format!(
+                        "verified, device mode {} mask 0x{}",
+                        current.network_mode.clone().unwrap_or_else(|| "-".into()),
+                        bands::to_hex(target)
+                    ),
+                    Err(e) => format!("{}; read-back confirms the change", write_cause(e)),
+                },
+            };
         }
     }
+
+    let err = match (&sent, &after) {
+        (Err(e), Err(ve)) => format!("{}; read-back failed too: {ve}", write_cause(e)),
+        (Err(e), Ok(current)) => format!(
+            "{}; device still reports mode {} mask 0x{}",
+            write_cause(e),
+            current.network_mode.clone().unwrap_or_else(|| "-".into()),
+            current
+                .lte_band
+                .as_deref()
+                .and_then(bands::from_hex)
+                .map(bands::to_hex)
+                .unwrap_or_else(|| "-".into())
+        ),
+        (Ok(_), Ok(current)) => format!(
+            "mismatch after write: wanted mode {} mask 0x{}, device reports mode {} mask 0x{}",
+            payload.network_mode,
+            payload.network_band,
+            current.network_mode.clone().unwrap_or_else(|| "-".into()),
+            current.network_band.clone().unwrap_or_else(|| "-".into())
+        ),
+        (Ok(_), Err(ve)) => format!("write sent, but reading net/net-mode failed: {ve}"),
+    };
+    WriteState::Failed { intent, err }
 }
 
 /// DNS write: verify by reading `dhcp/settings` back.
@@ -312,7 +364,13 @@ pub fn apply_dns(
         }
     });
 
-    match (sent, verified) {
+    match (&sent, verified) {
+        // The value is right and the POST failed: the response was lost, not
+        // the setting. Say which, and never claim the write itself worked.
+        (Err(e), Some(true)) => WriteState::Success {
+            intent,
+            note: format!("{}; read-back confirms the change", write_cause(e)),
+        },
         (_, Some(true)) => WriteState::Success {
             intent,
             note: if target_manual {
@@ -323,7 +381,7 @@ pub fn apply_dns(
         },
         (Err(e), _) => WriteState::Failed {
             intent,
-            err: format!("{e}; read-back did not confirm"),
+            err: format!("{}; read-back did not confirm", write_cause(e)),
         },
         (Ok(_), Some(false)) => {
             let detail = after
@@ -462,5 +520,124 @@ mod tests {
     #[test]
     fn intent_label_lists_bands() {
         assert_eq!(intent().label(), "mode 03 · 3 bands (B1,B3,B5)");
+    }
+
+    /// The whole point of reading back: a refused POST must never be reported
+    /// as applied, even when the mask happens to match.
+    #[test]
+    fn a_refused_write_is_never_reported_as_verified() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], Some("3FFFFFFF"), None);
+        let state = apply_bands(&mut c, &payload, intent(), false, &mut |_| {});
+        match state {
+            WriteState::Failed { err, .. } => {
+                assert!(err.contains("refused"), "a 404 POST is a refusal: {err}")
+            }
+            other => panic!("a refused write must fail, got {other:?}"),
+        }
+    }
+
+    /// Same mask, different mode: comparing the mask alone called this applied.
+    #[test]
+    fn a_mode_only_change_is_not_reported_as_applied() {
+        let current = NetMode {
+            network_mode: Some("03".into()),
+            network_band: Some("800C5".into()),
+            lte_band: Some("800C5".into()),
+            network_option: Some("0".into()),
+        };
+        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], Some("3FFFFFFF"), None);
+        assert!(
+            !matches_after(&current, &payload),
+            "the device still reports mode 03, so nothing was applied"
+        );
+    }
+
+    #[test]
+    fn a_matching_device_state_is_reported_as_applied() {
+        let current = NetMode {
+            network_mode: Some("00".into()),
+            network_band: Some("3FFFFFFF".into()),
+            lte_band: Some("800C5".into()),
+            network_option: None,
+        };
+        let payload = bands::resolve("00", &[1, 3, 7, 8, 20], Some("3FFFFFFF"), None);
+        assert!(matches_after(&current, &payload));
+    }
+
+    /// A lost response is not a refusal; the message has to say which one it was.
+    #[test]
+    fn a_lost_response_is_named_as_such() {
+        let lost = ApiError::Network("timed out".into());
+        assert!(
+            write_cause(&lost).contains("response lost"),
+            "{}",
+            write_cause(&lost)
+        );
+        let refused = ApiError::Http(404);
+        assert!(
+            write_cause(&refused).contains("refused"),
+            "{}",
+            write_cause(&refused)
+        );
+    }
+
+    fn dns_intent() -> WriteIntent {
+        WriteIntent::SetDns {
+            primary: "9.9.9.9".into(),
+            secondary: "8.8.8.8".into(),
+        }
+    }
+
+    /// A POST that fails while the device already reports the target used to be
+    /// printed as "applied · verified". Now the note names the refusal and says
+    /// that only the read-back proves the state.
+    #[test]
+    fn a_refused_dns_post_is_never_called_verified() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DnsEcho);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let state = apply_dns(
+            &mut c,
+            "9.9.9.9",
+            "8.8.8.8",
+            dns_intent(),
+            true,
+            &mut |_| {},
+        );
+        match state {
+            WriteState::Success { note, .. } => {
+                assert!(note.contains("router refused"), "{note}");
+                assert!(note.contains("read-back confirms"), "{note}");
+                assert!(!note.contains("verified, device reports"), "{note}");
+            }
+            other => panic!("read-back matched, so this is a success: {other:?}"),
+        }
+    }
+
+    /// And when the read-back does not match, a refused POST is a failure with
+    /// the real cause, not "unknown router error".
+    #[test]
+    fn a_refused_dns_post_with_a_stale_device_fails() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let state = apply_dns(
+            &mut c,
+            "9.9.9.9",
+            "8.8.8.8",
+            dns_intent(),
+            true,
+            &mut |_| {},
+        );
+        match state {
+            WriteState::Failed { err, .. } => {
+                assert!(err.contains("refused"), "{err}");
+                assert!(!err.contains("verified"), "{err}");
+            }
+            other => panic!("a stale device after a refused POST must fail: {other:?}"),
+        }
     }
 }
