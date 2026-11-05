@@ -12,14 +12,17 @@ use crate::model::Snapshot;
 use crate::router::bands::BandPayload;
 use crate::router::HuaweiClient;
 use crate::write::{apply_bands, apply_dns, WriteIntent, WriteState};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum Cmd {
     Refresh,
     Pause(bool),
-    Stop,
+    /// Ask the worker to finish: it logs out, acknowledges, then exits. The UI
+    /// waits on the acknowledgement so the session is closed before the
+    /// process ends (a bare `break` left the router with an open session).
+    Stop(SyncSender<()>),
     /// Write path: the payload plus the intent it belongs to (for the UI).
     ApplyBands {
         payload: BandPayload,
@@ -206,7 +209,13 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             interval
         };
         match cmd_rx.recv_timeout(wait) {
-            Ok(Cmd::Stop) => break,
+            Ok(Cmd::Stop(ack)) => {
+                if client.is_authed() {
+                    client.logout();
+                }
+                let _ = ack.send(());
+                break;
+            }
             Ok(Cmd::Pause(p)) => {
                 paused = p;
                 continue;
@@ -246,7 +255,7 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             Ok(Cmd::Dump(path)) => {
                 // The TUI dump is a local file the user asked for; `x` has no
                 // redaction flag, and `dump --redact` is the shareable path.
-                match headless::dump_to(&mut client, &cfg.router.ip, &path, false) {
+                match headless::dump_to(&mut client, &cfg.router.ip, &path, false, false) {
                     Ok(bytes) => {
                         let _ = ev_tx.send(Ev::Notice(format!(
                             "dump written: {} ({bytes} bytes)",
@@ -370,6 +379,38 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cfg_for(mock: &crate::mock_cpe::MockCpe) -> Config {
+        let mut cfg = Config::default();
+        cfg.router.ip = mock.addr().to_string();
+        cfg.router.password = "pw".into();
+        cfg
+    }
+
+    #[test]
+    fn stopping_the_worker_logs_out_before_acknowledging() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
+        let (tx, _rx) = spawn(cfg_for(&mock), "pw".into());
+
+        // Give the worker its first login; it retries on its own schedule.
+        let mut waited = 0u32;
+        while mock.logins() == 0 && waited < 60 {
+            std::thread::sleep(Duration::from_millis(50));
+            waited += 1;
+        }
+        assert!(mock.logins() >= 1, "the worker never logged in");
+
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(0);
+        tx.send(Cmd::Stop(ack_tx)).unwrap();
+        ack_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("the worker must acknowledge the stop");
+        assert_eq!(
+            mock.logouts(),
+            1,
+            "the TUI promised logout on quit, and only one session was open"
+        );
+    }
 
     const SAMPLE: &str = "PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data.\n\
 64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time=12.3 ms\n\

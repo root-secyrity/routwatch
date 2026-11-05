@@ -15,6 +15,7 @@ pub mod headless;
 #[cfg(test)]
 mod mock_cpe;
 pub mod model;
+pub mod output;
 pub mod preflight;
 pub mod record;
 pub mod report;

@@ -272,7 +272,8 @@ pub fn ocean() -> Theme {
         warn: rgb(0xEA, 0xEC, 0x23),
         danger: rgb(0xFC, 0x39, 0x1F),
         border: muted,
-        selected: rgb(0x21, 0x6D, 0xFF),
+        // #216DFF put white at 4.47:1, just under AA; #174EA6 is 7.9:1.
+        selected: rgb(0x17, 0x4E, 0xA6),
         title: bright_white,
         inverse: rgb(0, 0, 0),
     }
@@ -291,7 +292,8 @@ pub fn solarized() -> Theme {
         warn: rgb(181, 137, 0),
         danger: rgb(220, 50, 47),
         border: base01,
-        selected: rgb(7, 54, 66),
+        // base02 carried 4.11:1 against fg; base03 clears AA at 4.75:1.
+        selected: rgb(0, 43, 54),
         title: rgb(181, 137, 0),
         inverse: rgb(0, 43, 54),
     }
@@ -348,7 +350,8 @@ pub fn sky() -> Theme {
         warn: rgb(0xEA, 0xEC, 0x23),
         danger,
         border: muted,
-        selected: rgb(0x21, 0x6D, 0xFF),
+        // Same AA fix as `ocean`: white on #216DFF is 4.47:1.
+        selected: rgb(0x17, 0x4E, 0xA6),
         title: rgb(0xFF, 0xFF, 0xFF),
         inverse: rgb(0, 0, 0),
     }
@@ -652,6 +655,14 @@ mod tests {
                     "{name}: muted text contrast {:.1}:1 below 3:1",
                     contrast(t.dim, bg)
                 );
+                // The client list draws the selected row as fg on `selected`.
+                if matches!(t.selected, Color::Rgb(..)) {
+                    assert!(
+                        contrast(t.fg, t.selected) >= 4.5,
+                        "{name}: selected-row text contrast {:.1}:1 below AA",
+                        contrast(t.fg, t.selected)
+                    );
+                }
             }
         }
     }
