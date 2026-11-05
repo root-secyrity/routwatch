@@ -25,7 +25,7 @@ provides=('routwatch')
 conflicts=('routwatch-git')
 options=('!lto' '!strip')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('4adb69eee45e86f99332863cca2ec528596c47c24c0eab0f178564e3049902eb')
+sha256sums=('8312ee442ad82193996b919c9086f6caa6b24de0fabf0acb61ba97d93f989349')
 
 build() {
 	cd "$pkgname-$pkgver"
