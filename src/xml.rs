@@ -120,7 +120,16 @@ fn unescape(s: &str) -> String {
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         let after = &rest[amp..];
-        let Some(semi) = after[..after.len().min(12)].find(';') else {
+        // Bound the search by characters, never by bytes: slicing at byte 12
+        // splits a multi-byte character and panics on a router note that
+        // carries Arabic text or an accented name after an ampersand.
+        let window_end = after
+            .char_indices()
+            .take(12)
+            .map(|(i, c)| i + c.len_utf8())
+            .last()
+            .unwrap_or(0);
+        let Some(semi) = after[..window_end].find(';') else {
             out.push('&');
             rest = &after[1..];
             continue;
@@ -198,5 +207,15 @@ mod tests {
         assert_eq!(n.value("sw"), Some("11.0.2.21(H329)"));
         let amp = parse("<response><a>x &amp; y &lt;z&gt;</a></response>").unwrap();
         assert_eq!(amp.value("a"), Some("x & y <z>"));
+    }
+
+    /// A router note with an ampersand followed by a multi-byte character used
+    /// to panic while looking for the entity's semicolon.
+    #[test]
+    fn a_multibyte_entity_tail_does_not_panic() {
+        let n = parse("<response><note>&abcdefghijé;</note></response>").unwrap();
+        assert_eq!(n.value("note"), Some("&abcdefghijé;"));
+        let arabic = parse("<response><note>&اختبار;</note></response>").unwrap();
+        assert_eq!(arabic.value("note"), Some("&اختبار;"));
     }
 }
