@@ -237,6 +237,8 @@ and covering wifi keys and every `*ssid`/`*ipaddress` spelling), and
 `snapshot --raw --redact` is refused outright rather than pretending to be safe.
 `routwatch share` writes the whole ask-for-a-model document - capabilities,
 endpoint field names, redacted snapshot - as `0600` in the current directory.
+`dump` follows the same rule for its output (json or text): `0600` inside a
+`0700` directory, and an existing file is replaced only with `--force`.
 
 ## Themes
 
