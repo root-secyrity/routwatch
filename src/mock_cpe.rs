@@ -13,7 +13,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -112,6 +112,8 @@ const HOST_LIST: &str = r#"<response><Hosts>
 pub struct MockCpe {
     addr: String,
     stop: Arc<AtomicBool>,
+    logins: Arc<AtomicUsize>,
+    logouts: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -122,18 +124,23 @@ impl MockCpe {
         let addr = listener.local_addr().expect("mock addr").to_string();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
+        let logins = Arc::new(AtomicUsize::new(0));
+        let logouts = Arc::new(AtomicUsize::new(0));
+        let (li, lo) = (Arc::clone(&logins), Arc::clone(&logouts));
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let _ = serve(stream, profile);
+                let _ = serve(stream, profile, &li, &lo);
             }
         });
         MockCpe {
             addr,
             stop,
+            logins,
+            logouts,
             thread: Some(thread),
         }
     }
@@ -141,6 +148,16 @@ impl MockCpe {
     /// `host:port`, the exact string a config's `ip` would carry.
     pub fn addr(&self) -> &str {
         &self.addr
+    }
+
+    /// Successful `POST /api/user/login` calls seen so far.
+    pub fn logins(&self) -> usize {
+        self.logins.load(Ordering::SeqCst)
+    }
+
+    /// `POST /api/user/logout` calls seen so far.
+    pub fn logouts(&self) -> usize {
+        self.logouts.load(Ordering::SeqCst)
     }
 }
 
@@ -156,7 +173,12 @@ impl Drop for MockCpe {
     }
 }
 
-fn serve(stream: TcpStream, profile: Profile) -> std::io::Result<()> {
+fn serve(
+    stream: TcpStream,
+    profile: Profile,
+    logins: &AtomicUsize,
+    logouts: &AtomicUsize,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -185,8 +207,14 @@ fn serve(stream: TcpStream, profile: Profile) -> std::io::Result<()> {
     }
 
     let (status, body) = match (method, path.as_str()) {
-        ("POST", "/api/user/login") => (200, "<response>OK</response>"),
-        ("POST", "/api/user/logout") => (200, "<response>OK</response>"),
+        ("POST", "/api/user/login") => {
+            logins.fetch_add(1, Ordering::SeqCst);
+            (200, "<response>OK</response>")
+        }
+        ("POST", "/api/user/logout") => {
+            logouts.fetch_add(1, Ordering::SeqCst);
+            (200, "<response>OK</response>")
+        }
         ("GET", p) => match profile.routes().into_iter().find(|(route, _)| *route == p) {
             Some((_, body)) => (200, body),
             None => (

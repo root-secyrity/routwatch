@@ -19,6 +19,8 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/mock_cpe.rs", include_str!("mock_cpe.rs")),
     ("src/scrub.rs", include_str!("scrub.rs")),
     ("src/share.rs", include_str!("share.rs")),
+    ("src/output.rs", include_str!("output.rs")),
+    ("src/worker.rs", include_str!("worker.rs")),
     ("src/ui/mod.rs", include_str!("ui/mod.rs")),
     ("src/ui/tiles.rs", include_str!("ui/tiles.rs")),
 ];
