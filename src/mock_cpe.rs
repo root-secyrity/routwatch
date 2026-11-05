@@ -25,6 +25,9 @@ pub enum Profile {
     H122373,
     /// A firmware without `wlan/host-list`: the panel must say so, not "0".
     NoHostList,
+    /// `dhcp/settings` answers the values a DNS test writes, so a refused POST
+    /// can still be read back as applied: the exact shape of the false success.
+    DnsEcho,
 }
 
 impl Profile {
@@ -44,10 +47,17 @@ impl Profile {
             ("/api/sms/sms-count", SMS_REFUSED),
         ];
         match self {
-            Profile::H122373 => routes.push(("/api/wlan/host-list", HOST_LIST)),
+            Profile::H122373 | Profile::DnsEcho => routes.push(("/api/wlan/host-list", HOST_LIST)),
             // A 404 is what a firmware that does not implement the endpoint
             // actually returns; the tool must read it as "not exposed".
             Profile::NoHostList => {}
+        }
+        if self == Profile::DnsEcho {
+            for (path, body) in routes.iter_mut() {
+                if *path == "/api/dhcp/settings" {
+                    *body = DHCP_ECHO;
+                }
+            }
         }
         routes
     }
@@ -90,6 +100,8 @@ const NET_MODE: &str =
 const NET_MODE_LIST: &str =
     "<response><BandList><Band>1</Band><Band>3</Band><Band>5</Band></BandList></response>";
 const DHCP: &str = "<response><PrimaryDns>203.0.113.1</PrimaryDns><SecondaryDns>203.0.113.2</SecondaryDns><Domains>mock.lan</Domains></response>";
+/// What a router that already carries the test's servers answers.
+const DHCP_ECHO: &str = "<response><DnsStatus>0</DnsStatus><PrimaryDns>9.9.9.9</PrimaryDns><SecondaryDns>8.8.8.8</SecondaryDns></response>";
 const SMS_REFUSED: &str = "<error><code>100005</code><message>No support</message></error>";
 const HOST_LIST: &str = r#"<response><Hosts>
 <Host><HostName>living-room-tv</HostName><IpAddress>192.168.8.101</IpAddress><MacAddress>02:00:00:00:00:01</MacAddress><WifiFrequency>5</WifiFrequency></Host>

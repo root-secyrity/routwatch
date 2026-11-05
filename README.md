@@ -231,11 +231,12 @@ Exit codes: `0` ok · `2` network/unreachable (the Waybar document still prints,
 `class: "offline"`) · `3` credentials or config.
 
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
-IMEI, MACs, WAN IP and client names with `(hidden)`, `dump --redact` does the same
-to the raw XML (keeping every tag name), and `snapshot --raw --redact` is refused
-outright rather than pretending to be safe. `routwatch share` writes the whole
-ask-for-a-model document - capabilities, endpoint field names, redacted snapshot -
-as `0600` in the current directory.
+IMEI, MACs, WAN IP, client names and addresses, and the operator name with
+`(hidden)`, `dump --redact` does the same to the raw XML (keeping every tag name,
+and covering wifi keys and every `*ssid`/`*ipaddress` spelling), and
+`snapshot --raw --redact` is refused outright rather than pretending to be safe.
+`routwatch share` writes the whole ask-for-a-model document - capabilities,
+endpoint field names, redacted snapshot - as `0600` in the current directory.
 
 ## Themes
 
@@ -292,7 +293,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 182 unit + 3 binary + 9 CLI tests, no router and no fixtures on disk
+cargo test                 # 193 unit + 3 binary + 9 CLI tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
