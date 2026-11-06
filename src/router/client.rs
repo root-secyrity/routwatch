@@ -41,6 +41,27 @@ fn build_agent(timeout_ms: u64) -> Agent {
     config.into()
 }
 
+/// The `sms/sms-list` body. `Ascending` is mandatory: without it the firmware
+/// answers 100005 (ERROR_FORMAT_ERROR), which looked like a denial.
+pub(crate) fn sms_list_body(page: u32) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><PageIndex>{page}</PageIndex><ReadCount>20</ReadCount><BoxType>1</BoxType><SortType>0</SortType><Ascending>0</Ascending><UnreadPreferred>0</UnreadPreferred></request>"
+    )
+}
+
+/// Huawei login codes: 108001 username, 108002 password, 108003 session already
+/// open, 108006 both, 108007 too many attempts.
+pub(crate) fn login_hint(code: u32) -> &'static str {
+    match code {
+        108001 => "wrong username",
+        108002 => "wrong password",
+        108003 => "a session is already open; retry in a moment",
+        108006 => "wrong username or password",
+        108007 => "too many login attempts; wait before retrying",
+        _ => "router refused the login",
+    }
+}
+
 fn map_ureq(e: UreqError) -> ApiError {
     match e {
         UreqError::StatusCode(code) => ApiError::Http(code),
@@ -254,11 +275,7 @@ impl HuaweiClient {
                 .value("code")
                 .and_then(|c| c.parse::<u32>().ok())
                 .unwrap_or(0);
-            let hint = match code {
-                108001 | 108003 | 108006 => "wrong username or password",
-                108002 => "too many login attempts; wait before retrying",
-                _ => "router refused the login",
-            };
+            let hint = login_hint(code);
             return Err(ApiError::Auth(format!("{hint} (code {code})")));
         }
         if node.text.trim() != "OK" {
@@ -316,10 +333,7 @@ impl HuaweiClient {
 
     /// SMS inbox. The firmware wants POST here; GET answers 125002.
     pub fn sms_list(&mut self, page: u32) -> Result<Node, ApiError> {
-        let body = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><PageIndex>{page}</PageIndex><ReadCount>20</ReadCount><BoxType>1</BoxType><SortType>0</SortType><UnreadPreferred>0</UnreadPreferred></request>"
-        );
-        self.post("sms/sms-list", &body)
+        self.post("sms/sms-list", &sms_list_body(page))
     }
 
     pub fn pin_status(&mut self) -> Result<Node, ApiError> {
@@ -463,5 +477,24 @@ mod tests {
             encode_password("admin", "pw", 0, "TOK"),
             STANDARD.encode(b"pw")
         );
+    }
+
+    #[test]
+    fn sms_list_body_carries_the_mandatory_ascending_field() {
+        let body = sms_list_body(2);
+        assert!(body.contains("<PageIndex>2</PageIndex>"), "{body}");
+        assert!(
+            body.contains("<Ascending>0</Ascending>"),
+            "the firmware answers 100005 without it: {body}"
+        );
+    }
+
+    #[test]
+    fn login_codes_match_the_huawei_reference() {
+        assert_eq!(login_hint(108001), "wrong username");
+        assert_eq!(login_hint(108002), "wrong password");
+        assert!(login_hint(108003).contains("already open"));
+        assert_eq!(login_hint(108006), "wrong username or password");
+        assert!(login_hint(108007).contains("too many"));
     }
 }
