@@ -39,7 +39,7 @@ pub enum ApiError {
 pub fn classify(code: u32) -> ApiError {
     match code {
         100003 => ApiError::Unsupported(code),
-        100005 => ApiError::Denied(code),
+        100005 => ApiError::Invalid(code), // ERROR_FORMAT_ERROR, not a denial
         125002 | 125003 => ApiError::Invalid(code),
         100002 => ApiError::Busy(code),
         _ => ApiError::Router(code),
@@ -76,5 +76,20 @@ impl ApiError {
             ApiError::Quiet(code) => *code,
             _ => 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn firmware_codes_keep_their_meaning() {
+        assert_eq!(classify(100003), ApiError::Unsupported(100003));
+        assert_eq!(
+            classify(100005),
+            ApiError::Invalid(100005),
+            "100005 is ERROR_FORMAT_ERROR, not a denial"
+        );
     }
 }

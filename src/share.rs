@@ -149,7 +149,7 @@ mod tests {
                     id: "sms/sms-count".into(),
                     state: "failed".into(),
                     reason: "firmware_error_100005".into(),
-                    detail: "not supported by this firmware (100005)".into(),
+                    detail: "request rejected by the firmware (100005)".into(),
                     next_check: None,
                 },
             ],
