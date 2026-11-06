@@ -1,10 +1,8 @@
 //! Small drawing helpers. No widget library beyond ratatui primitives, so the
 //! braille sparkline can render the same "dots" look netwatch uses.
 
-use crate::theme::GraphStyle;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use std::collections::VecDeque;
 
 pub fn bytes(v: u64) -> String {
     const K: f64 = 1024.0;
@@ -87,26 +85,6 @@ pub fn bar<'a>(fraction: f64, width: usize, color: Color, dim: Color) -> Line<'a
 /// Sparkline scaled to a FIXED range (used for signal metrics, where the
 /// physical domain is known). Auto-scaling made a single sample paint one column
 /// at the right edge - invisible - and made two series incomparable.
-pub fn spark_scaled<'a>(
-    values: &VecDeque<f64>,
-    width: usize,
-    height: usize,
-    style: GraphStyle,
-    color: Color,
-    min: f64,
-    max: f64,
-) -> Vec<Line<'a>> {
-    crate::ui::chart::spark_lines_scaled(
-        values,
-        width,
-        height,
-        style.is_bars(),
-        color,
-        min,
-        max,
-        crate::ui::chart::ChartOpts::default(),
-    )
-}
 /// Segmented threshold ruler: the bar itself carries the quality zones, and the
 /// fill shows where the reading sits. Replaces the circular gauge for signal
 /// metrics (circles stay for download/upload).
@@ -184,22 +162,6 @@ pub fn ruler<'a>(value: f64, spec: &RulerSpec, ok: Color, warn: Color, danger: C
     Line::from(spans)
 }
 /// Sparkline in one of the three styles the plan promises.
-pub fn spark<'a>(
-    values: &VecDeque<f64>,
-    width: usize,
-    height: usize,
-    style: GraphStyle,
-    color: Color,
-) -> Vec<Line<'a>> {
-    crate::ui::chart::spark_auto(
-        values,
-        width,
-        height,
-        style.is_bars(),
-        color,
-        crate::ui::chart::ChartOpts::default(),
-    )
-}
 /// Braille canvas: 2 dots horizontally and 4 vertically per cell, filled from the
 pub fn title_style(color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
@@ -383,43 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn braille_renders_requested_size() {
-        let mut v = VecDeque::new();
-        for i in 0..50 {
-            v.push_back(i as f64);
-        }
-        let lines = spark(&v, 20, 3, GraphStyle::Braille, Color::Reset);
-        assert_eq!(lines.len(), 3);
-        let text: String = lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.clone())
-                    .collect::<String>()
-            })
-            .collect();
-        assert_eq!(text.chars().count(), 60, "20 cells x 3 rows");
-        let painted = text.chars().filter(|c| *c != '\u{2800}').count();
-        assert!(painted > 20, "expected filled cells, got {painted}");
-        // newest sample sits at the right edge, so the last column must be painted
-        let last_col_painted = (0..3).any(|row| {
-            text.chars()
-                .nth(row * 20 + 19)
-                .map(|c| c != '\u{2800}')
-                .unwrap_or(false)
-        });
-        assert!(last_col_painted, "right edge must show the newest value");
-    }
-
-    #[test]
-    fn bars_are_one_row() {
-        let v: VecDeque<f64> = (0..10).map(|i| i as f64).collect();
-        let lines = spark(&v, 10, 3, GraphStyle::Bars, Color::Reset);
-        assert_eq!(lines.len(), 1);
-    }
-
-    #[test]
     fn ruler_marks_the_value_and_paints_zones() {
         let spec = RulerSpec {
             min: -140.0,
@@ -488,95 +413,6 @@ mod tests {
             Some(Color::Indexed(2)),
             "top of range reads good"
         );
-    }
-
-    #[test]
-    fn fixed_range_spark_shows_a_single_sample() {
-        let mut v = VecDeque::new();
-        v.push_back(-96.0);
-        let lines = spark_scaled(&v, 20, 2, GraphStyle::Braille, Color::Reset, -140.0, -44.0);
-        let last: String = lines
-            .last()
-            .unwrap()
-            .spans
-            .iter()
-            .map(|s| s.content.clone())
-            .collect();
-        assert_eq!(last.chars().count(), 20, "full width is rendered");
-        assert_ne!(
-            last.chars().last(),
-            Some('\u{2800}'),
-            "the newest sample must paint the right edge: {last:?}"
-        );
-
-        // a fixed domain also means the same value paints the same height
-        let mut many = VecDeque::new();
-        for _ in 0..40 {
-            many.push_back(-96.0);
-        }
-        let steady = spark_scaled(
-            &many,
-            20,
-            2,
-            GraphStyle::Braille,
-            Color::Reset,
-            -140.0,
-            -44.0,
-        );
-        let painted: usize = steady
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .flat_map(|s| s.content.chars())
-            .filter(|c| *c != '\u{2800}')
-            .count();
-        // -96 sits at 46% of the -140..-44 domain: the bottom line only
-        assert_eq!(
-            painted, 20,
-            "the lower half is filled, the upper half is not"
-        );
-
-        let mut strong = VecDeque::new();
-        for _ in 0..40 {
-            strong.push_back(-44.0);
-        }
-        let full = spark_scaled(
-            &strong,
-            20,
-            2,
-            GraphStyle::Braille,
-            Color::Reset,
-            -140.0,
-            -44.0,
-        );
-        let painted: usize = full
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .flat_map(|s| s.content.chars())
-            .filter(|c| *c != '\u{2800}')
-            .count();
-        assert_eq!(painted, 40, "a top-of-range value fills both lines");
-    }
-
-    #[test]
-    fn a_negative_domain_keeps_its_middle_height() {
-        // -96 of a -140..-44 domain sits at 46%: seven of sixteen sub-rows, so
-        // two of the four rows carry ink. The broken version cast the domain to
-        // u64 (min 0, max 1), so every sample collapsed onto the baseline row
-        // and this counted 1.
-        let mut v = VecDeque::new();
-        for _ in 0..40 {
-            v.push_back(-96.0);
-        }
-        let lines = spark_scaled(&v, 20, 4, GraphStyle::Braille, Color::Reset, -140.0, -44.0);
-        let painted_rows = lines
-            .iter()
-            .filter(|l| {
-                l.spans
-                    .iter()
-                    .any(|s| s.content.chars().any(|c| c != ' ' && c != '\u{2800}'))
-            })
-            .count();
-        assert_eq!(painted_rows, 2, "46% of the domain fills two of four rows");
     }
 
     #[test]

@@ -252,27 +252,67 @@ fn draw_map(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let cols = inner.width.saturating_sub(1) as usize;
-    let samples: Vec<f64> = app.history_rsrp.iter().copied().collect();
-    let start = samples.len().saturating_sub(cols);
-    let mut line = Vec::with_capacity(cols);
-    for sample in &samples[start..] {
-        line.push(Span::styled(
-            "■",
-            Style::default().fg(theme.rsrp_color(*sample as f32)),
-        ));
+    let refresh = app.refresh_ms.max(1);
+    let per_sample = (refresh / 1000).max(1);
+    let secs = (app.history_rsrp.len() as u64 * refresh / 1000).max(1);
+
+    // The same window as the throughput plot, bucketed by the worst reading: a
+    // four-second dip is the thing worth seeing, not the best sample inside an
+    // eleven-second slot.
+    let shifted: Vec<u64> = app
+        .history_rsrp
+        .iter()
+        .map(|v| (v + 140.0).clamp(0.0, 96.0) as u64)
+        .collect();
+    let slots = crate::ui::chart::resample_min_to_window(&shifted, per_sample, secs, cols);
+    let mut line = Vec::with_capacity(slots.len());
+    for slot in &slots {
+        match slot {
+            Some(v) => line.push(Span::styled(
+                "■",
+                Style::default().fg(theme.rsrp_color(*v as f32 - 140.0)),
+            )),
+            None => line.push(Span::raw(" ")),
+        }
     }
     f.render_widget(
         Paragraph::new(Line::from(line)),
         Rect { height: 1, ..inner },
     );
+
+    // Two facts the squares cannot carry themselves: how much time one of them
+    // covers, and what the three colours mean.
+    let per_cell = (secs as f64 / cols as f64).max(1.0);
+    let caption = truncate(
+        &format!("last {secs}s · 1■ = {per_cell:.0}s"),
+        inner.width as usize,
+    );
+    if inner.height >= 4 {
+        let legend = Line::from(vec![
+            Span::styled("■", Style::default().fg(theme.rsrp_color(-70.0))),
+            Span::styled("good ", Style::default().fg(theme.dim)),
+            Span::styled("■", Style::default().fg(theme.rsrp_color(-95.0))),
+            Span::styled("fair ", Style::default().fg(theme.dim)),
+            Span::styled("■", Style::default().fg(theme.rsrp_color(-110.0))),
+            Span::styled("poor", Style::default().fg(theme.dim)),
+        ]);
+        f.render_widget(
+            Paragraph::new(legend),
+            Rect {
+                y: inner.y + 1,
+                height: 1,
+                ..inner
+            },
+        );
+    }
     if inner.height >= 3 {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                truncate("1 ■ = 1 sample", inner.width as usize),
+                caption,
                 Style::default().fg(theme.dim),
             ))),
             Rect {
-                y: inner.y + 2,
+                y: inner.y + inner.height - 1,
                 height: 1,
                 ..inner
             },
@@ -303,6 +343,24 @@ mod tests {
     }
 
     #[test]
+    fn the_signal_tiles_draw_a_trend_strip() {
+        let mut app = app();
+        app.history_sinr = (0..20).map(|i| 5.0 + i as f64 * 0.5).collect();
+        let text = frame(&app);
+        let band: Vec<&str> = text.lines().skip(2).take(7).collect();
+        let braille = band
+            .iter()
+            .flat_map(|l| l.chars())
+            .filter(|c| ('\u{2801}'..='\u{28ff}').contains(c))
+            .count();
+        assert!(braille >= 40, "RSRP and SINR each draw a strip: {braille}");
+        assert!(
+            band.iter().any(|l| l.contains('■')),
+            "CLIENTS keeps its meter"
+        );
+    }
+
+    #[test]
     fn the_tiles_say_what_they_measured() {
         let text = frame(&app());
         for word in ["RSRP", "SINR", "CLIENTS", "SIGNAL MAP"] {
@@ -313,8 +371,12 @@ mod tests {
     }
 
     #[test]
-    fn the_map_states_its_unit() {
-        assert!(frame(&app()).contains("1 ■ = 1 sample"));
+    fn the_map_states_its_unit_and_its_span() {
+        // 20 samples of 2 s: the strip covers the dashboard's own window and
+        // names it, instead of silently showing the newest `cols` samples.
+        let text = frame(&app());
+        assert!(text.contains("1■"), "the unit is stated: {text}");
+        assert!(text.contains("last 40s"), "the span is named");
     }
 
     #[test]

@@ -90,12 +90,16 @@ pub fn magnitude_ramp(base: Color, bg: Color) -> Ramp {
         .map(|step| MIN_FADE_ALPHA + step as f32 / 100.0)
         .find(|&alpha| contrast(fade_color(base, bg, alpha), behind) >= MIN_RAMP_CONTRAST)
         .unwrap_or(1.0);
+    // The peak moves away from the background, not toward white: on a light
+    // panel (paper) "brighter" fades into the page, and the measured contrast
+    // of the top stops fell to 2.5:1 before this.
+    let peak = away_from(behind);
     Ramp::new(vec![
         fade_color(base, bg, floor),
         fade_color(base, bg, floor + (1.0 - floor) * 0.46),
         base,
-        lighten(base, 0.42),
-        lighten(base, 0.76),
+        lerp(base, peak, 0.42),
+        lerp(base, peak, 0.76),
     ])
 }
 
@@ -173,10 +177,6 @@ pub fn lerp(a: Color, b: Color, f: f32) -> Color {
     }
 }
 
-pub fn lighten(c: Color, f: f32) -> Color {
-    lerp(c, Color::Rgb(255, 255, 255), f)
-}
-
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t)
         .round()
@@ -210,13 +210,19 @@ fn contrast(c: Color, behind: (u8, u8, u8)) -> f64 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
-/// `c`, moved away from the background only as far as `min` needs.
-fn with_contrast(c: Color, behind: (u8, u8, u8), min: f64) -> Color {
-    let away = if luminance(behind) < 0.18 {
+/// White on a dark background, black on a light one: the direction that adds
+/// contrast for a colour sitting on `behind`.
+fn away_from(behind: (u8, u8, u8)) -> Color {
+    if luminance(behind) < 0.18 {
         Color::Rgb(255, 255, 255)
     } else {
         Color::Rgb(0, 0, 0)
-    };
+    }
+}
+
+/// `c`, moved away from the background only as far as `min` needs.
+fn with_contrast(c: Color, behind: (u8, u8, u8), min: f64) -> Color {
+    let away = away_from(behind);
     (0..=100)
         .map(|step| lerp(c, away, step as f32 / 100.0))
         .find(|&moved| contrast(moved, behind) >= min)
@@ -425,7 +431,6 @@ pub fn spark_lines(
     if width == 0 || height == 0 {
         return Vec::new();
     }
-    let height = if bars { 1 } else { height };
     let (min, max) = if max <= min {
         (min, min + 1)
     } else {
@@ -536,6 +541,44 @@ pub fn resample_to_window(
         let (first, last) = (to_slot(oldest), to_slot(newest).min(slots - 1));
         for slot in out.iter_mut().take(last + 1).skip(first) {
             *slot = (*slot).max(v);
+        }
+    }
+    out
+}
+
+/// Right-align `data` onto one time window of `slots` columns, keeping the
+/// smallest sample that lands in each slot.
+///
+/// The companion of [`resample_to_window`] for a quality series: what matters
+/// there is the dip, so the bucket takes the worst reading instead of the
+/// biggest. `None` means no sample covered that slot, which must stay blank
+/// rather than read as "no signal".
+pub fn resample_min_to_window(
+    data: &[u64],
+    secs_per_sample: u64,
+    window_secs: u64,
+    slots: usize,
+) -> Vec<Option<u64>> {
+    let mut out = vec![None; slots];
+    if slots == 0 || window_secs == 0 || data.is_empty() {
+        return out;
+    }
+    let secs_per_sample = secs_per_sample.max(1);
+    for (i, &v) in data.iter().enumerate() {
+        let age = (data.len() - 1 - i) as u64 * secs_per_sample;
+        if age >= window_secs {
+            continue;
+        }
+        let newest = window_secs - age - 1;
+        let oldest = newest.saturating_sub(secs_per_sample - 1);
+        let to_slot =
+            |from_left: u64| (from_left as u128 * slots as u128 / window_secs as u128) as usize;
+        let (first, last) = (to_slot(oldest), to_slot(newest).min(slots - 1));
+        for slot in out.iter_mut().take(last + 1).skip(first) {
+            *slot = Some(match *slot {
+                Some(current) => current.min(v),
+                None => v,
+            });
         }
     }
     out
@@ -838,15 +881,31 @@ mod tests {
     }
 
     #[test]
-    fn bars_keep_the_one_row_contract() {
+    fn bars_fill_the_requested_height() {
+        // A block sparkline used to be clamped to one row whatever the caller
+        // asked for, so a three-row slot in the traffic and speed panels left
+        // two rows empty. The renderer already stacks eighths; only the clamp
+        // held it back.
         let mut v: VecDeque<f64> = VecDeque::new();
         for i in 0..10 {
             v.push_back(i as f64);
         }
-        // `widgets::bars_are_one_row` pins this: a block sparkline is one row
-        // of eighths, so `height` must not multiply it.
         let lines = spark_auto(&v, 10, 3, true, Color::Green, ChartOpts::default());
-        assert_eq!(lines.len(), 1, "bars are one row");
+        assert_eq!(lines.len(), 3, "bars use the height they are given");
+        let painted = |row: usize| -> usize {
+            lines[row]
+                .spans
+                .iter()
+                .flat_map(|s| s.content.chars())
+                .filter(|c| *c != ' ')
+                .count()
+        };
+        assert!(
+            painted(0) < painted(2),
+            "the bar grows upward: top {} bottom {}",
+            painted(0),
+            painted(2)
+        );
     }
 
     #[test]
@@ -929,6 +988,148 @@ mod tests {
         // is a full block, not braille: a full sample fills its one row.
         assert_eq!(buf[(1, 0)].symbol(), "█", "rx is a bottom-anchored block");
         assert_eq!(buf[(1, 2)].symbol(), "█", "tx reaches the bottom edge");
+    }
+
+    #[test]
+    fn a_light_panel_keeps_its_peak_contrast() {
+        // paper's own background: the top of the ramp must move toward black,
+        // not toward white, or the peak washes out (measured 2.5:1 before).
+        let bg = (0xF5u8, 0xF5u8, 0xF2u8);
+        let r = magnitude_ramp(Color::Rgb(0x00, 0x64, 0x28), Color::Rgb(0xF5, 0xF5, 0xF2));
+        for f in [0.0f32, 0.5, 1.0] {
+            let c = contrast(r.at(f), bg);
+            assert!(c >= 4.0, "stop {f} under 4:1 on a light panel: {c:.2}");
+        }
+    }
+
+    #[test]
+    fn a_braille_sparkline_paints_its_right_edge() {
+        let mut v: VecDeque<f64> = VecDeque::new();
+        for i in 0..50 {
+            v.push_back(i as f64);
+        }
+        let lines = spark_auto(&v, 20, 3, false, Color::Reset, ChartOpts::default());
+        assert_eq!(lines.len(), 3);
+        let text: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.clone())
+                    .collect::<String>()
+            })
+            .collect();
+        assert_eq!(text.chars().count(), 60, "20 cells x 3 rows");
+        let painted = text.chars().filter(|c| *c != '\u{2800}').count();
+        assert!(painted > 20, "expected filled cells, got {painted}");
+        let last_col_painted = (0..3).any(|row| {
+            text.chars()
+                .nth(row * 20 + 19)
+                .map(|c| c != '\u{2800}')
+                .unwrap_or(false)
+        });
+        assert!(last_col_painted, "right edge must show the newest value");
+    }
+
+    #[test]
+    fn a_scaled_series_keeps_its_middle_height() {
+        // -96 of a -140..-44 domain sits at 46%: seven of sixteen sub-rows, so
+        // two of the four rows carry ink. Casting the negative domain to u64
+        // (min 0, max 1) collapsed every sample onto the baseline row instead,
+        // and a baseline dot still paints, so the count used to stay at 1.
+        let mut v: VecDeque<f64> = VecDeque::new();
+        for _ in 0..40 {
+            v.push_back(-96.0);
+        }
+        let lines = spark_lines_scaled(
+            &v,
+            20,
+            4,
+            false,
+            Color::Reset,
+            -140.0,
+            -44.0,
+            ChartOpts::default(),
+        );
+        let painted_rows = lines
+            .iter()
+            .filter(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.chars().any(|c| c != ' ' && c != '\u{2800}'))
+            })
+            .count();
+        assert_eq!(painted_rows, 2, "46% of the domain fills two of four rows");
+    }
+
+    #[test]
+    fn a_single_scaled_sample_is_visible_at_the_edge() {
+        let mut v: VecDeque<f64> = VecDeque::new();
+        v.push_back(-96.0);
+        let lines = spark_lines_scaled(
+            &v,
+            20,
+            2,
+            false,
+            Color::Reset,
+            -140.0,
+            -44.0,
+            ChartOpts::default(),
+        );
+        let last: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.clone())
+            .collect();
+        assert_eq!(last.chars().count(), 20, "full width is rendered");
+        assert_ne!(
+            last.chars().last(),
+            Some('\u{2800}'),
+            "the newest sample must paint the right edge"
+        );
+    }
+
+    #[test]
+    fn a_quality_window_keeps_the_worst_sample() {
+        // Ten one-second samples over a twelve-second window: the dip of 1
+        // must own its bucket, and every bucket a sample covers is filled.
+        let mut data = [9u64; 10];
+        data[3] = 1;
+        let out = resample_min_to_window(&data, 1, 12, 4);
+        assert_eq!(out[1], Some(1), "the dip owns its slot: {out:?}");
+        assert!(out.iter().all(Option::is_some), "no gaps: {out:?}");
+        assert_eq!(
+            resample_min_to_window(&[5u64], 1, 10, 5).len(),
+            5,
+            "one sample still fills the requested width"
+        );
+    }
+
+    #[test]
+    fn every_shipped_theme_keeps_its_ramp_readable() {
+        // The runtime assumes a dark background when the theme has none, and a
+        // light one when it paints its own: both directions must clear 4:1 at
+        // the floor, the body and the peak.
+        let themes = [
+            crate::theme::terminal(),
+            crate::theme::dark(),
+            crate::theme::ocean(),
+            crate::theme::solarized(),
+            crate::theme::dracula(),
+            crate::theme::nord(),
+            crate::theme::sky(),
+            crate::theme::paper(),
+        ];
+        for t in themes {
+            let behind = to_rgb(t.bg, ASSUMED_DARK_BG);
+            let r = magnitude_ramp(t.ok, t.bg);
+            for f in [0.0f32, 0.5, 1.0] {
+                let c = contrast(r.at(f), behind);
+                assert!(c >= MIN_RAMP_CONTRAST, "{} stop {f}: {c:.2}", t.id);
+            }
+        }
     }
 
     fn luminance_of(c: Color) -> f64 {

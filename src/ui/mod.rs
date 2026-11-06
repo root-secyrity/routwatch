@@ -961,6 +961,30 @@ mod tests {
     }
 
     #[test]
+    fn the_signal_graphs_keep_their_vertical_range() {
+        let ink = |app: &App| -> usize {
+            let text = render_to_string(app, 130, 40);
+            let tail = text
+                .split_once("SIGNAL GRAPHS")
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_default();
+            tail.chars()
+                .filter(|c| ('\u{2801}'..='\u{28ff}').contains(c))
+                .count()
+        };
+        let mut floor = fixture_app();
+        floor.tab = crate::app::Tab::Signal;
+        floor.history_rsrp = (0..60).map(|_| -140.0).collect();
+        let mut middle = fixture_app();
+        middle.tab = crate::app::Tab::Signal;
+        middle.history_rsrp = (0..60).map(|_| -92.0).collect();
+        assert!(
+            ink(&middle) > ink(&floor),
+            "a mid-domain RSRP must paint more rows than the floor"
+        );
+    }
+
+    #[test]
     fn dashboard_renders_expected_fields() {
         let app = fixture_app();
         let text = render_to_string(&app, 100, 30);
