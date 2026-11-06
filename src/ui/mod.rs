@@ -1,6 +1,7 @@
 //! Frame composition: header, tab bar, body, status line, help overlay.
 
 pub mod tabs;
+pub mod chart;
 pub mod tiles;
 pub mod widgets;
 
