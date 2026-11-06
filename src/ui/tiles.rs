@@ -14,6 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use std::collections::VecDeque;
 
 /// Rows the band needs. The dashboard drops it below its own minimum.
 pub const HEIGHT: u16 = 7;
@@ -25,6 +26,9 @@ struct Tile {
     note: String,
     /// 0..1 fill for the small meter under the note.
     share: Option<f64>,
+    /// A one-row trend strip drawn in the meter's place, in the metric's own
+    /// domain so two readings stay comparable.
+    trend: Option<(Vec<u64>, u64)>,
     color: Color,
 }
 
@@ -59,7 +63,7 @@ pub fn instruments(f: &mut Frame, area: Rect, app: &App) {
 
 fn paint(f: &mut Frame, rect: Rect, slot: &Slot, app: &App) {
     match slot {
-        Slot::Metric(tile) => draw_tile(f, rect, &app.theme, tile.clone()),
+        Slot::Metric(tile) => draw_tile(f, rect, &app.theme, tile.clone(), app.chart_opts()),
         Slot::Map => draw_map(f, rect, app),
     }
 }
@@ -78,6 +82,13 @@ fn slots(app: &App) -> Vec<Slot> {
             .unwrap_or_else(|| "not reported".into()),
         note: app.signal_quality().to_string(),
         share: rsrp.map(|v| f64::from(crate::headless::rsrp_percent(v)) / 100.0),
+        trend: Some((
+            app.history_rsrp
+                .iter()
+                .map(|v| (v + 140.0).clamp(0.0, 96.0) as u64)
+                .collect(),
+            96,
+        )),
         color: rsrp.map(|v| theme.rsrp_color(v)).unwrap_or(theme.dim),
     }));
 
@@ -98,6 +109,13 @@ fn slots(app: &App) -> Vec<Slot> {
             })
             .unwrap_or_else(|| "no sample".into()),
         share: sinr.map(|v| f64::from(((v + 20.0) / 50.0).clamp(0.0, 1.0))),
+        trend: Some((
+            app.history_sinr
+                .iter()
+                .map(|v| (v + 20.0).clamp(0.0, 50.0) as u64)
+                .collect(),
+            50,
+        )),
         color: sinr.map(|v| theme.sinr_color(v)).unwrap_or(theme.dim),
     }));
 
@@ -107,6 +125,7 @@ fn slots(app: &App) -> Vec<Slot> {
         value: clients.to_string(),
         note: "2.4/5 GHz".to_string(),
         share: Some((clients as f64 / 16.0).clamp(0.0, 1.0)),
+        trend: None,
         color: theme.accent,
     }));
 
@@ -117,6 +136,7 @@ fn slots(app: &App) -> Vec<Slot> {
                 value: dur(secs),
                 note: "since boot".to_string(),
                 share: None,
+                trend: None,
                 color: theme.accent,
             }));
         }
@@ -135,6 +155,7 @@ fn slots(app: &App) -> Vec<Slot> {
             value: format!("{temp:.0} °C"),
             note: note.to_string(),
             share: Some((f64::from(temp) / 100.0).clamp(0.0, 1.0)),
+            trend: None,
             color,
         }));
     }
@@ -143,7 +164,13 @@ fn slots(app: &App) -> Vec<Slot> {
     slots
 }
 
-fn draw_tile(f: &mut Frame, area: Rect, theme: &Theme, tile: Tile) {
+fn draw_tile(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    tile: Tile,
+    opts: crate::ui::chart::ChartOpts,
+) {
     let block = panel(tile.title.to_string(), theme);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -167,7 +194,20 @@ fn draw_tile(f: &mut Frame, area: Rect, theme: &Theme, tile: Tile) {
         ))),
         note,
     );
-    if let Some(share) = tile.share {
+    if let Some((trend, span)) = &tile.trend {
+        let values: VecDeque<f64> = trend.iter().map(|&v| v as f64).collect();
+        let line = crate::ui::chart::spark_lines(
+            &values,
+            area.width.saturating_sub(2) as usize,
+            1,
+            false,
+            tile.color,
+            0,
+            *span,
+            opts,
+        );
+        f.render_widget(Paragraph::new(line), rest);
+    } else if let Some(share) = tile.share {
         meter(f, rest, share, tile.color, theme);
     }
 }
