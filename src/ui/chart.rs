@@ -167,11 +167,7 @@ pub fn lerp(a: Color, b: Color, f: f32) -> Color {
     match (rgb(a), rgb(b)) {
         (Some((ar, ag, ab)), Some((br, bgc, bb))) => {
             let f = f.clamp(0.0, 1.0);
-            Color::Rgb(
-                lerp_u8(ar, br, f),
-                lerp_u8(ag, bgc, f),
-                lerp_u8(ab, bb, f),
-            )
+            Color::Rgb(lerp_u8(ar, br, f), lerp_u8(ag, bgc, f), lerp_u8(ab, bb, f))
         }
         _ => a,
     }
@@ -182,7 +178,9 @@ pub fn lighten(c: Color, f: f32) -> Color {
 }
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+    (a as f32 + (b as f32 - a as f32) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 fn rgb(c: Color) -> Option<(u8, u8, u8)> {
@@ -428,7 +426,11 @@ pub fn spark_lines(
         return Vec::new();
     }
     let height = if bars { 1 } else { height };
-    let (min, max) = if max <= min { (min, min + 1) } else { (min, max) };
+    let (min, max) = if max <= min {
+        (min, min + 1)
+    } else {
+        (min, max)
+    };
     let data: Vec<u64> = values
         .iter()
         .map(|v| (v.max(0.0) as u64).clamp(min, max) - min)
@@ -499,11 +501,7 @@ pub fn spark_auto(
     base: Color,
     opts: ChartOpts,
 ) -> Vec<Line<'static>> {
-    let max = values
-        .iter()
-        .cloned()
-        .fold(0.0_f64, f64::max)
-        .max(1.0) as u64;
+    let max = values.iter().cloned().fold(0.0_f64, f64::max).max(1.0) as u64;
     spark_lines(values, width, height, bars, base, 0, max, opts)
 }
 
@@ -515,7 +513,12 @@ pub fn spark_auto(
 /// coarser than a column, and the plot then reads as dropouts instead of a
 /// steady series. Averaging is wrong for the same job: this is a spike hunt,
 /// and a one-second stall disappears into the quiet seconds around it.
-pub fn resample_to_window(data: &[u64], secs_per_sample: u64, window_secs: u64, slots: usize) -> Vec<u64> {
+pub fn resample_to_window(
+    data: &[u64],
+    secs_per_sample: u64,
+    window_secs: u64,
+    slots: usize,
+) -> Vec<u64> {
     let mut out = vec![0u64; slots];
     if slots == 0 || window_secs == 0 || data.is_empty() {
         return out;
@@ -579,7 +582,10 @@ pub fn render_mirrored_scaled(
     let rx_h = plot.height - tx_h;
     render_half(
         buf,
-        Rect { height: rx_h, ..plot },
+        Rect {
+            height: rx_h,
+            ..plot
+        },
         rx,
         rx_max,
         bars,
@@ -589,13 +595,20 @@ pub fn render_mirrored_scaled(
     );
     render_half(
         buf,
-        Rect { y: plot.y + rx_h, height: tx_h, ..plot },
+        Rect {
+            y: plot.y + rx_h,
+            height: tx_h,
+            ..plot
+        },
         tx,
         tx_max,
         bars,
         tx_color,
         // The zero row the rx half draws is this half's floor too.
-        ChartOpts { baseline: false, ..opts },
+        ChartOpts {
+            baseline: false,
+            ..opts
+        },
         true,
     );
     rx_h
@@ -726,7 +739,12 @@ mod tests {
     #[test]
     fn the_dimmest_stop_stays_readable_on_the_background() {
         let bg = Color::Rgb(0x10, 0x10, 0x10);
-        for base in [Color::Green, Color::Cyan, Color::Yellow, Color::Rgb(0xC6, 0x28, 0x28)] {
+        for base in [
+            Color::Green,
+            Color::Cyan,
+            Color::Yellow,
+            Color::Rgb(0xC6, 0x28, 0x28),
+        ] {
             let r = magnitude_ramp(base, bg);
             let c = contrast(r.at(0.0), (0x10, 0x10, 0x10));
             assert!(c >= 4.0, "floor contrast {c:.2} under 4.0 for {base:?}");
@@ -746,7 +764,11 @@ mod tests {
         let area = buf.area;
         let r = Ramp::flat(Color::Green);
         area_graph(&mut buf, area, &[1, 1], 1, &r, false, true);
-        assert_eq!(buf[(0, 0)].symbol(), "\u{28ff}", "full height is eight dots");
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            "\u{28ff}",
+            "full height is eight dots"
+        );
     }
 
     #[test]
@@ -771,7 +793,15 @@ mod tests {
     fn render_covers_the_area_and_right_aligns() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
         let area = buf.area;
-        render_with_max(&mut buf, area, &[10, 10], 10, false, Color::Green, ChartOpts::default());
+        render_with_max(
+            &mut buf,
+            area,
+            &[10, 10],
+            10,
+            false,
+            Color::Green,
+            ChartOpts::default(),
+        );
         // Two samples fill the right-most column only; the left three stay empty.
         assert_eq!(buf[(0, 0)].symbol(), " ");
         assert_eq!(buf[(3, 1)].symbol(), "\u{28ff}");
@@ -781,7 +811,15 @@ mod tests {
     fn a_bars_sparkline_is_one_row_of_eighths() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
         let area = buf.area;
-        render_with_max(&mut buf, area, &[1, 4, 8], 8, true, Color::Green, ChartOpts::default());
+        render_with_max(
+            &mut buf,
+            area,
+            &[1, 4, 8],
+            8,
+            true,
+            Color::Green,
+            ChartOpts::default(),
+        );
         let row: String = (0..3).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert_eq!(row, "\u{2581}\u{2584}\u{2588}", "1/8, 4/8, 8/8");
     }
@@ -845,7 +883,16 @@ mod tests {
         let plot = buf.area;
         let opts = ChartOpts::default();
         let rx_h = render_mirrored_scaled(
-            &mut buf, plot, &[9, 9], &[9, 9], 9, 9, false, Color::Green, Color::Cyan, opts,
+            &mut buf,
+            plot,
+            &[9, 9],
+            &[9, 9],
+            9,
+            9,
+            false,
+            Color::Green,
+            Color::Cyan,
+            opts,
         );
         assert_eq!(rx_h, 2, "the odd row goes to the busier half");
         assert_ne!(buf[(1, 0)].symbol(), " ", "rx grows up from the zero row");

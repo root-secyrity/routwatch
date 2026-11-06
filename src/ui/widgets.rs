@@ -182,7 +182,8 @@ pub fn ruler<'a>(value: f64, spec: &RulerSpec, ok: Color, warn: Color, danger: C
         Span::styled(run, Style::default().fg(colour))
     });
     Line::from(spans)
-}/// Sparkline in one of the three styles the plan promises.
+}
+/// Sparkline in one of the three styles the plan promises.
 pub fn spark<'a>(
     values: &VecDeque<f64>,
     width: usize,
