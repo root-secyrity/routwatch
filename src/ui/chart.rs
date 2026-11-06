@@ -465,6 +465,52 @@ pub fn spark_auto(
     spark_lines(values, width, height, bars, base, 0, max, opts)
 }
 
+/// Right-align `data` onto one time window of `slots` columns, taking the
+/// maximum of the samples that land in each slot.
+///
+/// A sample stands for the whole interval it was measured over, not for one
+/// instant: mapping only its timestamp leaves holes wherever the source is
+/// coarser than a column, and the plot then reads as dropouts instead of a
+/// steady series. Averaging is wrong for the same job: this is a spike hunt,
+/// and a one-second stall disappears into the quiet seconds around it.
+pub fn resample_to_window(data: &[u64], secs_per_sample: u64, window_secs: u64, slots: usize) -> Vec<u64> {
+    let mut out = vec![0u64; slots];
+    if slots == 0 || window_secs == 0 || data.is_empty() {
+        return out;
+    }
+    let secs_per_sample = secs_per_sample.max(1);
+    for (i, &v) in data.iter().enumerate() {
+        let age = (data.len() - 1 - i) as u64 * secs_per_sample;
+        if age >= window_secs {
+            continue;
+        }
+        let newest = window_secs - age - 1;
+        let oldest = newest.saturating_sub(secs_per_sample - 1);
+        let to_slot =
+            |from_left: u64| (from_left as u128 * slots as u128 / window_secs as u128) as usize;
+        let (first, last) = (to_slot(oldest), to_slot(newest).min(slots - 1));
+        for slot in out.iter_mut().take(last + 1).skip(first) {
+            *slot = (*slot).max(v);
+        }
+    }
+    out
+}
+
+/// A ceiling one outlier cannot dominate: the 95th percentile, raised to half
+/// again above the median so a steady series does not sit at the ceiling.
+pub fn robust_max(data: &[u64], percentile: f64) -> u64 {
+    let mut vals: Vec<u64> = data.iter().copied().filter(|&v| v > 0).collect();
+    if vals.is_empty() {
+        return 1;
+    }
+    vals.sort_unstable();
+    let idx = ((vals.len() - 1) as f64 * percentile).round() as usize;
+    let p = vals[idx.min(vals.len() - 1)];
+    let median = vals[vals.len() / 2];
+    let headroom = median.saturating_add(median / 2).max(median + 1);
+    p.max(headroom).max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +624,34 @@ mod tests {
         // of eighths, so `height` must not multiply it.
         let lines = spark_auto(&v, 10, 3, true, Color::Green, ChartOpts::default());
         assert_eq!(lines.len(), 1, "bars are one row");
+    }
+
+    #[test]
+    fn resample_takes_the_max_of_each_slot() {
+        // Ten one-second samples over a ten-second window: one slot per two
+        // seconds, so the first slot holds samples 1 and 2 and takes the
+        // larger of them. The spike of 9 lands in the second slot.
+        let data = [1u64, 2, 3, 9, 1, 1, 1, 1, 1, 1];
+        let out = resample_to_window(&data, 1, 10, 5);
+        assert_eq!(out, vec![2, 9, 1, 1, 1]);
+    }
+
+    #[test]
+    fn a_coarse_source_fills_every_slot_it_spans() {
+        // A five-second sample inside a sixty-second window must not leave the
+        // plot reading as a comb of dropouts.
+        let data = [7u64; 4];
+        let out = resample_to_window(&data, 15, 60, 8);
+        assert!(out.iter().all(|&v| v == 7), "every slot covered: {out:?}");
+    }
+
+    #[test]
+    fn robust_max_keeps_one_spike_from_flatlining_the_plot() {
+        let mut data = [2u64; 100];
+        data[7] = 200;
+        let m = robust_max(&data, 0.95);
+        assert!(m > 2, "the body must still have room: {m}");
+        assert!(m < 200, "one spike may not own the ceiling: {m}");
     }
 
     fn luminance_of(c: Color) -> f64 {
