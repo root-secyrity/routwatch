@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="archify 3.2.0">
   <meta name="archify-reader-contract" content="declared-wide-v1">
-  <title>routwatch - one full cycle: login, poll, then a verified write Diagram</title>
+  <title>routwatch: one full cycle, login, read, then a verified write Diagram</title>
   <script>
     // Resolve the theme before first paint so light-preference users don't
     // see a dark flash. The toolbar script below re-applies with UI state.
@@ -168,7 +168,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
   </style>
   <style>
     /* ==========================================================
-       THEME VARIABLES - switch by toggling [data-theme] on <html>
+       THEME VARIABLES — switch by toggling [data-theme] on <html>
        ========================================================== */
     :root,
     [data-theme="dark"] {
@@ -257,7 +257,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ==========================================================
-       SIGNAL FLOW - an opt-in, motion-forward visual preset.
+       SIGNAL FLOW — an opt-in, motion-forward visual preset.
        The variables also target a standalone exported SVG, whose
        root carries data-preset and data-theme directly.
        ========================================================== */
@@ -325,7 +325,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ==========================================================
-       BLUEPRINT - a review-first drafting preset for deployment,
+       BLUEPRINT — a review-first drafting preset for deployment,
        infrastructure, and technical design documentation. It keeps
        the same semantic palette and geometry while trading glow for
        precise grid contrast, squared materials, and drafting marks.
@@ -401,7 +401,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ==========================================================
-       EDITORIAL - a warm, publication-minded preset for design
+       EDITORIAL — a warm, publication-minded preset for design
        reviews, launch notes, and documentation. The diagram keeps
        the same semantic palette and exact geometry, but trades
        software chrome for paper, ink, ruled structure, and one
@@ -2505,7 +2505,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       font-size: 0.625rem;
       font-style: normal;
     }
-    /* A zero count is absence, not information - let it recede. */
+    /* A zero count is absence, not information — let it recede. */
     .node-finder-result em[data-zero] { color: var(--text-faint); }
     .node-finder[data-context^="route-"] .node-finder-result em {
       padding: 0.1rem 0.3rem;
@@ -3066,7 +3066,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     .card-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--card-tone, transparent) 16%, transparent); }
 
     /* ==========================================================
-       Print stylesheet - hide interactive controls, force light,
+       Print stylesheet — hide interactive controls, force light,
        drop the grid so the diagram doesn't waste ink, use landscape
        so wide diagrams fit, pack summary cards into 2 columns to
        avoid an orphan card on a trailing page.
@@ -3074,8 +3074,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     @page { size: landscape; margin: 1.5cm; }
 
     @media print {
-      /* Force the FULL light palette - including component fills/strokes and
-         lane/arrow colors - so printing from dark theme doesn't put neon
+      /* Force the FULL light palette — including component fills/strokes and
+         lane/arrow colors — so printing from dark theme doesn't put neon
          strokes and translucent dark fills on white paper. */
       :root, [data-theme="dark"], [data-theme="light"] {
         --bg: #ffffff;
@@ -3816,7 +3816,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       font-size: 0.6875rem;
     }
 
-    /* Toast - brief feedback for actions like "copied" */
+    /* Toast — brief feedback for actions like "copied" */
     .archify-toast {
       position: fixed;
       top: 1rem;
@@ -4131,7 +4131,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ==========================================================
-       SVG SEMANTIC CLASSES - use these instead of inline fill/stroke
+       SVG SEMANTIC CLASSES — use these instead of inline fill/stroke
        ========================================================== */
     .c-grid       { stroke: var(--grid); fill: none; }
     .c-mask       { fill: var(--mask); stroke: none; }
@@ -5194,17 +5194,17 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
            data-preset-badge-blueprint="BLUEPRINT / REV 01"
            data-preset-badge-editorial="EDITORIAL / FIELD NOTE">
         <div class="pulse-dot"></div>
-        <h1>routwatch - one full cycle: login, poll, then a verified write</h1>
+        <h1>routwatch: one full cycle, login, read, then a verified write</h1>
       </div>
     </div>
 
-    <script id="archify-source-evidence-data" type="application/json">{"schemaVersion":1,"verified":true,"repository":{"url":"https://github.com/root-secyrity/routwatch","revision":"2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f","shortRevision":"2ef59c9","label":"root-secyrity/routwatch","href":"https://github.com/root-secyrity/routwatch/tree/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f"},"referenceCount":8,"nodes":{"app":[{"path":"src/main.rs","line":32,"endLine":40,"label":"المدخل","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/main.rs#L32-L40"},{"path":"src/app.rs","line":1,"endLine":3,"label":"حالة نقية","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/app.rs#L1-L3"}],"worker":[{"path":"src/worker.rs","line":180,"endLine":200,"label":"الحلقة","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/worker.rs#L180-L200"},{"path":"src/worker.rs","line":303,"endLine":344,"label":"الدخول والجولة","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/worker.rs#L303-L344"}],"client":[{"path":"src/router/client.rs","line":182,"endLine":196,"label":"login","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/router/client.rs#L182-L196"},{"path":"src/router/client.rs","line":281,"endLine":284,"label":"get","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/router/client.rs#L281-L284"}],"cpe":[{"path":"src/router/client.rs","line":84,"endLine":91,"label":"بناء /api/","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/router/client.rs#L84-L91"},{"path":"src/router/endpoints.rs","line":15,"endLine":19,"label":"أول نقطة","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/router/endpoints.rs#L15-L19"}]}}</script>
+    <script id="archify-source-evidence-data" type="application/json">{"schemaVersion":1,"verified":true,"repository":{"url":"https://github.com/root-secyrity/routwatch","revision":"a2610eed97dbc879ebfa30f49ef38db7d05e3d4a","shortRevision":"a2610ee","label":"root-secyrity/routwatch","href":"https://github.com/root-secyrity/routwatch/tree/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a"},"referenceCount":9,"nodes":{"app":[{"path":"src/main.rs","line":41,"endLine":86,"label":"entry","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/main.rs#L41-L86"},{"path":"src/app.rs","line":311,"endLine":371,"label":"pure state","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/app.rs#L311-L371"}],"worker":[{"path":"src/worker.rs","line":186,"endLine":194,"label":"spawn","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/worker.rs#L186-L194"},{"path":"src/worker.rs","line":196,"endLine":384,"label":"loop","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/worker.rs#L196-L384"}],"client":[{"path":"src/router/client.rs","line":19,"endLine":28,"label":"session","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/client.rs#L19-L28"},{"path":"src/router/client.rs","line":30,"endLine":42,"label":"no redirects","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/client.rs#L30-L42"},{"path":"src/router/client.rs","line":207,"endLine":289,"label":"login","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/client.rs#L207-L289"}],"cpe":[{"path":"src/router/client.rs","line":51,"endLine":51,"label":"base","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/client.rs#L51"},{"path":"src/router/endpoints.rs","line":15,"endLine":19,"label":"first probe","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/endpoints.rs#L15-L19"}]}}</script>
     <script id="archify-i18n-data" type="application/json">{"locale":"en","messages":{"viewer.kind.frontend":"Frontend","viewer.kind.backend":"Backend","viewer.kind.database":"Database","viewer.kind.cloud":"Cloud","viewer.kind.security":"Security","viewer.kind.messagebus":"Message bus","viewer.kind.external":"External","viewer.kind.neutral":"Neutral","viewer.kind.node":"Node","viewer.kind.start":"Start","viewer.kind.active":"Active","viewer.kind.waiting":"Waiting","viewer.kind.decision":"Decision","viewer.kind.success":"Success","viewer.kind.failure":"Failure","viewer.toolbar.actions":"Diagram actions","viewer.theme.toggle.title":"Toggle theme (T)","viewer.theme.toggle":"Toggle color theme","viewer.theme.dark":"Dark","viewer.theme.light":"Light","viewer.preset.choose.title":"Choose visual style (S cycles)","viewer.preset.choose":"Choose visual style","viewer.preset.style":"Style","viewer.preset.menu":"Visual style","viewer.preset.identity":"Visual identity","viewer.preset.cycles":"to cycle","viewer.preset.classic":"Classic","viewer.preset.classic.short":"Classic","viewer.preset.classic.hint":"Stable technical default","viewer.preset.flow":"Signal Flow","viewer.preset.flow.short":"Flow","viewer.preset.flow.hint":"Motion-forward presentation","viewer.preset.blueprint":"Blueprint","viewer.preset.blueprint.hint":"Engineering review","viewer.preset.editorial":"Editorial","viewer.preset.editorial.hint":"Publication and launch notes","viewer.preset.badge.signalFlow":"SIGNAL FLOW","viewer.preset.badge.blueprint":"BLUEPRINT / REV 01","viewer.preset.badge.editorial":"EDITORIAL / FIELD NOTE","viewer.preset.badge.editorialPlate":"ARCHIFY / PLATE 04","viewer.preset.current":"Visual style: {style}. Choose visual style","viewer.motion.live":"Live","viewer.motion.still":"Still","viewer.motion.pause":"Pause motion","viewer.motion.resume":"Resume motion","viewer.motion.reduced":"Motion paused by reduced-motion preference","viewer.motion.hidden":"Motion paused while this page is hidden","viewer.motion.yielding":"Pause motion; currently yielding to {owner}","viewer.motion.yielding.title":"Live preview enabled · yielding to {owner}","viewer.owner.route":"Route Probe","viewer.owner.lens":"Semantic Lens","viewer.owner.relationship":"Relationship Preview","viewer.owner.intent":"Intent Trace","viewer.owner.focus":"semantic focus","viewer.owner.legend":"legend preview","viewer.owner.reader":"reader interaction","viewer.present.enter":"Enter presentation stage","viewer.present.enter.title":"Presentation stage (F)","viewer.present.exit":"Exit presentation stage","viewer.present.exit.title":"Exit presentation stage (F or Escape)","viewer.present.present":"Present","viewer.present.exit.label":"Exit","viewer.export.button":"Export","viewer.export.button.title":"Export diagram (E)","viewer.export.diagram":"Export diagram","viewer.export.menu":"Export","viewer.export.subtitle":"Portable, clean outputs","viewer.export.share":"Share","viewer.export.shareCard":"Share Card","viewer.export.routeShareCard":"Route Share Card","viewer.export.reachShareCard":"Reach Share Card","viewer.export.copyDiagram":"Copy diagram","viewer.export.clipboardPng":"PNG to clipboard","viewer.export.raster":"Raster images","viewer.export.image":"Image","viewer.export.lossless":"Lossless image","viewer.export.compact":"Compact image","viewer.export.modern":"Modern image","viewer.export.vectorMotion":"Vector and motion","viewer.export.vectorMotion.heading":"Vector \u0026 motion","viewer.export.editable":"Editable vector","viewer.export.svg.auto":"SVG · Auto","viewer.export.svg.auto.hint":"Matches host theme","viewer.export.svg.light":"SVG · Light","viewer.export.svg.light.hint":"Always light","viewer.export.svg.dark":"SVG · Dark","viewer.export.svg.dark.hint":"Always dark","viewer.export.motion6s":"6s motion","viewer.export.unsupported":"Not supported by this browser","viewer.export.clipboardUnsupported":"Clipboard image write not supported by this browser","viewer.export.clipboardUnsupported.short":"Clipboard image write not supported in this browser.","viewer.export.motionUnavailable":"Motion capture unavailable in this browser","viewer.export.webmUnavailable":"WebM unavailable in this browser","viewer.export.failed":"Export failed: {message}","viewer.export.unknownVariant":"Unknown Share Card variant: {variant}","viewer.export.routeRequired":"Trace a route before exporting a Route Share Card","viewer.export.reachRequired":"Trace authored reach before exporting a Reach Share Card","viewer.export.unknown":"unknown","viewer.export.routeFailed":"Route Share Card export failed: {message}","viewer.export.reachFailed":"Reach Share Card export failed: {message}","viewer.export.copyFailed":"Copy failed: {message}","viewer.export.copiedPng":"Copied PNG to clipboard","viewer.export.downloadedRoute":"Downloaded Route Share Card","viewer.export.downloadedReach":"Downloaded Reach Share Card","viewer.export.downloadedWebm":"Downloaded WebM","viewer.export.recording":"Recording 6 seconds of motion…","viewer.export.card.routeSummary.one":"Path: {source} → {target} · {count} step","viewer.export.card.routeSummary.other":"Path: {source} → {target} · {count} steps","viewer.export.card.reachSummary":"Authored {direction} from {origin} · {nodes} · {links} · max {hops}","viewer.export.card.node.one":"{count} node","viewer.export.card.node.other":"{count} nodes","viewer.export.card.link.one":"{count} link","viewer.export.card.link.other":"{count} links","viewer.export.card.hop.one":"{count} hop","viewer.export.card.hop.other":"{count} hops","viewer.export.card.routeBadge":"ARCHIFY · ROUTE · {hops}","viewer.export.card.reachBadge":"ARCHIFY · {direction} REACH","viewer.export.direction.upstream":"Upstream","viewer.export.direction.downstream":"Downstream","viewer.export.error.canvasUnavailable":"Canvas unavailable for {label}","viewer.export.error.contextUnavailable":"2D canvas context unavailable for {label}","viewer.export.error.toBlobUnavailable":"canvas.toBlob unavailable for {label}","viewer.export.error.toBlobNull":"canvas.toBlob returned no data for {label}","viewer.export.error.variantsCombined":"Share Card variants cannot be combined","viewer.export.error.viewerState":"Share Card export could not remove temporary viewer state","viewer.export.error.routeState":"Route Card export could not preserve the resolved route safely","viewer.export.error.reachState":"Reach Card export could not preserve authored reach safely","viewer.export.error.webmRequirements":"WebM motion export requires a trace animation and browser MediaRecorder support","viewer.export.error.mediaRecorder":"MediaRecorder failed","viewer.export.error.emptyWebm":"MediaRecorder produced an empty WebM","viewer.export.error.webmBackground":"SVG background could not be loaded for WebM export","viewer.guide.title":"Explore this system","viewer.focus.selectedNodes":"{count} selected nodes","viewer.guide.eyebrow":"Diagram guide","viewer.guide.close":"Close diagram guide","viewer.guide.inspecting":"Inspecting compiled semantics","viewer.guide.actions":"Diagram exploration actions","viewer.guide.find":"Find any node","viewer.guide.find.hint":"Search labels, responsibilities, kinds, and stable IDs.","viewer.guide.route":"Trace a route","viewer.guide.route.aria":"Trace a directed route","viewer.guide.route.hint":"Ask how two semantic nodes connect in authored direction.","viewer.guide.map":"See the whole system","viewer.guide.map.hint":"Open Semantic Radar with a live viewport and stable nodes.","viewer.guide.lens":"Compare semantic kinds","viewer.guide.lens.hint":"Count roles, reveal their traffic, and compare direct authored links.","viewer.guide.present":"Enter Presentation Stage","viewer.guide.present.hint":"Give the live diagram the viewport without changing export.","viewer.guide.shortcuts":"Additional keyboard shortcuts","viewer.guide.shortcut.export":"Export","viewer.guide.shortcut.theme":"Theme","viewer.guide.shortcut.style":"Style","viewer.guide.shortcut.reset":"Reset","viewer.guide.shortcut.zoomIn":"Zoom in","viewer.guide.shortcut.zoomOut":"Zoom out","viewer.guide.shortcut.close":"Close","viewer.guide.credit":"Find Archify useful? A star on GitHub helps","viewer.guide.star":"Star","viewer.guide.facts":"{nodes} · {relationships}","viewer.guide.fact.node.one":"{count} semantic node","viewer.guide.fact.node.other":"{count} semantic nodes","viewer.guide.fact.relationship.one":"{count} relationship","viewer.guide.fact.relationship.other":"{count} relationships","viewer.guide.open":"Open diagram guide","viewer.finder.title":"Find a node","viewer.finder.close":"Close node finder","viewer.finder.placeholder":"Search labels or IDs","viewer.finder.search":"Search diagram nodes","viewer.finder.results":"Diagram nodes","viewer.finder.empty":"No matching nodes","viewer.finder.result.focus":"Focus {label}","viewer.finder.result.routeStart":"Choose {label} as route start","viewer.finder.result.routeTarget":"Choose {label} as route destination, {links}","viewer.finder.status.empty":"No matching nodes","viewer.finder.status.count.one":"{count} matching node","viewer.finder.status.count.other":"{count} matching nodes","viewer.finder.noun.nodes":"nodes","viewer.finder.link.one":"{count} link","viewer.finder.link.other":"{count} links","viewer.finder.result.focus.one":"Focus {label}, {count} related connection","viewer.finder.result.focus.other":"Focus {label}, {count} related connections","viewer.finder.status.filtered":"{visible} of {available} {noun}","viewer.finder.status.all":"{available} {noun}","viewer.passport.eyebrow":"Semantic passport","viewer.passport.metadata":"Node metadata","viewer.passport.evidence":"Verified source evidence","viewer.passport.verified":"Verified source","viewer.passport.verificationScope":"Verified against local Git at the pinned revision. Remote access has not been checked.","viewer.passport.reach":"Authored reach","viewer.passport.reach.trace":"Trace authored reachability","viewer.passport.upstream":"Upstream","viewer.passport.downstream":"Downstream","viewer.passport.upstream.trace":"Trace upstream authored reachability","viewer.passport.downstream.trace":"Trace downstream authored reachability","viewer.passport.close":"Close semantic passport","viewer.passport.move":"Move semantic passport. Drag, use arrow keys, or press Home to reset.","viewer.passport.copy":"Copy link","viewer.passport.copy.focus":"Copy link to focused node","viewer.passport.relations":"Relations","viewer.passport.relations.show":"Show connected relationships","viewer.passport.relations.hide":"Hide connected relationships","viewer.passport.relations.list":"Connected relationships","viewer.passport.copyRelation":"Copy relation","viewer.passport.copyNode":"Copy node","viewer.passport.copyPinned":"Copy link to pinned relationship","viewer.passport.copySource":"Copy link to source node","viewer.passport.copy.focused.success":"Focused node link copied","viewer.passport.copy.pinned.success":"Pinned relationship link copied","viewer.passport.copy.focused.failed":"Could not copy focused node link","viewer.passport.copy.pinned.failed":"Could not copy pinned relationship link","viewer.passport.relationship.none":"No connected relationships","viewer.passport.relationship.count.one":"{count} relation","viewer.passport.relationship.count.other":"{count} relations","viewer.passport.relationship.show.one":"Show {count} connected relationship","viewer.passport.relationship.show.other":"Show {count} connected relationships","viewer.passport.relationship.summary":"{out} outgoing · {in} incoming{loops}","viewer.passport.relationship.loops":" · {count} loop","viewer.passport.relationship.explorer":"Direct relationship explorer","viewer.passport.relationship.help":"Use arrow keys to explore relationships. Press Enter or Space to pin details; Escape clears.","viewer.passport.relationship.loopsBack":"loops back","viewer.passport.relationship.connectsTo":"connects to","viewer.passport.relationship.connectsFrom":"connects from","viewer.passport.relationship.pinned":"Pinned relationship · {from} → {to} · {label}","viewer.passport.relationship.inspect":"Inspect relationship {index} of {total}: {from} to {to}, {label}. Press Enter for details.","viewer.passport.relationship.group.out":"Outgoing","viewer.passport.relationship.group.in":"Incoming","viewer.passport.relationship.group.loop":"Self loops","viewer.passport.relationship.row":"{group}: {relationship}, {neighbor}","viewer.passport.relationship.direction.out":"OUT →","viewer.passport.relationship.direction.in":"← IN","viewer.passport.relationship.direction.loop":"LOOP","viewer.passport.sourceCount.one":"{count} verified source reference","viewer.passport.sourceCount.other":"{count} verified source references","viewer.passport.repository.open":"Open verified repository revision {revision}","viewer.passport.source.open":"Open verified source {path} at revision {revision}","viewer.passport.source.openLink":"Open ↗","viewer.passport.reach.upstream.one":"Trace {count} upstream authored node","viewer.passport.reach.upstream.other":"Trace {count} upstream authored nodes","viewer.passport.reach.downstream.one":"Trace {count} downstream authored node","viewer.passport.reach.downstream.other":"Trace {count} downstream authored nodes","viewer.passport.reach.noUpstream":"No upstream authored nodes","viewer.passport.reach.noDownstream":"No downstream authored nodes","viewer.passport.reach.status":"{direction} · {nodes} nodes · {links} links · max {hops} hops","viewer.route.eyebrow":"Path","viewer.route.start":"Click where the path starts","viewer.route.start.find":"Find start","viewer.route.start.find.aria":"Find a route start","viewer.route.copy":"Copy link","viewer.route.copy.aria":"Copy link to traced route","viewer.route.clear":"Clear","viewer.route.clear.aria":"Clear route probe","viewer.route.traced":"Path","viewer.route.pickTwo":"Click two nodes on the diagram","viewer.route.pickOne":"Click a node on the diagram","viewer.route.controls":"Route journey controls","viewer.route.previous":"Previous route position","viewer.route.play":"Play route journey","viewer.route.pause":"Pause route journey","viewer.route.replay":"Replay route journey","viewer.route.next":"Next route position","viewer.route.journey":"Journey","viewer.route.pause.label":"Pause","viewer.route.replay.label":"Replay","viewer.route.overview":"Overview","viewer.route.overview.aria":"Show complete route overview","viewer.route.instructions":"Click a start, then an end. Paths follow the arrows.","viewer.route.destination":"Where does the path from {label} end?","viewer.route.destination.find":"Find target","viewer.route.destination.find.aria":"Find a reachable route destination","viewer.route.differentDestination":"Choose a different destination","viewer.route.distinct":"Pick two different nodes.","viewer.route.unreachable":"Cannot reach {label} from here","viewer.route.unreachable.detail":"{target} cannot be reached from {source} along the arrows. Pick a highlighted node.","viewer.route.start.instructions":"Next, pick the end. Only nodes you can reach will light up.","viewer.route.copy.success":"Traced route link copied","viewer.route.copy.failed":"Could not copy traced route link","viewer.route.position":"Route position {index} of {total}: {label}","viewer.route.step":"Step {index} of {total} · {phase} · {label}","viewer.route.motionRequired":"Automatic journey requires Live motion","viewer.route.trigger.clear":"Clear traced route","viewer.route.overview.status":"{nodes} · {hops} · shortest path","viewer.route.overview.node.one":"{count} node","viewer.route.overview.node.other":"{count} nodes","viewer.route.overview.hop.one":"{count} step","viewer.route.overview.hop.other":"{count} steps","viewer.route.phase.playing":"Playing","viewer.route.phase.complete":"Complete","viewer.route.phase.inspecting":"Inspecting","viewer.route.destination.count.one":"{count} reachable node is highlighted. Click it.","viewer.route.destination.count.other":"{count} reachable nodes are highlighted. Click one.","viewer.route.noOutgoing":"No arrows lead out of this node. Clear it and pick another start.","viewer.route.result.title":"{source} to {target}","viewer.route.finder.source.title":"Choose route start","viewer.route.finder.source.placeholder":"Search route sources","viewer.route.finder.source.empty":"No matching route sources","viewer.route.finder.source.results":"Nodes that can start a route","viewer.route.finder.source.noun":"route sources","viewer.route.finder.source.badge":"start","viewer.route.finder.target.title":"Destination from {label}","viewer.route.finder.target.placeholder":"Search reachable destinations","viewer.route.finder.target.empty":"No matching reachable destinations","viewer.route.finder.target.results":"Reachable route destinations","viewer.route.finder.target.noun":"reachable destinations","viewer.route.hop.one":"{count} hop","viewer.route.hop.other":"{count} hops","viewer.lens.eyebrow":"Semantic lens","viewer.lens.title":"Compare system roles","viewer.lens.close":"Close semantic lens","viewer.lens.instruction":"Choose up to two semantic kinds. One reveals its real traffic; two compare only direct authored relationships.","viewer.lens.kinds":"Semantic kinds","viewer.lens.choose":"Choose a kind to inspect its nodes and touching relationships.","viewer.lens.copy":"Copy link to semantic lens","viewer.lens.clear":"Clear semantic lens","viewer.lens.open":"Open semantic lens","viewer.lens.openActive":"Open active semantic lens","viewer.lens.legend":"Semantic legend","viewer.lens.legend.inspect.one":"Inspect {label}, {count} node","viewer.lens.legend.inspect.other":"Inspect {label}, {count} nodes","viewer.lens.kind.count.one":"{label}, {count} node","viewer.lens.kind.count.other":"{label}, {count} nodes","viewer.lens.compare.one":"{first} → {second}: {forward} · {second} → {first}: {reverse} · {count} direct relationship","viewer.lens.compare.other":"{first} → {second}: {forward} · {second} → {first}: {reverse} · {count} direct relationships","viewer.lens.single":"{nodes} · {relationships} · connected peers remain visible","viewer.lens.node.one":"{count} {label} node","viewer.lens.node.other":"{count} {label} nodes","viewer.lens.relationship.one":"{count} touching relationship","viewer.lens.relationship.other":"{count} touching relationships","viewer.radar.title":"Semantic radar","viewer.radar.building":"Building overview","viewer.radar.openFull":"Open full semantic radar","viewer.radar.open":"Open radar","viewer.radar.close":"Close semantic radar","viewer.radar.surface":"Diagram overview. Click a node to focus it, or use arrow keys to pan.","viewer.radar.click":"Click node","viewer.radar.drag":"Drag to pan","viewer.radar.space":"Semantic radar needs more MAP space.","viewer.radar.nodes":"Semantic diagram radar nodes","viewer.radar.focus":"Focus {label} from Semantic Radar","viewer.radar.status":"{count} nodes · {viewport}","viewer.radar.fullMap":"{count} nodes · full map","viewer.radar.compacted":"Radar compacted to avoid covering the Semantic Passport or MAP controls.","viewer.radar.cancelWaiting":"Cancel semantic radar waiting for more MAP space","viewer.radar.needsSpace":"Semantic radar needs more visible MAP space","viewer.radar.viewport.full":"full map","viewer.radar.viewport.width":"{percent}% width","viewer.radar.viewport.scale":"{percent}% viewport","viewer.nav.controls":"Diagram view controls","viewer.nav.route":"Trace a directed route","viewer.nav.route.title":"Trace route (R)","viewer.nav.route.short":"ROUTE","viewer.nav.radar":"Open semantic radar","viewer.nav.radar.title":"Semantic radar (M)","viewer.nav.radar.short":"MAP","viewer.nav.lens":"Open semantic lens","viewer.nav.lens.title":"Semantic lens (L)","viewer.nav.lens.short":"LENS","viewer.nav.find":"Find a node","viewer.nav.find.title":"Find a node (/)","viewer.outline.title":"Node index","viewer.rail.show":"Notes \u0026 index","viewer.rail.controls":"Side panel","viewer.rail.collapse":"Collapse side panel","viewer.rail.bottom":"Move panel below the diagram","viewer.rail.right":"Move panel beside the diagram","viewer.nav.guide":"Open diagram guide","viewer.nav.guide.title":"Diagram guide (?)","viewer.nav.zoomOut":"Zoom out","viewer.nav.zoomOut.title":"Zoom out (-)","viewer.nav.reset":"Reset diagram view","viewer.nav.reset.title":"Reset view (0)","viewer.nav.read":"READ","viewer.nav.zoomIn":"Zoom in","viewer.nav.zoomIn.title":"Zoom in (+)","viewer.nav.camera":"{hint}. Reset diagram view","viewer.nav.camera.title":"{semantic}{hint} · reset view (0)","viewer.nav.camera.semantic":"Semantic camera active · ","viewer.nav.level.map":"MAP","viewer.nav.level.read":"READ","viewer.nav.level.full":"FULL","viewer.nav.level.auto":"AUTO","viewer.nav.detail.map":"Zoom in to reveal relationship labels and node context","viewer.nav.detail.read":"Zoom in again to reveal tags and annotations","viewer.nav.detail.full":"Full diagram detail","viewer.intent.summary":"{label}. {out} outgoing, {in} incoming{loops}. {total} connections. Press Enter for details.","viewer.intent.loops":", {count} self loop","viewer.common.copied":"Copied","viewer.common.copyFailed":"Copy failed","viewer.common.copyLink":"Copy link","viewer.common.clear":"Clear","viewer.common.close":"Close"}}</script>
     <!-- Main Diagram -->
     <div class="diagram-container" data-detail-level="read"
          data-preset-badge-editorial-plate="ARCHIFY / PLATE 04">
       <svg viewBox="0 0 920 1198" data-sequence-column-fit="spread" data-reader-fit="width-first" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" data-motion-choreography="sequence">
-        <title id="archify-diagram-title">routwatch - one full cycle: login, poll, then a verified write</title>
+        <title id="archify-diagram-title">routwatch: one full cycle, login, read, then a verified write</title>
         <desc id="archify-diagram-description">A sequence diagram generated by Archify.</desc>
         <!-- Definitions -->
         <defs>
@@ -5274,7 +5274,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="616.6333333333334" y="208" width="137.39999999999998" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333335" y="218" class="t-muted" font-size="11" text-anchor="middle">GET / + state-login</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="246" class="t-muted" font-size="7">extracts CSRF and reads password_type</text>
+        <text data-detail="context" x="597.1666666666667" y="246" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">CSRF and password_type; a 302 is refused,</tspan><tspan x="597.1666666666667" dy="11">never followed</tspan></text>
         </g>
 
         <g data-edge-from="client" data-edge-to="cpe" data-edge-label="GET /api/webserver/SesTokInfo" data-edge-key="3" data-edge-id="sestok">
@@ -5283,7 +5283,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="583.6333333333334" y="264" width="203.39999999999998" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333335" y="274" class="t-muted" font-size="11" text-anchor="middle">GET /api/webserver/SesTokInfo</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="302" class="t-muted" font-size="7">only when the page gave no token</text>
+        <text data-detail="context" x="597.1666666666667" y="302" class="t-muted" font-size="7">only when the page carried no token</text>
         </g>
 
         <g data-edge-from="client" data-edge-to="cpe" data-edge-label="POST /api/user/login" data-edge-key="4" data-edge-id="post-login">
@@ -5292,7 +5292,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="613.3333333333334" y="316" width="144" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333334" y="326" class="t-edge-security" font-size="11" text-anchor="middle">POST /api/user/login</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="354" class="t-muted" font-size="7">sha256 over token and password</text>
+        <text data-detail="context" x="597.1666666666667" y="354" class="t-muted" font-size="7">sha256 over the token and password</text>
         </g>
 
         <g data-edge-from="cpe" data-edge-to="client" data-edge-label="OK or &lt;error&gt;&lt;code&gt;" data-edge-key="5" data-edge-id="login-reply">
@@ -5301,8 +5301,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="616.6333333333334" y="360" width="137.39999999999998" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333335" y="370" class="t-muted" font-size="11" text-anchor="middle">OK or &lt;error&gt;&lt;code&gt;</text>
         </g>
-        <rect data-detail="context" data-graph-role="message-note-background" x="595.1666666666667" y="387.6" width="159.4" height="27.399999999999977" rx="2" class="c-mask" pointer-events="none"/>
-        <text data-detail="context" x="597.1666666666667" y="398" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">108001 = bad credentials, so it stops</tspan><tspan x="597.1666666666667" dy="11">instead of retrying</tspan></text>
+        <rect data-detail="context" data-graph-role="message-note-background" x="595.1666666666667" y="387.6" width="176.2" height="27.399999999999977" rx="2" class="c-mask" pointer-events="none"/>
+        <text data-detail="context" x="597.1666666666667" y="398" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">108002 = wrong password, 108003 = session</tspan><tspan x="597.1666666666667" dy="11">already open</tspan></text>
         </g>
 
         <g data-edge-from="client" data-edge-to="worker" data-edge-label="authed = true" data-edge-key="6" data-edge-id="authed">
@@ -5313,11 +5313,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="worker" data-edge-to="client" data-edge-label="collect_traced" data-edge-key="7" data-edge-id="collect">
+        <g data-edge-from="worker" data-edge-to="client" data-edge-label="collect_traced: ten phases" data-edge-key="7" data-edge-id="collect">
           <path data-composition-edge-from="worker" data-composition-edge-to="client" data-composition-edge-id="collect" data-composition-points="370.83333333333337,456;571.1666666666667,456" d="M 370.83333333333337 456 L 571.1666666666667 456" class="a-default" data-animate="edge" style="--step:7" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="418.80000000000007" y="436" width="104.39999999999999" height="18" rx="3" class="c-mask"/>
-          <text x="471.00000000000006" y="446" class="t-muted" font-size="11" text-anchor="middle">collect_traced</text>
+          <rect x="379.20000000000005" y="436" width="183.6" height="18" rx="3" class="c-mask"/>
+          <text x="471.00000000000006" y="446" class="t-muted" font-size="11" text-anchor="middle">collect_traced: ten phases</text>
         </g>
         </g>
 
@@ -5337,11 +5337,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="remaining phases: status, traffic, plmn, device" data-edge-key="10" data-edge-id="rest">
+        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="status, traffic, plmn, device, sms" data-edge-key="10" data-edge-id="rest">
           <path data-composition-edge-from="client" data-composition-edge-to="cpe" data-composition-edge-id="rest" data-composition-points="585.1666666666667,548;785.5,548" d="M 585.1666666666667 548 L 785.5 548" class="a-default" data-animate="edge" style="--step:10" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="524.2333333333333" y="528" width="322.2" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="538" class="t-muted" font-size="11" text-anchor="middle">remaining phases: status, traffic, plmn, device</text>
+          <rect x="567.1333333333334" y="528" width="236.39999999999998" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333335" y="538" class="t-muted" font-size="11" text-anchor="middle">status, traffic, plmn, device, sms</text>
         </g>
         </g>
 
@@ -5351,14 +5351,14 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="606.7333333333333" y="584" width="157.2" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333334" y="594" class="t-muted" font-size="11" text-anchor="middle">XML or error per phase</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="622" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">an unsupported endpoint is recorded, not</tspan><tspan x="597.1666666666667" dy="11">fatal</tspan></text>
+        <text data-detail="context" x="597.1666666666667" y="622" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">a 404 is unsupported and is recorded, not</tspan><tspan x="597.1666666666667" dy="11">fatal</tspan></text>
         </g>
 
-        <g data-edge-from="client" data-edge-to="worker" data-edge-label="full Snapshot" data-edge-key="12" data-edge-id="snapshot">
+        <g data-edge-from="client" data-edge-to="worker" data-edge-label="complete Snapshot" data-edge-key="12" data-edge-id="snapshot">
           <path data-composition-edge-from="client" data-composition-edge-to="worker" data-composition-edge-id="snapshot" data-composition-points="571.1666666666667,646;370.83333333333337,646" d="M 571.1666666666667 646 L 370.83333333333337 646" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="422.1000000000001" y="626" width="97.8" height="18" rx="3" class="c-mask"/>
-          <text x="471.00000000000006" y="636" class="t-muted" font-size="11" text-anchor="middle">full Snapshot</text>
+          <rect x="408.9000000000001" y="626" width="124.19999999999999" height="18" rx="3" class="c-mask"/>
+          <text x="471.0000000000001" y="636" class="t-muted" font-size="11" text-anchor="middle">complete Snapshot</text>
         </g>
         </g>
 
@@ -5370,11 +5370,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="app" data-edge-to="worker" data-edge-label="Cmd::ApplyBands after a typed confirm" data-edge-key="14" data-edge-id="apply">
+        <g data-edge-from="app" data-edge-to="worker" data-edge-label="Cmd::ApplyBands after a typed confirmation" data-edge-key="14" data-edge-id="apply">
           <path data-composition-edge-from="app" data-composition-edge-to="worker" data-composition-edge-id="apply" data-composition-points="156.5,736;356.83333333333337,736" d="M 156.5 736 L 356.83333333333337 736" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="128.5666666666667" y="716" width="256.2" height="18" rx="3" class="c-mask"/>
-          <text x="256.6666666666667" y="726" class="t-muted" font-size="11" text-anchor="middle">Cmd::ApplyBands after a typed confirm</text>
+          <rect x="112.06666666666669" y="716" width="289.2" height="18" rx="3" class="c-mask"/>
+          <text x="256.6666666666667" y="726" class="t-muted" font-size="11" text-anchor="middle">Cmd::ApplyBands after a typed confirmation</text>
         </g>
         </g>
 
@@ -5394,11 +5394,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="current mask" data-edge-key="17" data-edge-id="mask-now">
+        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="current mode and masks" data-edge-key="17" data-edge-id="mask-now">
           <path data-composition-edge-from="cpe" data-composition-edge-to="client" data-composition-edge-id="mask-now" data-composition-points="785.5,826;585.1666666666667,826" d="M 785.5 826 L 585.1666666666667 826" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="639.7333333333333" y="806" width="91.19999999999999" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="816" class="t-muted" font-size="11" text-anchor="middle">current mask</text>
+          <rect x="606.7333333333333" y="806" width="157.2" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333334" y="816" class="t-muted" font-size="11" text-anchor="middle">current mode and masks</text>
         </g>
         </g>
 
@@ -5408,14 +5408,14 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="408.9000000000001" y="836" width="124.19999999999999" height="18" rx="3" class="c-mask"/>
           <text x="471.0000000000001" y="846" class="t-edge-emphasis" font-size="11" text-anchor="middle">POST net/net-mode</text>
         </g>
-        <text data-detail="context" x="382.83333333333337" y="874" class="t-muted" font-size="7"><tspan x="382.83333333333337" dy="0">guard 1: nothing is sent when the target is</tspan><tspan x="382.83333333333337" dy="11">already active</tspan></text>
+        <text data-detail="context" x="382.83333333333337" y="874" class="t-muted" font-size="7">skipped if already applied</text>
         </g>
 
-        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="POST xml with the new mask" data-edge-key="19" data-edge-id="post-wire">
+        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="POST XML with BandList and LTEBand masks" data-edge-key="19" data-edge-id="post-wire">
           <path data-composition-edge-from="client" data-composition-edge-to="cpe" data-composition-edge-id="post-wire" data-composition-points="585.1666666666667,896;785.5,896" d="M 585.1666666666667 896 L 785.5 896" class="a-emphasis" data-animate="edge" style="--step:12" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <g data-detail="context">
-          <rect x="593.5333333333334" y="876" width="183.6" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="886" class="t-edge-emphasis" font-size="11" text-anchor="middle">POST xml with the new mask</text>
+          <rect x="547.3333333333334" y="876" width="276" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333334" y="886" class="t-edge-emphasis" font-size="11" text-anchor="middle">POST XML with BandList and LTEBand masks</text>
         </g>
         </g>
 
@@ -5425,7 +5425,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="600.1333333333334" y="906" width="170.39999999999998" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333335" y="916" class="t-muted" font-size="11" text-anchor="middle">200, then the link drops</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="944" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">expected: the radio restarts, so Restarting</tspan><tspan x="597.1666666666667" dy="11">rather than an error</tspan></text>
+        <text data-detail="context" x="597.1666666666667" y="944" class="t-muted" font-size="7">expected: the radio restarts</text>
         </g>
 
         <g data-edge-from="worker" data-edge-to="client" data-edge-label="read again to verify" data-edge-key="21" data-edge-id="read-after">
@@ -5444,39 +5444,40 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="mask after the write" data-edge-key="23" data-edge-id="mask-after">
+        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="mode, masks, NR option" data-edge-key="23" data-edge-id="mask-after">
           <path data-composition-edge-from="cpe" data-composition-edge-to="client" data-composition-edge-id="mask-after" data-composition-points="785.5,1026;585.1666666666667,1026" d="M 785.5 1026 L 585.1666666666667 1026" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="613.3333333333334" y="1006" width="144" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="1016" class="t-muted" font-size="11" text-anchor="middle">mask after the write</text>
+          <rect x="606.7333333333333" y="1006" width="157.2" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333334" y="1016" class="t-muted" font-size="11" text-anchor="middle">mode, masks, NR option</text>
         </g>
+        <text data-detail="context" x="597.1666666666667" y="1044" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">auto mode reads NetworkBand 0; accepted</tspan><tspan x="597.1666666666667" dy="11">only when LTEBand matches</tspan></text>
         </g>
 
-        <g data-edge-from="worker" data-edge-to="app" data-edge-label="Success or Failed + Restarting" data-edge-key="24" data-edge-id="verdict">
+        <g data-edge-from="worker" data-edge-to="app" data-edge-label="applied or failed, with the reason" data-edge-key="24" data-edge-id="verdict">
           <path data-composition-edge-from="worker" data-composition-edge-to="app" data-composition-edge-id="verdict" data-composition-points="356.83333333333337,1054;156.5,1054" d="M 356.83333333333337 1054 L 156.5 1054" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="151.66666666666669" y="1034" width="210" height="18" rx="3" class="c-mask"/>
-          <text x="256.6666666666667" y="1044" class="t-muted" font-size="11" text-anchor="middle">Success or Failed + Restarting</text>
+          <rect x="138.4666666666667" y="1034" width="236.39999999999998" height="18" rx="3" class="c-mask"/>
+          <text x="256.6666666666667" y="1044" class="t-muted" font-size="11" text-anchor="middle">applied or failed, with the reason</text>
         </g>
         </g>
 
         <!-- Segment Labels -->
         <g data-graph-role="segment-label" data-segment-id="0">
           <rect x="56" y="134" width="92" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="147" class="t-muted" font-size="9" font-weight="600">1 · First login</text>
+          <text x="62" y="147" class="t-muted" font-size="9" font-weight="600">1 - first login</text>
         </g>
         <g data-graph-role="segment-label" data-segment-id="1">
-          <rect x="56" y="412" width="76.4" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="425" class="t-muted" font-size="9" font-weight="600">2 · One poll</text>
+          <rect x="56" y="412" width="86.8" height="18" rx="3" class="c-mask"/>
+          <text x="62" y="425" class="t-muted" font-size="9" font-weight="600">2 - every poll</text>
         </g>
         <g data-graph-role="segment-label" data-segment-id="2">
-          <rect x="56" y="756" width="175.20000000000002" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="769" class="t-muted" font-size="9" font-weight="600">3 · Verified write (on request)</text>
+          <rect x="56" y="756" width="185.6" height="18" rx="3" class="c-mask"/>
+          <text x="62" y="769" class="t-muted" font-size="9" font-weight="600">3 - a verified write (on request)</text>
         </g>
 
         <!-- Participants -->
-        <g id="node-app" data-node-id="app" data-node-label="TUI &amp; event loop" tabindex="0" role="button" aria-label="Focus TUI &amp; event loop, main.rs · App, Sequence participant" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="main.rs · App" data-node-context="Sequence participant">
-          <title>TUI &amp; event loop · main.rs · App · Sequence participant</title>
+        <g id="node-app" data-node-id="app" data-node-label="TUI and event loop" tabindex="0" role="button" aria-label="Focus TUI and event loop, main.rs / App, Sequence participant" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="main.rs / App" data-node-context="Sequence participant">
+          <title>TUI and event loop · main.rs / App · Sequence participant</title>
           <rect x="62" y="72" width="175" height="60" rx="6" class="c-mask"/>
           <rect x="62" y="72" width="175" height="60" rx="6" class="c-frontend" data-animate="node" style="--step:0" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(68 78) scale(0.6875)">
@@ -5485,30 +5486,30 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="149.5" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">TUI &amp; event loop</text>
-          <text data-detail="context" x="149.5" y="122" class="t-muted" font-size="7" text-anchor="middle">main.rs · App</text>
+          <text data-node-label="" data-detail-anchor="" x="149.5" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">TUI and event loop</text>
+          <text data-detail="context" x="149.5" y="122" class="t-muted" font-size="7" text-anchor="middle">main.rs / App</text>
         </g>
 
-        <g id="node-worker" data-node-id="worker" data-node-label="Poll thread" tabindex="0" role="button" aria-label="Focus Poll thread, worker.rs, Sequence participant" aria-pressed="false" data-node-kind="backend" data-node-sublabel="worker.rs" data-node-context="Sequence participant">
-          <title>Poll thread · worker.rs · Sequence participant</title>
+        <g id="node-worker" data-node-id="worker" data-node-label="Poll worker" tabindex="0" role="button" aria-label="Focus Poll worker, worker.rs, Sequence participant" aria-pressed="false" data-node-kind="backend" data-node-sublabel="worker.rs" data-node-context="Sequence participant">
+          <title>Poll worker · worker.rs · Sequence participant</title>
           <rect x="276.33333333333337" y="72" width="175" height="60" rx="6" class="c-mask"/>
           <rect x="276.33333333333337" y="72" width="175" height="60" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(282.33333333333337 78) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="363.83333333333337" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Poll thread</text>
+          <text data-node-label="" data-detail-anchor="" x="363.83333333333337" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Poll worker</text>
           <text data-detail="context" x="363.83333333333337" y="122" class="t-muted" font-size="7" text-anchor="middle">worker.rs</text>
         </g>
 
-        <g id="node-client" data-node-id="client" data-node-label="HuaweiClient" tabindex="0" role="button" aria-label="Focus HuaweiClient, client.rs · parse.rs, Sequence participant" aria-pressed="false" data-node-kind="backend" data-node-sublabel="client.rs · parse.rs" data-node-context="Sequence participant">
-          <title>HuaweiClient · client.rs · parse.rs · Sequence participant</title>
+        <g id="node-client" data-node-id="client" data-node-label="HuaweiClient" tabindex="0" role="button" aria-label="Focus HuaweiClient, client.rs / parse.rs, Sequence participant" aria-pressed="false" data-node-kind="backend" data-node-sublabel="client.rs / parse.rs" data-node-context="Sequence participant">
+          <title>HuaweiClient · client.rs / parse.rs · Sequence participant</title>
           <rect x="490.66666666666674" y="72" width="175" height="60" rx="6" class="c-mask"/>
           <rect x="490.66666666666674" y="72" width="175" height="60" rx="6" class="c-backend" data-animate="node" style="--step:2" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(496.66666666666674 78) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="578.1666666666667" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">HuaweiClient</text>
-          <text data-detail="context" x="578.1666666666667" y="122" class="t-muted" font-size="7" text-anchor="middle">client.rs · parse.rs</text>
+          <text data-detail="context" x="578.1666666666667" y="122" class="t-muted" font-size="7" text-anchor="middle">client.rs / parse.rs</text>
         </g>
 
         <g id="node-cpe" data-node-id="cpe" data-node-label="Huawei CPE" tabindex="0" role="button" aria-label="Focus Huawei CPE, undocumented WEBUI, Sequence participant" aria-pressed="false" data-node-kind="external" data-node-sublabel="undocumented WEBUI" data-node-context="Sequence participant">
@@ -5727,7 +5728,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <ul>
           <li>Log in once, then every poll is ten phases in order, not in parallel</li>
           <li>A write starts only from your explicit command after a typed confirmation</li>
-          <li>Nothing is posted to the router before the current state is read</li>
+          <li>Nothing is posted before the current state is read</li>
         </ul>
       </div>
 
@@ -5737,9 +5738,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>The limits that protect the router</h3>
         </div>
         <ul>
-          <li>A hard auth failure stops the loop instead of retrying, because a locked account is worse than an error line</li>
-          <li>The link drop after a band change is expected and named Restarting</li>
+          <li>A hard auth failure stops the loop; a locked account is worse than an error line</li>
+          <li>The link drop after a band change is expected and named</li>
           <li>The read-back is the verdict, not the 200</li>
+          <li>No redirect is followed, so the CSRF token cannot leave for another origin</li>
         </ul>
       </div>
 
@@ -5749,9 +5751,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Where the sources are</h3>
         </div>
         <ul>
-          <li>Login: src/router/client.rs lines 182 to 268</li>
-          <li>Read: src/headless.rs lines 101 to 166</li>
-          <li>Write and verify: src/write.rs lines 179 to 248</li>
+          <li>Login: src/router/client.rs lines 207 to 289</li>
+          <li>Read: src/headless.rs lines 101 to 172</li>
+          <li>Write and verify: src/write.rs lines 237 to 327; the auto rule is 165 to 175</li>
         </ul>
       </div>
     </div>
@@ -5857,7 +5859,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ============================================================
-       Visual style try-on - one topology, four bundled presets.
+       Visual style try-on — one topology, four bundled presets.
        The reader's choice is intentionally session-only: it updates the
        live page and canonical SVG together, but never rewrites the source,
        URL, or a later diagram's authored default.
@@ -5975,7 +5977,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Theme toggle - persists to localStorage, respects system pref
+       Theme toggle — persists to localStorage, respects system pref
        ============================================================ */
 
     Archify.theme = (function () {
@@ -6040,7 +6042,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Export - Share Card / PNG / JPEG / WebP / SVG / WebM and clipboard
+       Export — Share Card / PNG / JPEG / WebP / SVG / WebM and clipboard
 
        Raster exports are always rendered at 4x source resolution for
        maximum sharpness. The trick: we set the serialized SVG's
@@ -6266,16 +6268,16 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
        * Serialize the main SVG into a standalone document.
        *
        * Two modes:
-       * - Default (opts.autoTheme=false) - locks the serialized SVG to the
+       * - Default (opts.autoTheme=false) — locks the serialized SVG to the
        *   viewer's current theme. Used by the raster pipeline
        *   (PNG/JPEG/WebP/clipboard) because canvas rasterization needs
        *   deterministic colors; a raster cannot react to
        *   prefers-color-scheme after encoding.
-       * - theme=auto - emits BOTH dark and light variable sets plus a
+       * - theme=auto — emits BOTH dark and light variable sets plus a
        *   `@media (prefers-color-scheme)` rule so the resulting SVG
        *   self-themes when embedded in GitHub READMEs or other hosts that
        *   expose a color scheme. Used for the default "Download SVG".
-       * - theme=light|dark - locks the standalone SVG to the requested
+       * - theme=light|dark — locks the standalone SVG to the requested
        *   theme, independently of its source Viewer and host OS themes.
        */
       function applyRouteSnapshot(clone, snapshot) {
@@ -6473,7 +6475,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           : null;
         // Scale width/height so the browser rasterizes the vectors at target
         // resolution directly. viewBox stays unchanged so coordinates don't
-        // shift. This is the key to sharp rasters - do NOT scale later via
+        // shift. This is the key to sharp rasters — do NOT scale later via
         // canvas upscaling.
         clone.setAttribute('width', vb.width * scale);
         clone.setAttribute('height', vb.height * scale);
@@ -6777,7 +6779,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         // Serialize at a safe scale (RASTER_SCALE=4 by default, reduced if the
         // resulting canvas would exceed MAX_CANVAS_PIXELS). The SVG itself is
         // rasterized at target resolution natively; drawImage draws at natural
-        // size - no upsampling blur.
+        // size — no upsampling blur.
         var svg = document.querySelector('.diagram-container svg');
         var vb = svg.viewBox.baseVal;
         var layout = figureLayout(vb);
@@ -7636,7 +7638,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Motion Governor - one reader switch and one motion budget. Ambient
+       Motion Governor — one reader switch and one motion budget. Ambient
        trace yields to the strongest semantic owner; Still also parks bounded
        viewer signals without discarding their static meaning.
        ============================================================ */
@@ -8393,7 +8395,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Tree Branches - expand/collapse for hierarchy diagrams. The renderer
+       Tree Branches — expand/collapse for hierarchy diagrams. The renderer
        lays out the complete tree once and tags every node, link, and toggle
        with its ancestors; collapsing only hides descendants, so visible nodes
        never move and the reader keeps their place. Selecting a hidden node
@@ -8524,7 +8526,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Explore - stable-ID neighborhood focus + dependency-free pan/zoom.
+       Explore — stable-ID neighborhood focus + dependency-free pan/zoom.
        Renderer IDs become deep-linkable semantic hooks without turning the
        standalone artifact into a canvas editor.
        ============================================================ */
@@ -10137,7 +10139,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Intent Trace - temporary one-hop topology before durable focus.
+       Intent Trace — temporary one-hop topology before durable focus.
        Fine-pointer hover and keyboard focus share the same stable-ID preview;
        touch continues directly to the existing click-to-focus contract.
        ============================================================ */
@@ -10353,7 +10355,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Adaptive Reader Shell - one diagram across laptop and monitor.
+       Adaptive Reader Shell — one diagram across laptop and monitor.
        The canonical SVG and viewBox never change. On ordinary desktop pages,
        wide diagrams and measured intrinsic tall workflows receive enough outer width to use the available
        height without pushing summary cards below the viewport. Mobile,
@@ -10884,7 +10886,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Viewer Chrome Layout - keep HTML controls clear of the canonical SVG
+       Viewer Chrome Layout — keep HTML controls clear of the canonical SVG
        stage without changing authored geometry. The dock keeps its floating
        appearance while a small bottom stage rail becomes part of the reader
        budget whenever its zero-reserve position would enter the stage.
@@ -11894,7 +11896,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Semantic Radar - simplified semantic bounds + live viewport.
+       Semantic Radar — simplified semantic bounds + live viewport.
        The radar is built at runtime so the checked artifact still contains
        one canonical SVG block, and export serialization remains untouched.
        ============================================================ */
@@ -12521,7 +12523,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Presentation Stage - a shareable, viewport-filling live view.
+       Presentation Stage — a shareable, viewport-filling live view.
        It changes only HTML layout and URL state; SVG semantics and export
        serialization remain untouched. Escape first clears an active
        focus, then exits the stage.
@@ -12595,7 +12597,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Node Finder - stable-ID search over the existing semantic SVG.
+       Node Finder — stable-ID search over the existing semantic SVG.
        Search never changes the IR or SVG geometry: selecting a result resets
        the viewport and delegates to semantic focus.
        ============================================================ */
@@ -12862,7 +12864,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Node Outline - a rail index of the semantic nodes, grouped by their
+       Node Outline — a rail index of the semantic nodes, grouped by their
        authored context. Hover previews neighbors through Intent Trace;
        selection delegates to the Finder's focus-and-reveal path. It reads
        the canonical SVG and never changes geometry or export state.
@@ -13002,7 +13004,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Route Probe - shortest directed path over compiled semantics.
+       Route Probe — shortest directed path over compiled semantics.
        The graph is read from renderer-owned stable IDs and relationship
        endpoints. BFS order follows authored DOM edge order, so equal-length
        choices are deterministic without adding weights or a graph runtime.
@@ -14024,7 +14026,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Semantic Lens - a counted, viewer-only legend over data-node-kind.
+       Semantic Lens — a counted, viewer-only legend over data-node-kind.
        One selected kind reveals every authored relationship touching it.
        Two selected kinds compare only direct cross-kind relationships while
        preserving the full diagram as a dimmed spatial reference.
@@ -14689,7 +14691,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Diagram Guide - a factual command deck over existing interactions.
+       Diagram Guide — a factual command deck over existing interactions.
        Counts come from compiled semantics; actions delegate to Finder, Route
        Probe, Semantic Radar, Semantic Lens, Presentation, theme, export, and
        camera without adding a second command implementation or SVG state.

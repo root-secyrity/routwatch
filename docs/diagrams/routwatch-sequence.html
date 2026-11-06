@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="archify 3.2.0">
   <meta name="archify-reader-contract" content="declared-wide-v1">
-  <title>routwatch - جولة كاملة: مصادقة، قراءة، ثم كتابة مُتحقَّقة - مخطّط</title>
+  <title>routwatch: جولة كاملة، دخول ثم قراءة ثم كتابة مُتحقَّقة — مخطّط</title>
   <script>
     // Resolve the theme before first paint so light-preference users don't
     // see a dark flash. The toolbar script below re-applies with UI state.
@@ -168,7 +168,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
   </style>
   <style>
     /* ==========================================================
-       THEME VARIABLES - switch by toggling [data-theme] on <html>
+       THEME VARIABLES — switch by toggling [data-theme] on <html>
        ========================================================== */
     :root,
     [data-theme="dark"] {
@@ -257,7 +257,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ==========================================================
-       SIGNAL FLOW - an opt-in, motion-forward visual preset.
+       SIGNAL FLOW — an opt-in, motion-forward visual preset.
        The variables also target a standalone exported SVG, whose
        root carries data-preset and data-theme directly.
        ========================================================== */
@@ -325,7 +325,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ==========================================================
-       BLUEPRINT - a review-first drafting preset for deployment,
+       BLUEPRINT — a review-first drafting preset for deployment,
        infrastructure, and technical design documentation. It keeps
        the same semantic palette and geometry while trading glow for
        precise grid contrast, squared materials, and drafting marks.
@@ -401,7 +401,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ==========================================================
-       EDITORIAL - a warm, publication-minded preset for design
+       EDITORIAL — a warm, publication-minded preset for design
        reviews, launch notes, and documentation. The diagram keeps
        the same semantic palette and exact geometry, but trades
        software chrome for paper, ink, ruled structure, and one
@@ -2505,7 +2505,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       font-size: 0.625rem;
       font-style: normal;
     }
-    /* A zero count is absence, not information - let it recede. */
+    /* A zero count is absence, not information — let it recede. */
     .node-finder-result em[data-zero] { color: var(--text-faint); }
     .node-finder[data-context^="route-"] .node-finder-result em {
       padding: 0.1rem 0.3rem;
@@ -3066,7 +3066,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     .card-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--card-tone, transparent) 16%, transparent); }
 
     /* ==========================================================
-       Print stylesheet - hide interactive controls, force light,
+       Print stylesheet — hide interactive controls, force light,
        drop the grid so the diagram doesn't waste ink, use landscape
        so wide diagrams fit, pack summary cards into 2 columns to
        avoid an orphan card on a trailing page.
@@ -3074,8 +3074,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     @page { size: landscape; margin: 1.5cm; }
 
     @media print {
-      /* Force the FULL light palette - including component fills/strokes and
-         lane/arrow colors - so printing from dark theme doesn't put neon
+      /* Force the FULL light palette — including component fills/strokes and
+         lane/arrow colors — so printing from dark theme doesn't put neon
          strokes and translucent dark fills on white paper. */
       :root, [data-theme="dark"], [data-theme="light"] {
         --bg: #ffffff;
@@ -3816,7 +3816,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       font-size: 0.6875rem;
     }
 
-    /* Toast - brief feedback for actions like "copied" */
+    /* Toast — brief feedback for actions like "copied" */
     .archify-toast {
       position: fixed;
       top: 1rem;
@@ -4131,7 +4131,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ==========================================================
-       SVG SEMANTIC CLASSES - use these instead of inline fill/stroke
+       SVG SEMANTIC CLASSES — use these instead of inline fill/stroke
        ========================================================== */
     .c-grid       { stroke: var(--grid); fill: none; }
     .c-mask       { fill: var(--mask); stroke: none; }
@@ -5194,17 +5194,17 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
            data-preset-badge-blueprint="مخطّط هندسي / إصدار ٠١"
            data-preset-badge-editorial="تحريري / ملاحظة ميدانية">
         <div class="pulse-dot"></div>
-        <h1>routwatch - جولة كاملة: مصادقة، قراءة، ثم كتابة مُتحقَّقة</h1>
+        <h1>routwatch: جولة كاملة، دخول ثم قراءة ثم كتابة مُتحقَّقة</h1>
       </div>
     </div>
 
-    <script id="archify-source-evidence-data" type="application/json">{"schemaVersion":1,"verified":true,"repository":{"url":"https://github.com/root-secyrity/routwatch","revision":"2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f","shortRevision":"2ef59c9","label":"root-secyrity/routwatch","href":"https://github.com/root-secyrity/routwatch/tree/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f"},"referenceCount":8,"nodes":{"app":[{"path":"src/main.rs","line":32,"endLine":40,"label":"المدخل","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/main.rs#L32-L40"},{"path":"src/app.rs","line":1,"endLine":3,"label":"حالة نقية","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/app.rs#L1-L3"}],"worker":[{"path":"src/worker.rs","line":180,"endLine":200,"label":"الحلقة","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/worker.rs#L180-L200"},{"path":"src/worker.rs","line":303,"endLine":344,"label":"الدخول والجولة","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/worker.rs#L303-L344"}],"client":[{"path":"src/router/client.rs","line":182,"endLine":196,"label":"login","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/router/client.rs#L182-L196"},{"path":"src/router/client.rs","line":281,"endLine":284,"label":"get","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/router/client.rs#L281-L284"}],"cpe":[{"path":"src/router/client.rs","line":84,"endLine":91,"label":"بناء /api/","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/router/client.rs#L84-L91"},{"path":"src/router/endpoints.rs","line":15,"endLine":19,"label":"أول نقطة","href":"https://github.com/root-secyrity/routwatch/blob/2ef59c9c8bcdb6db1cf731e6c48098f945a90e7f/src/router/endpoints.rs#L15-L19"}]}}</script>
+    <script id="archify-source-evidence-data" type="application/json">{"schemaVersion":1,"verified":true,"repository":{"url":"https://github.com/root-secyrity/routwatch","revision":"a2610eed97dbc879ebfa30f49ef38db7d05e3d4a","shortRevision":"a2610ee","label":"root-secyrity/routwatch","href":"https://github.com/root-secyrity/routwatch/tree/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a"},"referenceCount":9,"nodes":{"app":[{"path":"src/main.rs","line":41,"endLine":86,"label":"المدخل","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/main.rs#L41-L86"},{"path":"src/app.rs","line":311,"endLine":371,"label":"حالة نقية","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/app.rs#L311-L371"}],"worker":[{"path":"src/worker.rs","line":186,"endLine":194,"label":"الإنشاء","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/worker.rs#L186-L194"},{"path":"src/worker.rs","line":196,"endLine":384,"label":"الحلقة","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/worker.rs#L196-L384"}],"client":[{"path":"src/router/client.rs","line":19,"endLine":28,"label":"الجلسة","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/client.rs#L19-L28"},{"path":"src/router/client.rs","line":30,"endLine":42,"label":"بلا متابعة تحويل","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/client.rs#L30-L42"},{"path":"src/router/client.rs","line":207,"endLine":289,"label":"الدخول","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/client.rs#L207-L289"}],"cpe":[{"path":"src/router/client.rs","line":51,"endLine":51,"label":"القاعدة","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/client.rs#L51"},{"path":"src/router/endpoints.rs","line":15,"endLine":19,"label":"أول نقطة","href":"https://github.com/root-secyrity/routwatch/blob/a2610eed97dbc879ebfa30f49ef38db7d05e3d4a/src/router/endpoints.rs#L15-L19"}]}}</script>
     <script id="archify-i18n-data" type="application/json">{"locale":"ar","messages":{"viewer.kind.frontend":"واجهة","viewer.kind.backend":"خدمة","viewer.kind.database":"قاعدة بيانات","viewer.kind.cloud":"سحابة","viewer.kind.security":"حماية","viewer.kind.messagebus":"ناقل رسائل","viewer.kind.external":"خارجي","viewer.kind.neutral":"محايد","viewer.kind.node":"عقدة","viewer.kind.start":"بداية","viewer.kind.active":"نشِط","viewer.kind.waiting":"منتظِر","viewer.kind.decision":"قرار","viewer.kind.success":"نجاح","viewer.kind.failure":"فشل","viewer.toolbar.actions":"إجراءات المخطّط","viewer.theme.toggle.title":"تبديل الثيم (T)","viewer.theme.toggle":"تبديل ثيم الألوان","viewer.theme.dark":"داكن","viewer.theme.light":"فاتح","viewer.preset.choose.title":"اختر الهوية البصرية (S للتدوير)","viewer.preset.choose":"اختر الهوية البصرية","viewer.preset.style":"الهوية","viewer.preset.menu":"الهوية البصرية","viewer.preset.identity":"الهوية البصرية","viewer.preset.cycles":"للتدوير","viewer.preset.classic":"كلاسيكي","viewer.preset.classic.short":"كلاسيكي","viewer.preset.classic.hint":"الافتراضي التقني المستقر","viewer.preset.flow":"تدفّق الإشارة","viewer.preset.flow.short":"تدفّق","viewer.preset.flow.hint":"عرضٌ حركي","viewer.preset.blueprint":"مخطّط هندسي","viewer.preset.blueprint.hint":"مراجعة هندسية","viewer.preset.editorial":"تحريري","viewer.preset.editorial.hint":"ملاحظاتُ النشر والإطلاق","viewer.preset.badge.signalFlow":"تدفّق الإشارة","viewer.preset.badge.blueprint":"مخطّط هندسي / إصدار ٠١","viewer.preset.badge.editorial":"تحريري / ملاحظة ميدانية","viewer.preset.badge.editorialPlate":"ARCHIFY / لوحة ٠٤","viewer.preset.current":"الهوية البصرية: {style}. اختر الهوية البصرية","viewer.motion.live":"حيّ","viewer.motion.still":"ساكن","viewer.motion.pause":"أوقف الحركة","viewer.motion.resume":"استأنف الحركة","viewer.motion.reduced":"الحركةُ متوقّفة بسبب تفضيل تقليل الحركة","viewer.motion.hidden":"الحركةُ متوقّفة ما دامت الصفحة مخفيّة","viewer.motion.yielding":"أوقف الحركة؛ تُسلّم الآن إلى {owner}","viewer.motion.yielding.title":"المعاينةُ الحيّة مفعّلة · تُسلّم إلى {owner}","viewer.owner.route":"مسبار المسار","viewer.owner.lens":"العدسة الدلالية","viewer.owner.relationship":"معاينة العلاقة","viewer.owner.intent":"تتبّع النيّة","viewer.owner.focus":"إبرازٌ دلالي","viewer.owner.legend":"معاينة المفتاح","viewer.owner.reader":"تفاعلُ القارئ","viewer.present.enter":"ادخل منصّة العرض","viewer.present.enter.title":"منصّة العرض (F)","viewer.present.exit":"اخرج من منصّة العرض","viewer.present.exit.title":"اخرج من منصّة العرض (F أو Escape)","viewer.present.present":"عرض","viewer.present.exit.label":"خروج","viewer.export.button":"تصدير","viewer.export.button.title":"تصدير المخطّط (E)","viewer.export.diagram":"تصدير المخطّط","viewer.export.menu":"تصدير","viewer.export.subtitle":"مخرجاتٌ نظيفة ومتنقّلة","viewer.export.share":"مشاركة","viewer.export.shareCard":"بطاقة مشاركة","viewer.export.routeShareCard":"بطاقة مشاركة مسار","viewer.export.reachShareCard":"بطاقة مشاركة امتداد","viewer.export.copyDiagram":"انسخ المخطّط","viewer.export.clipboardPng":"PNG إلى الحافظة","viewer.export.raster":"صور نقطية","viewer.export.image":"صورة","viewer.export.lossless":"صورة بلا فقد","viewer.export.compact":"صورة مضغوطة","viewer.export.modern":"صورة حديثة","viewer.export.vectorMotion":"متجهاتٌ وحركة","viewer.export.vectorMotion.heading":"متجهاتٌ وحركة","viewer.export.editable":"متجهٌ قابل للتحرير","viewer.export.svg.auto":"SVG · تلقائي","viewer.export.svg.auto.hint":"يطابق ثيم المضيف","viewer.export.svg.light":"SVG · فاتح","viewer.export.svg.light.hint":"فاتحٌ دومًا","viewer.export.svg.dark":"SVG · داكن","viewer.export.svg.dark.hint":"داكنٌ دومًا","viewer.export.motion6s":"حركة ٦ ثوانٍ","viewer.export.unsupported":"لا يدعمه هذا المتصفح","viewer.export.clipboardUnsupported":"كتابةُ صورة في الحافظة لا يدعمها هذا المتصفح","viewer.export.clipboardUnsupported.short":"كتابةُ صورة في الحافظة لا يدعمها هذا المتصفح.","viewer.export.motionUnavailable":"التقاطُ الحركة غير متاح في هذا المتصفح","viewer.export.webmUnavailable":"WebM غير متاح في هذا المتصفح","viewer.export.failed":"فشل التصدير: {message}","viewer.export.unknownVariant":"نوعُ بطاقة مشاركة غير معروف: {variant}","viewer.export.routeRequired":"تتبّع مسارًا قبل تصدير بطاقة مشاركة مسار","viewer.export.reachRequired":"تتبّع امتدادًا مُؤَلَّفًا قبل تصدير بطاقة مشاركة امتداد","viewer.export.unknown":"غير معروف","viewer.export.routeFailed":"فشل تصدير بطاقة مشاركة مسار: {message}","viewer.export.reachFailed":"فشل تصدير بطاقة مشاركة امتداد: {message}","viewer.export.copyFailed":"فشل النسخ: {message}","viewer.export.copiedPng":"نُسخ PNG إلى الحافظة","viewer.export.downloadedRoute":"نُزّلت بطاقة مشاركة مسار","viewer.export.downloadedReach":"نُزّلت بطاقة مشاركة امتداد","viewer.export.downloadedWebm":"نُزّل WebM","viewer.export.recording":"يُسجّل ٦ ثوانٍ من الحركة…","viewer.export.card.routeSummary.one":"المسار: من {source} إلى {target} · عدد الخطوات: {count}","viewer.export.card.routeSummary.other":"المسار: من {source} إلى {target} · عدد الخطوات: {count}","viewer.export.card.reachSummary":"الامتداد المُؤَلَّف نحو {direction} من {origin} · {nodes} · {links} · {hops} كحد أقصى","viewer.export.card.node.one":"عدد العُقد: {count}","viewer.export.card.node.other":"عدد العُقد: {count}","viewer.export.card.link.one":"عدد الروابط: {count}","viewer.export.card.link.other":"عدد الروابط: {count}","viewer.export.card.hop.one":"عدد القفزات: {count}","viewer.export.card.hop.other":"عدد القفزات: {count}","viewer.export.card.routeBadge":"ARCHIFY · مسار · {hops}","viewer.export.card.reachBadge":"ARCHIFY · امتداد {direction}","viewer.export.direction.upstream":"المنبع","viewer.export.direction.downstream":"المصبّ","viewer.export.error.canvasUnavailable":"لوحة الرسم غير متاحة لـ{label}","viewer.export.error.contextUnavailable":"سياقُ لوحة الرسم ثنائيِّ الأبعاد غير متاح لـ{label}","viewer.export.error.toBlobUnavailable":"canvas.toBlob غير متاح لـ{label}","viewer.export.error.toBlobNull":"canvas.toBlob لم يُعِد بياناتٍ لـ{label}","viewer.export.error.variantsCombined":"لا يمكن جمع أنواع بطاقة المشاركة","viewer.export.error.viewerState":"لم يستطع تصديرُ بطاقة المشاركة إزالةَ حالة العارض المؤقّتة","viewer.export.error.routeState":"لم تستطع بطاقة المسار حفظَ المسار المحسوم بأمان","viewer.export.error.reachState":"لم تستطع بطاقة الامتداد حفظَ الامتداد المُؤَلَّف بأمان","viewer.export.error.webmRequirements":"تصديرُ حركة WebM يحتاج حركةَ تتبّع ودعمَ MediaRecorder في المتصفح","viewer.export.error.mediaRecorder":"فشل MediaRecorder","viewer.export.error.emptyWebm":"أنتج MediaRecorder ملفَّ WebM فارغًا","viewer.export.error.webmBackground":"لم تُحمَّل خلفيةُ SVG لتصدير WebM","viewer.guide.title":"استكشف هذا النظام","viewer.focus.selectedNodes":"{count} عقدة مختارة","viewer.guide.eyebrow":"دليلُ المخطّط","viewer.guide.close":"أغلق دليل المخطّط","viewer.guide.inspecting":"يفحص الدلالاتِ المُصرَّفة","viewer.guide.actions":"إجراءاتُ استكشاف المخطّط","viewer.guide.find":"ابحث عن أي عقدة","viewer.guide.find.hint":"ابحث في التسميات والمسؤوليات والأنواع والمعرّفات الثابتة.","viewer.guide.route":"تتبّع مسارًا","viewer.guide.route.aria":"تتبّع مسارًا موجَّهًا","viewer.guide.route.hint":"اسأل كيف تتّصل عقدتان دلاليتان في الاتجاه المُؤَلَّف.","viewer.guide.map":"شاهد النظام كاملًا","viewer.guide.map.hint":"افتح الرادار الدلالي بنافذةٍ حيّة وعُقدٍ ثابتة.","viewer.guide.lens":"قارن الأنواع الدلالية","viewer.guide.lens.hint":"عُدّ الأدوار، واكشف حركتها، وقارن الروابط المُؤَلَّفة المباشرة.","viewer.guide.present":"ادخل منصّة العرض","viewer.guide.present.hint":"امنح المخطّطَ الحيّ نافذةَ العرض بلا تغيير التصدير.","viewer.guide.shortcuts":"اختصاراتُ لوحة المفاتيح الإضافية","viewer.guide.shortcut.export":"تصدير","viewer.guide.shortcut.theme":"الثيم","viewer.guide.shortcut.style":"الهوية","viewer.guide.shortcut.reset":"إعادة الضبط","viewer.guide.shortcut.zoomIn":"تكبير","viewer.guide.shortcut.zoomOut":"تصغير","viewer.guide.shortcut.close":"إغلاق","viewer.guide.credit":"أفادك Archify؟ نجمةٌ على GitHub تُساعد","viewer.guide.star":"نجمة","viewer.guide.facts":"{nodes} · {relationships}","viewer.guide.fact.node.one":"{count} عقدة دلالية","viewer.guide.fact.node.other":"{count} عقدة دلالية","viewer.guide.fact.relationship.one":"{count} علاقة","viewer.guide.fact.relationship.other":"{count} علاقة","viewer.guide.open":"افتح دليل المخطّط","viewer.finder.title":"ابحث عن عقدة","viewer.finder.close":"أغلق باحث العُقد","viewer.finder.placeholder":"ابحث في التسميات أو المعرّفات","viewer.finder.search":"ابحث في عُقد المخطّط","viewer.finder.results":"عُقد المخطّط","viewer.finder.empty":"لا عُقدَ مطابقة","viewer.finder.result.focus":"إبراز {label}","viewer.finder.result.routeStart":"اختر {label} بدايةً للمسار","viewer.finder.result.routeTarget":"اختر {label} نهايةً للمسار، {links}","viewer.finder.status.empty":"لا عُقدَ مطابقة","viewer.finder.status.count.one":"{count} عقدة مطابقة","viewer.finder.status.count.other":"{count} عقدة مطابقة","viewer.finder.noun.nodes":"عقدة","viewer.finder.link.one":"{count} رابط","viewer.finder.link.other":"{count} روابط","viewer.finder.result.focus.one":"إبراز {label}، {count} اتّصالٌ مرتبط","viewer.finder.result.focus.other":"إبراز {label}، {count} اتّصالًا مرتبطًا","viewer.finder.status.filtered":"{visible} من {available} {noun}","viewer.finder.status.all":"{available} {noun}","viewer.passport.eyebrow":"الجواز الدلالي","viewer.passport.metadata":"بياناتُ العقدة","viewer.passport.evidence":"أدلةٌ مصدرية مُتحقَّق منها","viewer.passport.verified":"مصدرٌ مُتحقَّق منه","viewer.passport.verificationScope":"مُتحقَّق منه مقابل Git المحلي عند الالتزام المثبَّت. ولم يُفحَص الوصولُ إلى الريموت.","viewer.passport.reach":"امتدادٌ مُؤَلَّف","viewer.passport.reach.trace":"تتبّعُ الوصول المُؤَلَّف","viewer.passport.upstream":"المنبع","viewer.passport.downstream":"المصبّ","viewer.passport.upstream.trace":"تتبّعُ الوصول المُؤَلَّف نحو المنبع","viewer.passport.downstream.trace":"تتبّعُ الوصول المُؤَلَّف نحو المصبّ","viewer.passport.close":"أغلق الجواز الدلالي","viewer.passport.move":"حرّك الجواز الدلالي. اسحب، أو استخدم أسهم المفاتيح، أو اضغط Home لإعادته.","viewer.passport.copy":"انسخ الرابط","viewer.passport.copy.focus":"انسخ رابط العقدة المُبرَزة","viewer.passport.relations":"العلاقات","viewer.passport.relations.show":"أظهر العلاقات المتّصلة","viewer.passport.relations.hide":"أخفِ العلاقات المتّصلة","viewer.passport.relations.list":"العلاقات المتّصلة","viewer.passport.copyRelation":"انسخ العلاقة","viewer.passport.copyNode":"انسخ العقدة","viewer.passport.copyPinned":"انسخ رابط العلاقة المثبَّتة","viewer.passport.copySource":"انسخ رابط عقدة المصدر","viewer.passport.copy.focused.success":"نُسخ رابط العقدة المُبرَزة","viewer.passport.copy.pinned.success":"نُسخ رابط العلاقة المثبَّتة","viewer.passport.copy.focused.failed":"تعذّر نسخُ رابط العقدة المُبرَزة","viewer.passport.copy.pinned.failed":"تعذّر نسخُ رابط العلاقة المثبَّتة","viewer.passport.relationship.none":"لا علاقاتٍ متّصلة","viewer.passport.relationship.count.one":"{count} علاقة","viewer.passport.relationship.count.other":"{count} علاقة","viewer.passport.relationship.show.one":"أظهر {count} علاقة متّصلة","viewer.passport.relationship.show.other":"أظهر {count} علاقة متّصلة","viewer.passport.relationship.summary":"{out} صادر · {in} وارد{loops}","viewer.passport.relationship.loops":" · {count} حلقة","viewer.passport.relationship.explorer":"مستكشفُ العلاقات المباشر","viewer.passport.relationship.help":"استخدم أسهم المفاتيح لاستكشاف العلاقات. اضغط Enter أو Space لتثبيت التفاصيل، وEscape للمسح.","viewer.passport.relationship.loopsBack":"يعود إلى نفسه","viewer.passport.relationship.connectsTo":"يتّصل بـ","viewer.passport.relationship.connectsFrom":"يتّصل منه","viewer.passport.relationship.pinned":"علاقةٌ مثبَّتة · من {from} إلى {to} · {label}","viewer.passport.relationship.inspect":"افحص العلاقة {index} من {total}: من {from} إلى {to}، {label}. اضغط Enter للتفاصيل.","viewer.passport.relationship.group.out":"صادر","viewer.passport.relationship.group.in":"وارد","viewer.passport.relationship.group.loop":"حلقاتٌ ذاتية","viewer.passport.relationship.row":"{group}: {relationship}، {neighbor}","viewer.passport.relationship.direction.out":"صادر","viewer.passport.relationship.direction.in":"وارد","viewer.passport.relationship.direction.loop":"حلقة","viewer.passport.sourceCount.one":"{count} مرجعٌ مصدري مُتحقَّق منه","viewer.passport.sourceCount.other":"{count} مراجعَ مصدرية مُتحقَّق منها","viewer.passport.repository.open":"افتح التزام المستودع المُتحقَّق منه {revision}","viewer.passport.source.open":"افتح المصدرَ المُتحقَّق منه {path} عند الالتزام {revision}","viewer.passport.source.openLink":"افتح ↗","viewer.passport.reach.upstream.one":"تتبّع العُقد المُؤَلَّفة نحو المنبع (العدد: {count})","viewer.passport.reach.upstream.other":"تتبّع العُقد المُؤَلَّفة نحو المنبع (العدد: {count})","viewer.passport.reach.downstream.one":"تتبّع العُقد المُؤَلَّفة نحو المصبّ (العدد: {count})","viewer.passport.reach.downstream.other":"تتبّع العُقد المُؤَلَّفة نحو المصبّ (العدد: {count})","viewer.passport.reach.noUpstream":"لا عُقدَ مُؤَلَّفة نحو المنبع","viewer.passport.reach.noDownstream":"لا عُقدَ مُؤَلَّفة نحو المصبّ","viewer.passport.reach.status":"{direction} · عدد العُقد: {nodes} · عدد الروابط: {links} · أقصى عدد للقفزات: {hops}","viewer.route.eyebrow":"مسار","viewer.route.start":"انقر حيث يبدأ المسار","viewer.route.start.find":"ابحث عن بداية","viewer.route.start.find.aria":"ابحث عن بداية مسار","viewer.route.copy":"انسخ الرابط","viewer.route.copy.aria":"انسخ رابط المسار المتتبَّع","viewer.route.clear":"مسح","viewer.route.clear.aria":"امسح مسبار المسار","viewer.route.traced":"المسار","viewer.route.pickTwo":"انقر عقدتين على المخطّط","viewer.route.pickOne":"انقر عقدةً على المخطّط","viewer.route.controls":"أدواتُ رحلة المسار","viewer.route.previous":"موضعُ المسار السابق","viewer.route.play":"شغّل رحلة المسار","viewer.route.pause":"أوقف رحلة المسار","viewer.route.replay":"أعِد رحلة المسار","viewer.route.next":"موضعُ المسار التالي","viewer.route.journey":"الرحلة","viewer.route.pause.label":"إيقاف","viewer.route.replay.label":"إعادة","viewer.route.overview":"نظرة عامة","viewer.route.overview.aria":"أظهر نظرة المسار الكاملة","viewer.route.instructions":"انقر بدايةً ثم نهاية. المسارات تتبع الأسهم.","viewer.route.destination":"إلى أين ينتهي المسار من {label}؟","viewer.route.destination.find":"ابحث عن وجهة","viewer.route.destination.find.aria":"ابحث عن وجهةِ مسارٍ يمكن الوصول إليها","viewer.route.differentDestination":"اختر وجهةً أخرى","viewer.route.distinct":"اختر عقدتين مختلفتين.","viewer.route.unreachable":"لا يمكن الوصول إلى {label} من هنا","viewer.route.unreachable.detail":"لا يمكن الوصول من {source} إلى {target} عبر الأسهم. اختر عقدةً مُضاءة.","viewer.route.start.instructions":"بعدها اختر النهاية. ستُضاء العُقد التي يمكن الوصول إليها فقط.","viewer.route.copy.success":"نُسخ رابط المسار المتتبَّع","viewer.route.copy.failed":"تعذّر نسخُ رابط المسار المتتبَّع","viewer.route.position":"موضعُ المسار {index} من {total}: {label}","viewer.route.step":"الخطوة {index} من {total} · {phase} · {label}","viewer.route.motionRequired":"الرحلةُ التلقائية تحتاج الحركة الحيّة","viewer.route.trigger.clear":"امسح المسار المتتبَّع","viewer.route.overview.status":"{nodes} · {hops} · أقصر مسار","viewer.route.overview.node.one":"{count} عقدة","viewer.route.overview.node.other":"{count} عقدة","viewer.route.overview.hop.one":"{count} خطوة","viewer.route.overview.hop.other":"{count} خطوات","viewer.route.phase.playing":"قيد التشغيل","viewer.route.phase.complete":"مكتمل","viewer.route.phase.inspecting":"قيد الفحص","viewer.route.destination.count.one":"{count} عقدة قابلة للوصول مُضاءة. انقرها.","viewer.route.destination.count.other":"{count} عقدة قابلة للوصول مُضاءة. انقر إحداها.","viewer.route.noOutgoing":"لا أسهمَ تخرج من هذه العقدة. امسحها واختر بدايةً أخرى.","viewer.route.result.title":"من {source} إلى {target}","viewer.route.finder.source.title":"اختر بداية المسار","viewer.route.finder.source.placeholder":"ابحث في بدايات المسار","viewer.route.finder.source.empty":"لا بداياتِ مسارٍ مطابقة","viewer.route.finder.source.results":"عُقدٌ تصلح بدايةً للمسار","viewer.route.finder.source.noun":"بداياتُ المسار","viewer.route.finder.source.badge":"بداية","viewer.route.finder.target.title":"الوجهة من {label}","viewer.route.finder.target.placeholder":"ابحث في الوجهات القابلة للوصول","viewer.route.finder.target.empty":"لا وجهاتٍ مطابقة قابلة للوصول","viewer.route.finder.target.results":"وجهاتُ المسار القابلة للوصول","viewer.route.finder.target.noun":"وجهاتٌ قابلة للوصول","viewer.route.hop.one":"{count} قفزة","viewer.route.hop.other":"{count} قفزات","viewer.lens.eyebrow":"العدسة الدلالية","viewer.lens.title":"قارن أدوار النظام","viewer.lens.close":"أغلق العدسة الدلالية","viewer.lens.instruction":"اختر نوعين دلاليين على الأكثر. الواحد يكشف حركته الحقيقية، والاثنان يقارنان الروابط المُؤَلَّفة المباشرة فقط.","viewer.lens.kinds":"الأنواع الدلالية","viewer.lens.choose":"اختر نوعًا لتفحص عُقده وعلاقاته الملامسة.","viewer.lens.copy":"انسخ رابط العدسة الدلالية","viewer.lens.clear":"أفرغ العدسة الدلالية","viewer.lens.open":"افتح العدسة الدلالية","viewer.lens.openActive":"افتح العدسة الدلالية النشطة","viewer.lens.legend":"المفتاح الدلالي","viewer.lens.legend.inspect.one":"افحص {label}، {count} عقدة","viewer.lens.legend.inspect.other":"افحص {label}، {count} عقدة","viewer.lens.kind.count.one":"{label}، {count} عقدة","viewer.lens.kind.count.other":"{label}، {count} عقدة","viewer.lens.compare.one":"{first} إلى {second}: {forward} · {second} إلى {first}: {reverse} · {count} علاقة مباشرة","viewer.lens.compare.other":"{first} إلى {second}: {forward} · {second} إلى {first}: {reverse} · {count} علاقة مباشرة","viewer.lens.single":"{nodes} · {relationships} · تبقى الأقران المتّصلة ظاهرة","viewer.lens.node.one":"{count} عقدة {label}","viewer.lens.node.other":"{count} عقدة {label}","viewer.lens.relationship.one":"{count} علاقةٌ ملامسة","viewer.lens.relationship.other":"{count} علاقةٌ ملامسة","viewer.radar.title":"رادار دلالي","viewer.radar.building":"جارٍ إنشاء النظرة العامة","viewer.radar.openFull":"افتح الرادار الدلالي الكامل","viewer.radar.open":"افتح الرادار","viewer.radar.close":"أغلق الرادار الدلالي","viewer.radar.surface":"نظرةٌ عامة على المخطّط. انقر عقدةً لإبرازها، أو حرّك بأسهم المفاتيح.","viewer.radar.click":"انقر عقدة","viewer.radar.drag":"اسحب للتحريك","viewer.radar.space":"الرادار الدلالي يحتاج مساحةَ خريطةٍ أكبر.","viewer.radar.nodes":"عُقد الرادار الدلالي في المخطّط","viewer.radar.focus":"أبرِز {label} من الرادار الدلالي","viewer.radar.status":"{count} عقدة · {viewport}","viewer.radar.fullMap":"{count} عقدة · الخريطة كاملة","viewer.radar.compacted":"طُوي الرادار لئلّا يغطّي الجواز الدلالي أو أدوات الخريطة.","viewer.radar.cancelWaiting":"ألغِ انتظار الرادار الدلالي مساحةَ خريطةٍ أكبر","viewer.radar.needsSpace":"الرادار الدلالي يحتاج مساحةَ خريطةٍ مرئية أكبر","viewer.radar.viewport.full":"الخريطة كاملة","viewer.radar.viewport.width":"{percent}% عرضًا","viewer.radar.viewport.scale":"{percent}% من نافذة العرض","viewer.nav.controls":"أدواتُ عرض المخطّط","viewer.nav.route":"تتبّع مسارًا موجَّهًا","viewer.nav.route.title":"تتبّع مسار (R)","viewer.nav.route.short":"مسار","viewer.nav.radar":"افتح الرادار الدلالي","viewer.nav.radar.title":"الرادار الدلالي (M)","viewer.nav.radar.short":"خريطة","viewer.nav.lens":"افتح العدسة الدلالية","viewer.nav.lens.title":"العدسة الدلالية (L)","viewer.nav.lens.short":"عدسة","viewer.nav.find":"ابحث عن عقدة","viewer.nav.find.title":"ابحث عن عقدة (/)","viewer.outline.title":"فهرسُ العُقد","viewer.rail.show":"ملاحظاتٌ وفهرس","viewer.rail.controls":"لوحةٌ جانبية","viewer.rail.collapse":"اطوِ اللوحة الجانبية","viewer.rail.bottom":"انقل اللوحة أسفل المخطّط","viewer.rail.right":"انقل اللوحة بجانب المخطّط","viewer.nav.guide":"افتح دليل المخطّط","viewer.nav.guide.title":"دليل المخطّط (?)","viewer.nav.zoomOut":"تصغير","viewer.nav.zoomOut.title":"تصغير (-)","viewer.nav.reset":"أعِد ضبط عرض المخطّط","viewer.nav.reset.title":"أعِد الضبط (0)","viewer.nav.read":"قراءة","viewer.nav.zoomIn":"تكبير","viewer.nav.zoomIn.title":"تكبير (+)","viewer.nav.camera":"{hint}. إعادةُ ضبط عرض المخطّط","viewer.nav.camera.title":"{semantic}{hint} · إعادة الضبط (0)","viewer.nav.camera.semantic":"كاميرا دلالية نشطة · ","viewer.nav.level.map":"خريطة","viewer.nav.level.read":"قراءة","viewer.nav.level.full":"كامل","viewer.nav.level.auto":"تلقائي","viewer.nav.detail.map":"كبّر لتكشف تسميات العلاقات وسياق العُقد","viewer.nav.detail.read":"كبّر مرةً أخرى لتكشف الوسوم والتعليقات","viewer.nav.detail.full":"تفاصيل المخطّط كاملة","viewer.intent.summary":"{label}. {out} صادر، {in} وارد{loops}. {total} اتّصالًا. اضغط Enter للتفاصيل.","viewer.intent.loops":"، {count} حلقة ذاتية","viewer.common.copied":"نُسخ","viewer.common.copyFailed":"فشل النسخ","viewer.common.copyLink":"انسخ الرابط","viewer.common.clear":"مسح","viewer.common.close":"إغلاق"}}</script>
     <!-- Main Diagram -->
     <div class="diagram-container" data-detail-level="read"
          data-preset-badge-editorial-plate="ARCHIFY / لوحة ٠٤">
       <svg viewBox="0 0 920 1198" data-sequence-column-fit="spread" data-reader-fit="width-first" role="img" lang="ar" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" data-motion-choreography="sequence">
-        <title id="archify-diagram-title">routwatch - جولة كاملة: مصادقة، قراءة، ثم كتابة مُتحقَّقة</title>
+        <title id="archify-diagram-title">routwatch: جولة كاملة، دخول ثم قراءة ثم كتابة مُتحقَّقة</title>
         <desc id="archify-diagram-description">مخطّطُ تتابعٍ مُولَّد بـArchify.</desc>
         <!-- Definitions -->
         <defs>
@@ -5252,11 +5252,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <rect x="787.5" y="240" width="10" height="778" rx="3" class="c-external" stroke-width="1"/>
 
         <!-- Messages -->
-        <g data-edge-from="app" data-edge-to="worker" data-edge-label="spawn + قناتا Cmd / Ev" data-edge-key="0" data-edge-id="spawn">
+        <g data-edge-from="app" data-edge-to="worker" data-edge-label="إنشاء الخيط + قناتا Cmd وEv" data-edge-key="0" data-edge-id="spawn">
           <path data-composition-edge-from="app" data-composition-edge-to="worker" data-composition-edge-id="spawn" data-composition-points="156.5,170;356.83333333333337,170" d="M 156.5 170 L 356.83333333333337 170" class="a-default" data-animate="edge" style="--step:0" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="178.0666666666667" y="150" width="157.2" height="18" rx="3" class="c-mask"/>
-          <text x="256.6666666666667" y="160" class="t-muted" font-size="11" text-anchor="middle">spawn + قناتا Cmd / Ev</text>
+          <rect x="161.5666666666667" y="150" width="190.2" height="18" rx="3" class="c-mask"/>
+          <text x="256.6666666666667" y="160" class="t-muted" font-size="11" text-anchor="middle">إنشاء الخيط + قناتا Cmd وEv</text>
         </g>
         </g>
 
@@ -5268,13 +5268,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="GET / + state-login" data-edge-key="2" data-edge-id="probe-login">
+        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="GET / ثم state-login" data-edge-key="2" data-edge-id="probe-login">
           <path data-composition-edge-from="client" data-composition-edge-to="cpe" data-composition-edge-id="probe-login" data-composition-points="585.1666666666667,228;785.5,228" d="M 585.1666666666667 228 L 785.5 228" class="a-default" data-animate="edge" style="--step:2" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="616.6333333333334" y="208" width="137.39999999999998" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333335" y="218" class="t-muted" font-size="11" text-anchor="middle">GET / + state-login</text>
+          <rect x="613.3333333333334" y="208" width="144" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333334" y="218" class="t-muted" font-size="11" text-anchor="middle">GET / ثم state-login</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="246" class="t-muted" font-size="7">CSRF + password_type من الفيرموير</text>
+        <text data-detail="context" x="597.1666666666667" y="246" class="t-muted" font-size="7">CSRF وpassword_type؛ أي 302 يُرفض ولا يُتبع</text>
         </g>
 
         <g data-edge-from="client" data-edge-to="cpe" data-edge-label="GET /api/webserver/SesTokInfo" data-edge-key="3" data-edge-id="sestok">
@@ -5283,7 +5283,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="583.6333333333334" y="264" width="203.39999999999998" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333335" y="274" class="t-muted" font-size="11" text-anchor="middle">GET /api/webserver/SesTokInfo</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="302" class="t-muted" font-size="7">فقط بلا توكن من الصفحة</text>
+        <text data-detail="context" x="597.1666666666667" y="302" class="t-muted" font-size="7">فقط إن لم تحمل الصفحة توكنًا</text>
         </g>
 
         <g data-edge-from="client" data-edge-to="cpe" data-edge-label="POST /api/user/login" data-edge-key="4" data-edge-id="post-login">
@@ -5292,7 +5292,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="613.3333333333334" y="316" width="144" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333334" y="326" class="t-edge-security" font-size="11" text-anchor="middle">POST /api/user/login</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="354" class="t-muted" font-size="7">sha256 بالتوكن + كلمة المرور</text>
+        <text data-detail="context" x="597.1666666666667" y="354" class="t-muted" font-size="7">sha256 بالتوكن وكلمة المرور</text>
         </g>
 
         <g data-edge-from="cpe" data-edge-to="client" data-edge-label="OK أو &lt;error&gt;&lt;code&gt;" data-edge-key="5" data-edge-id="login-reply">
@@ -5301,7 +5301,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="616.6333333333334" y="360" width="137.39999999999998" height="18" rx="3" class="c-mask"/>
           <text x="685.3333333333335" y="370" class="t-muted" font-size="11" text-anchor="middle">OK أو &lt;error&gt;&lt;code&gt;</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="398" class="t-muted" font-size="7">108001 = بيانات خاطئة → توقف</text>
+        <text data-detail="context" x="597.1666666666667" y="398" class="t-muted" font-size="7">108002 كلمة مرور خاطئة، 108003 جلسة قائمة</text>
         </g>
 
         <g data-edge-from="client" data-edge-to="worker" data-edge-label="authed = true" data-edge-key="6" data-edge-id="authed">
@@ -5312,11 +5312,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="worker" data-edge-to="client" data-edge-label="collect_traced" data-edge-key="7" data-edge-id="collect">
+        <g data-edge-from="worker" data-edge-to="client" data-edge-label="collect_traced: عشر مراحل" data-edge-key="7" data-edge-id="collect">
           <path data-composition-edge-from="worker" data-composition-edge-to="client" data-composition-edge-id="collect" data-composition-points="370.83333333333337,456;571.1666666666667,456" d="M 370.83333333333337 456 L 571.1666666666667 456" class="a-default" data-animate="edge" style="--step:7" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="418.80000000000007" y="436" width="104.39999999999999" height="18" rx="3" class="c-mask"/>
-          <text x="471.00000000000006" y="446" class="t-muted" font-size="11" text-anchor="middle">collect_traced</text>
+          <rect x="382.50000000000006" y="436" width="177" height="18" rx="3" class="c-mask"/>
+          <text x="471.00000000000006" y="446" class="t-muted" font-size="11" text-anchor="middle">collect_traced: عشر مراحل</text>
         </g>
         </g>
 
@@ -5336,28 +5336,28 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="بقية المراحل: status، traffic، plmn، device" data-edge-key="10" data-edge-id="rest">
+        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="status وtraffic وplmn وdevice وsms" data-edge-key="10" data-edge-id="rest">
           <path data-composition-edge-from="client" data-composition-edge-to="cpe" data-composition-edge-id="rest" data-composition-points="585.1666666666667,548;785.5,548" d="M 585.1666666666667 548 L 785.5 548" class="a-default" data-animate="edge" style="--step:10" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="537.4333333333334" y="528" width="295.8" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="538" class="t-muted" font-size="11" text-anchor="middle">بقية المراحل: status، traffic، plmn، device</text>
+          <rect x="567.1333333333334" y="528" width="236.39999999999998" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333335" y="538" class="t-muted" font-size="11" text-anchor="middle">status وtraffic وplmn وdevice وsms</text>
         </g>
         </g>
 
-        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="XML أو error لكل مرحلة" data-edge-key="11" data-edge-id="rest-xml">
+        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="XML أو خطأ لكل مرحلة" data-edge-key="11" data-edge-id="rest-xml">
           <path data-composition-edge-from="cpe" data-composition-edge-to="client" data-composition-edge-id="rest-xml" data-composition-points="785.5,604;585.1666666666667,604" d="M 785.5 604 L 585.1666666666667 604" class="a-default" data-animate="edge" style="--step:11" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="606.7333333333333" y="584" width="157.2" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="594" class="t-muted" font-size="11" text-anchor="middle">XML أو error لكل مرحلة</text>
+          <rect x="613.3333333333334" y="584" width="144" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333334" y="594" class="t-muted" font-size="11" text-anchor="middle">XML أو خطأ لكل مرحلة</text>
         </g>
-        <text data-detail="context" x="597.1666666666667" y="622" class="t-muted" font-size="7">غير المدعوم يُسجَّل، لا يُسقط اللقطة</text>
+        <text data-detail="context" x="597.1666666666667" y="622" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">404 يعني غير مدعوم، يُسجَّل ولا يُسقط</tspan><tspan x="597.1666666666667" dy="11">اللقطة</tspan></text>
         </g>
 
-        <g data-edge-from="client" data-edge-to="worker" data-edge-label="Snapshot كامل" data-edge-key="12" data-edge-id="snapshot">
+        <g data-edge-from="client" data-edge-to="worker" data-edge-label="لقطة كاملة" data-edge-key="12" data-edge-id="snapshot">
           <path data-composition-edge-from="client" data-composition-edge-to="worker" data-composition-edge-id="snapshot" data-composition-points="571.1666666666667,646;370.83333333333337,646" d="M 571.1666666666667 646 L 370.83333333333337 646" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="422.1000000000001" y="626" width="97.8" height="18" rx="3" class="c-mask"/>
-          <text x="471.00000000000006" y="636" class="t-muted" font-size="11" text-anchor="middle">Snapshot كامل</text>
+          <rect x="432.00000000000006" y="626" width="78" height="18" rx="3" class="c-mask"/>
+          <text x="471.00000000000006" y="636" class="t-muted" font-size="11" text-anchor="middle">لقطة كاملة</text>
         </g>
         </g>
 
@@ -5377,11 +5377,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="worker" data-edge-to="client" data-edge-label="read net/net-mode" data-edge-key="15" data-edge-id="read-before">
+        <g data-edge-from="worker" data-edge-to="client" data-edge-label="قراءة net/net-mode" data-edge-key="15" data-edge-id="read-before">
           <path data-composition-edge-from="worker" data-composition-edge-to="client" data-composition-edge-id="read-before" data-composition-points="370.83333333333337,766;571.1666666666667,766" d="M 370.83333333333337 766 L 571.1666666666667 766" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="408.9000000000001" y="746" width="124.19999999999999" height="18" rx="3" class="c-mask"/>
-          <text x="471.0000000000001" y="756" class="t-muted" font-size="11" text-anchor="middle">read net/net-mode</text>
+          <rect x="405.6" y="746" width="130.8" height="18" rx="3" class="c-mask"/>
+          <text x="471" y="756" class="t-muted" font-size="11" text-anchor="middle">قراءة net/net-mode</text>
         </g>
         </g>
 
@@ -5393,11 +5393,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="mask الحالي" data-edge-key="17" data-edge-id="mask-now">
+        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="الوضع والماسكات الحالية" data-edge-key="17" data-edge-id="mask-now">
           <path data-composition-edge-from="cpe" data-composition-edge-to="client" data-composition-edge-id="mask-now" data-composition-points="785.5,826;585.1666666666667,826" d="M 785.5 826 L 585.1666666666667 826" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="643.0333333333334" y="806" width="84.6" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="816" class="t-muted" font-size="11" text-anchor="middle">mask الحالي</text>
+          <rect x="603.4333333333334" y="806" width="163.79999999999998" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333334" y="816" class="t-muted" font-size="11" text-anchor="middle">الوضع والماسكات الحالية</text>
         </g>
         </g>
 
@@ -5407,14 +5407,14 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="408.9000000000001" y="836" width="124.19999999999999" height="18" rx="3" class="c-mask"/>
           <text x="471.0000000000001" y="846" class="t-edge-emphasis" font-size="11" text-anchor="middle">POST net/net-mode</text>
         </g>
-        <text data-detail="context" x="382.83333333333337" y="874" class="t-muted" font-size="7">يُتخطّى إن كان الهدف مطبَّقًا</text>
+        <text data-detail="context" x="382.83333333333337" y="874" class="t-muted" font-size="7">يُتخطّى إن كان مطبَّقًا</text>
         </g>
 
-        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="POST xml بالماسك الجديد" data-edge-key="19" data-edge-id="post-wire">
+        <g data-edge-from="client" data-edge-to="cpe" data-edge-label="POST فيه ماسك BandList وماسك LTEBand" data-edge-key="19" data-edge-id="post-wire">
           <path data-composition-edge-from="client" data-composition-edge-to="cpe" data-composition-edge-id="post-wire" data-composition-points="585.1666666666667,896;785.5,896" d="M 585.1666666666667 896 L 785.5 896" class="a-emphasis" data-animate="edge" style="--step:12" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <g data-detail="context">
-          <rect x="603.4333333333334" y="876" width="163.79999999999998" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="886" class="t-edge-emphasis" font-size="11" text-anchor="middle">POST xml بالماسك الجديد</text>
+          <rect x="560.5333333333334" y="876" width="249.6" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333334" y="886" class="t-edge-emphasis" font-size="11" text-anchor="middle">POST فيه ماسك BandList وماسك LTEBand</text>
         </g>
         </g>
 
@@ -5427,11 +5427,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="context" x="597.1666666666667" y="944" class="t-muted" font-size="7">متوقَّع: الراديو يُعاد تشغيله</text>
         </g>
 
-        <g data-edge-from="worker" data-edge-to="client" data-edge-label="read مرة أخرى للتحقق" data-edge-key="21" data-edge-id="read-after">
+        <g data-edge-from="worker" data-edge-to="client" data-edge-label="قراءة ثانية للتحقق" data-edge-key="21" data-edge-id="read-after">
           <path data-composition-edge-from="worker" data-composition-edge-to="client" data-composition-edge-id="read-after" data-composition-points="370.83333333333337,966;571.1666666666667,966" d="M 370.83333333333337 966 L 571.1666666666667 966" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="399.00000000000006" y="946" width="144" height="18" rx="3" class="c-mask"/>
-          <text x="471.00000000000006" y="956" class="t-muted" font-size="11" text-anchor="middle">read مرة أخرى للتحقق</text>
+          <rect x="405.6" y="946" width="130.8" height="18" rx="3" class="c-mask"/>
+          <text x="471" y="956" class="t-muted" font-size="11" text-anchor="middle">قراءة ثانية للتحقق</text>
         </g>
         </g>
 
@@ -5443,39 +5443,40 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
-        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="mask بعد الكتابة" data-edge-key="23" data-edge-id="mask-after">
+        <g data-edge-from="cpe" data-edge-to="client" data-edge-label="الوضع والماسكات وخيار NR" data-edge-key="23" data-edge-id="mask-after">
           <path data-composition-edge-from="cpe" data-composition-edge-to="client" data-composition-edge-id="mask-after" data-composition-points="785.5,1026;585.1666666666667,1026" d="M 785.5 1026 L 585.1666666666667 1026" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="626.5333333333334" y="1006" width="117.6" height="18" rx="3" class="c-mask"/>
-          <text x="685.3333333333334" y="1016" class="t-muted" font-size="11" text-anchor="middle">mask بعد الكتابة</text>
+          <rect x="600.1333333333334" y="1006" width="170.39999999999998" height="18" rx="3" class="c-mask"/>
+          <text x="685.3333333333335" y="1016" class="t-muted" font-size="11" text-anchor="middle">الوضع والماسكات وخيار NR</text>
         </g>
+        <text data-detail="context" x="597.1666666666667" y="1044" class="t-muted" font-size="7"><tspan x="597.1666666666667" dy="0">auto يقرأ NetworkBand صفرًا؛ يُقبل عند</tspan><tspan x="597.1666666666667" dy="11">تطابق LTEBand</tspan></text>
         </g>
 
-        <g data-edge-from="worker" data-edge-to="app" data-edge-label="Success أو Failed + Restarting" data-edge-key="24" data-edge-id="verdict">
+        <g data-edge-from="worker" data-edge-to="app" data-edge-label="applied أو failed مع السبب" data-edge-key="24" data-edge-id="verdict">
           <path data-composition-edge-from="worker" data-composition-edge-to="app" data-composition-edge-id="verdict" data-composition-points="356.83333333333337,1054;156.5,1054" d="M 356.83333333333337 1054 L 156.5 1054" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
         <g data-detail="context">
-          <rect x="151.66666666666669" y="1034" width="210" height="18" rx="3" class="c-mask"/>
-          <text x="256.6666666666667" y="1044" class="t-muted" font-size="11" text-anchor="middle">Success أو Failed + Restarting</text>
+          <rect x="164.86666666666667" y="1034" width="183.6" height="18" rx="3" class="c-mask"/>
+          <text x="256.6666666666667" y="1044" class="t-muted" font-size="11" text-anchor="middle">applied أو failed مع السبب</text>
         </g>
         </g>
 
         <!-- Segment Labels -->
         <g data-graph-role="segment-label" data-segment-id="0">
-          <rect x="56" y="134" width="92" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="147" class="t-muted" font-size="9" font-weight="600">١ · مصادقة أولى</text>
+          <rect x="56" y="134" width="76.4" height="18" rx="3" class="c-mask"/>
+          <text x="62" y="147" class="t-muted" font-size="9" font-weight="600">١ - دخول أول</text>
         </g>
         <g data-graph-role="segment-label" data-segment-id="1">
           <rect x="56" y="412" width="102.4" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="425" class="t-muted" font-size="9" font-weight="600">٢ · قراءة كل جولة</text>
+          <text x="62" y="425" class="t-muted" font-size="9" font-weight="600">٢ - كل جولة قراءة</text>
         </g>
         <g data-graph-role="segment-label" data-segment-id="2">
-          <rect x="56" y="756" width="175.20000000000002" height="18" rx="3" class="c-mask"/>
-          <text x="62" y="769" class="t-muted" font-size="9" font-weight="600">٣ · كتابة مُتحقَّقة (عند الطلب)</text>
+          <rect x="56" y="756" width="164.8" height="18" rx="3" class="c-mask"/>
+          <text x="62" y="769" class="t-muted" font-size="9" font-weight="600">٣ - كتابة مُتحقَّقة عند الطلب</text>
         </g>
 
         <!-- Participants -->
-        <g id="node-app" data-node-id="app" data-node-label="TUI وحلقة الأحداث" tabindex="0" role="button" aria-label="إبراز TUI وحلقة الأحداث، main.rs · App, مشاركٌ في التتابع" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="main.rs · App" data-node-context="مشاركٌ في التتابع">
-          <title>TUI وحلقة الأحداث · main.rs · App · مشاركٌ في التتابع</title>
+        <g id="node-app" data-node-id="app" data-node-label="واجهة TUI وحلقة الأحداث" tabindex="0" role="button" aria-label="إبراز واجهة TUI وحلقة الأحداث، main.rs / App, مشاركٌ في التتابع" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="main.rs / App" data-node-context="مشاركٌ في التتابع">
+          <title>واجهة TUI وحلقة الأحداث · main.rs / App · مشاركٌ في التتابع</title>
           <rect x="62" y="72" width="175" height="60" rx="6" class="c-mask"/>
           <rect x="62" y="72" width="175" height="60" rx="6" class="c-frontend" data-animate="node" style="--step:0" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(68 78) scale(0.6875)">
@@ -5484,8 +5485,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="149.5" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">TUI وحلقة الأحداث</text>
-          <text data-detail="context" x="149.5" y="122" class="t-muted" font-size="7" text-anchor="middle">main.rs · App</text>
+          <text data-node-label="" data-detail-anchor="" x="149.5" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">واجهة TUI وحلقة الأحداث</text>
+          <text data-detail="context" x="149.5" y="122" class="t-muted" font-size="7" text-anchor="middle">main.rs / App</text>
         </g>
 
         <g id="node-worker" data-node-id="worker" data-node-label="خيط الجولة" tabindex="0" role="button" aria-label="إبراز خيط الجولة، worker.rs, مشاركٌ في التتابع" aria-pressed="false" data-node-kind="backend" data-node-sublabel="worker.rs" data-node-context="مشاركٌ في التتابع">
@@ -5499,26 +5500,26 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text data-detail="context" x="363.83333333333337" y="122" class="t-muted" font-size="7" text-anchor="middle">worker.rs</text>
         </g>
 
-        <g id="node-client" data-node-id="client" data-node-label="HuaweiClient" tabindex="0" role="button" aria-label="إبراز HuaweiClient، client.rs · parse.rs, مشاركٌ في التتابع" aria-pressed="false" data-node-kind="backend" data-node-sublabel="client.rs · parse.rs" data-node-context="مشاركٌ في التتابع">
-          <title>HuaweiClient · client.rs · parse.rs · مشاركٌ في التتابع</title>
+        <g id="node-client" data-node-id="client" data-node-label="HuaweiClient" tabindex="0" role="button" aria-label="إبراز HuaweiClient، client.rs / parse.rs, مشاركٌ في التتابع" aria-pressed="false" data-node-kind="backend" data-node-sublabel="client.rs / parse.rs" data-node-context="مشاركٌ في التتابع">
+          <title>HuaweiClient · client.rs / parse.rs · مشاركٌ في التتابع</title>
           <rect x="490.66666666666674" y="72" width="175" height="60" rx="6" class="c-mask"/>
           <rect x="490.66666666666674" y="72" width="175" height="60" rx="6" class="c-backend" data-animate="node" style="--step:2" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(496.66666666666674 78) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="578.1666666666667" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">HuaweiClient</text>
-          <text data-detail="context" x="578.1666666666667" y="122" class="t-muted" font-size="7" text-anchor="middle">client.rs · parse.rs</text>
+          <text data-detail="context" x="578.1666666666667" y="122" class="t-muted" font-size="7" text-anchor="middle">client.rs / parse.rs</text>
         </g>
 
-        <g id="node-cpe" data-node-id="cpe" data-node-label="Huawei CPE" tabindex="0" role="button" aria-label="إبراز Huawei CPE، WEBUI غير موثّقة, مشاركٌ في التتابع" aria-pressed="false" data-node-kind="external" data-node-sublabel="WEBUI غير موثّقة" data-node-context="مشاركٌ في التتابع">
-          <title>Huawei CPE · WEBUI غير موثّقة · مشاركٌ في التتابع</title>
+        <g id="node-cpe" data-node-id="cpe" data-node-label="راوتر هواوي" tabindex="0" role="button" aria-label="إبراز راوتر هواوي، واجهة WEBUI غير موثّقة, مشاركٌ في التتابع" aria-pressed="false" data-node-kind="external" data-node-sublabel="واجهة WEBUI غير موثّقة" data-node-context="مشاركٌ في التتابع">
+          <title>راوتر هواوي · واجهة WEBUI غير موثّقة · مشاركٌ في التتابع</title>
           <rect x="705" y="72" width="175" height="60" rx="6" class="c-mask"/>
           <rect x="705" y="72" width="175" height="60" rx="6" class="c-external" data-animate="node" style="--step:3" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-external" transform="translate(711 78) scale(0.6875)">
             <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="792.5" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Huawei CPE</text>
-          <text data-detail="context" x="792.5" y="122" class="t-muted" font-size="7" text-anchor="middle">WEBUI غير موثّقة</text>
+          <text data-node-label="" data-detail-anchor="" x="792.5" y="108" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">راوتر هواوي</text>
+          <text data-detail="context" x="792.5" y="122" class="t-muted" font-size="7" text-anchor="middle">واجهة WEBUI غير موثّقة</text>
         </g>
 
         <!-- Legend -->
@@ -5724,21 +5725,22 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>التسلسل في سطر</h3>
         </div>
         <ul>
-          <li>مصادقة مرة واحدة، ثم كل جولة قراءة من عشرة مراحل متتالية لا متوازية</li>
+          <li>دخول مرة واحدة، ثم كل جولة قراءة عشر مراحل متتالية لا متوازية</li>
           <li>الكتابة لا تبدأ إلا بأمر صريح منك بعد تأكيد مكتوب</li>
-          <li>لا شيء يُرسل إلى الراوتر قبل أن تقرأ الحالة الحالية</li>
+          <li>لا شيء يُرسل قبل قراءة الحالة الحالية</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot rose"></div>
-          <h3>الحدود التي تحمي الراوتر</h3>
+          <h3>حدود تحمي الراوتر</h3>
         </div>
         <ul>
-          <li>خطأ مصادقة صريح يوقف الحلقة بدل تكرارها - حساب مقفل أخطر من رسالة خطأ</li>
-          <li>انقطاع الرابط بعد تغيير الأطياف متوقّع، فيُسمّى Restarting</li>
-          <li>القراءة العكسية هي الحكم، وليست استجابة 200</li>
+          <li>فشل مصادقة صريح يوقف الحلقة؛ حساب مقفل أسوأ من رسالة خطأ</li>
+          <li>انقطاع الرابط بعد تغيير النطاقات متوقَّع ويُسمّى</li>
+          <li>القراءة العكسية هي الحكم لا استجابة 200</li>
+          <li>لا يُتبع أي تحويل، فلا ينتقل توكن CSRF إلى أصل آخر</li>
         </ul>
       </div>
 
@@ -5748,9 +5750,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>أين تُقرأ المصادر</h3>
         </div>
         <ul>
-          <li>المصادقة: src/router/client.rs السطور 182 حتى 268</li>
-          <li>القراءة: src/headless.rs السطور 101 حتى 166</li>
-          <li>الكتابة والتحقق: src/write.rs السطور 179 حتى 248</li>
+          <li>الدخول: src/router/client.rs السطور 207 إلى 289</li>
+          <li>القراءة: src/headless.rs السطور 101 إلى 172</li>
+          <li>الكتابة والتحقق: src/write.rs السطور 237 إلى 327، وقاعدة auto في 165 إلى 175</li>
         </ul>
       </div>
     </div>
@@ -5856,7 +5858,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     }
 
     /* ============================================================
-       Visual style try-on - one topology, four bundled presets.
+       Visual style try-on — one topology, four bundled presets.
        The reader's choice is intentionally session-only: it updates the
        live page and canonical SVG together, but never rewrites the source,
        URL, or a later diagram's authored default.
@@ -5974,7 +5976,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Theme toggle - persists to localStorage, respects system pref
+       Theme toggle — persists to localStorage, respects system pref
        ============================================================ */
 
     Archify.theme = (function () {
@@ -6039,7 +6041,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Export - Share Card / PNG / JPEG / WebP / SVG / WebM and clipboard
+       Export — Share Card / PNG / JPEG / WebP / SVG / WebM and clipboard
 
        Raster exports are always rendered at 4x source resolution for
        maximum sharpness. The trick: we set the serialized SVG's
@@ -6265,16 +6267,16 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
        * Serialize the main SVG into a standalone document.
        *
        * Two modes:
-       * - Default (opts.autoTheme=false) - locks the serialized SVG to the
+       * - Default (opts.autoTheme=false) — locks the serialized SVG to the
        *   viewer's current theme. Used by the raster pipeline
        *   (PNG/JPEG/WebP/clipboard) because canvas rasterization needs
        *   deterministic colors; a raster cannot react to
        *   prefers-color-scheme after encoding.
-       * - theme=auto - emits BOTH dark and light variable sets plus a
+       * - theme=auto — emits BOTH dark and light variable sets plus a
        *   `@media (prefers-color-scheme)` rule so the resulting SVG
        *   self-themes when embedded in GitHub READMEs or other hosts that
        *   expose a color scheme. Used for the default "Download SVG".
-       * - theme=light|dark - locks the standalone SVG to the requested
+       * - theme=light|dark — locks the standalone SVG to the requested
        *   theme, independently of its source Viewer and host OS themes.
        */
       function applyRouteSnapshot(clone, snapshot) {
@@ -6472,7 +6474,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           : null;
         // Scale width/height so the browser rasterizes the vectors at target
         // resolution directly. viewBox stays unchanged so coordinates don't
-        // shift. This is the key to sharp rasters - do NOT scale later via
+        // shift. This is the key to sharp rasters — do NOT scale later via
         // canvas upscaling.
         clone.setAttribute('width', vb.width * scale);
         clone.setAttribute('height', vb.height * scale);
@@ -6776,7 +6778,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         // Serialize at a safe scale (RASTER_SCALE=4 by default, reduced if the
         // resulting canvas would exceed MAX_CANVAS_PIXELS). The SVG itself is
         // rasterized at target resolution natively; drawImage draws at natural
-        // size - no upsampling blur.
+        // size — no upsampling blur.
         var svg = document.querySelector('.diagram-container svg');
         var vb = svg.viewBox.baseVal;
         var layout = figureLayout(vb);
@@ -7635,7 +7637,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Motion Governor - one reader switch and one motion budget. Ambient
+       Motion Governor — one reader switch and one motion budget. Ambient
        trace yields to the strongest semantic owner; Still also parks bounded
        viewer signals without discarding their static meaning.
        ============================================================ */
@@ -8392,7 +8394,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Tree Branches - expand/collapse for hierarchy diagrams. The renderer
+       Tree Branches — expand/collapse for hierarchy diagrams. The renderer
        lays out the complete tree once and tags every node, link, and toggle
        with its ancestors; collapsing only hides descendants, so visible nodes
        never move and the reader keeps their place. Selecting a hidden node
@@ -8523,7 +8525,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Explore - stable-ID neighborhood focus + dependency-free pan/zoom.
+       Explore — stable-ID neighborhood focus + dependency-free pan/zoom.
        Renderer IDs become deep-linkable semantic hooks without turning the
        standalone artifact into a canvas editor.
        ============================================================ */
@@ -10136,7 +10138,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Intent Trace - temporary one-hop topology before durable focus.
+       Intent Trace — temporary one-hop topology before durable focus.
        Fine-pointer hover and keyboard focus share the same stable-ID preview;
        touch continues directly to the existing click-to-focus contract.
        ============================================================ */
@@ -10352,7 +10354,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Adaptive Reader Shell - one diagram across laptop and monitor.
+       Adaptive Reader Shell — one diagram across laptop and monitor.
        The canonical SVG and viewBox never change. On ordinary desktop pages,
        wide diagrams and measured intrinsic tall workflows receive enough outer width to use the available
        height without pushing summary cards below the viewport. Mobile,
@@ -10883,7 +10885,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Viewer Chrome Layout - keep HTML controls clear of the canonical SVG
+       Viewer Chrome Layout — keep HTML controls clear of the canonical SVG
        stage without changing authored geometry. The dock keeps its floating
        appearance while a small bottom stage rail becomes part of the reader
        budget whenever its zero-reserve position would enter the stage.
@@ -11893,7 +11895,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Semantic Radar - simplified semantic bounds + live viewport.
+       Semantic Radar — simplified semantic bounds + live viewport.
        The radar is built at runtime so the checked artifact still contains
        one canonical SVG block, and export serialization remains untouched.
        ============================================================ */
@@ -12520,7 +12522,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Presentation Stage - a shareable, viewport-filling live view.
+       Presentation Stage — a shareable, viewport-filling live view.
        It changes only HTML layout and URL state; SVG semantics and export
        serialization remain untouched. Escape first clears an active
        focus, then exits the stage.
@@ -12594,7 +12596,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     })();
 
     /* ============================================================
-       Node Finder - stable-ID search over the existing semantic SVG.
+       Node Finder — stable-ID search over the existing semantic SVG.
        Search never changes the IR or SVG geometry: selecting a result resets
        the viewport and delegates to semantic focus.
        ============================================================ */
@@ -12861,7 +12863,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Node Outline - a rail index of the semantic nodes, grouped by their
+       Node Outline — a rail index of the semantic nodes, grouped by their
        authored context. Hover previews neighbors through Intent Trace;
        selection delegates to the Finder's focus-and-reveal path. It reads
        the canonical SVG and never changes geometry or export state.
@@ -13001,7 +13003,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Route Probe - shortest directed path over compiled semantics.
+       Route Probe — shortest directed path over compiled semantics.
        The graph is read from renderer-owned stable IDs and relationship
        endpoints. BFS order follows authored DOM edge order, so equal-length
        choices are deterministic without adding weights or a graph runtime.
@@ -14023,7 +14025,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Semantic Lens - a counted, viewer-only legend over data-node-kind.
+       Semantic Lens — a counted, viewer-only legend over data-node-kind.
        One selected kind reveals every authored relationship touching it.
        Two selected kinds compare only direct cross-kind relationships while
        preserving the full diagram as a dimmed spatial reference.
@@ -14688,7 +14690,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
     /* ============================================================
-       Diagram Guide - a factual command deck over existing interactions.
+       Diagram Guide — a factual command deck over existing interactions.
        Counts come from compiled semantics; actions delegate to Finder, Route
        Probe, Semantic Radar, Semantic Lens, Presentation, theme, export, and
        camera without adding a second command implementation or SVG state.
