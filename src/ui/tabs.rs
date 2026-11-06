@@ -1090,7 +1090,7 @@ pub fn sms_tab(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(t.fg),
                 )));
                 body.push(Line::from(Span::styled(
-                    "sms/sms-list for the API session (error 100005).",
+                    "sms/sms-list as a malformed request (error 100005).",
                     Style::default().fg(t.fg),
                 )));
                 body.push(Line::from(""));

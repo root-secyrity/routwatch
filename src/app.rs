@@ -1522,7 +1522,7 @@ mod tests {
         app.mark_extras_requested();
         assert!(!app.needs_extras());
         let extras = crate::model::DeviceExtras {
-            sms_error: Some("permission denied (100005)".into()),
+            sms_error: Some("request rejected by the firmware (100005)".into()),
             ..Default::default()
         };
         app.on_extras(extras);

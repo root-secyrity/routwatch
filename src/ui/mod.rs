@@ -1426,12 +1426,12 @@ mod tests {
         assert!(text.contains("press R to read the inbox"));
 
         app.on_extras(crate::model::DeviceExtras {
-            sms_error: Some("permission denied (100005)".into()),
+            sms_error: Some("request rejected by the firmware (100005)".into()),
             ..Default::default()
         });
         let text = render_to_string(&app, 100, 26);
         assert!(
-            text.contains("blocked: permission denied (100005)"),
+            text.contains("blocked: request rejected by the firmware (100005)"),
             "\n{text}"
         );
         assert!(text.contains("192.168.8.1"));
