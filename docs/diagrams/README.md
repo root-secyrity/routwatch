@@ -31,6 +31,10 @@ in each file, so it works offline.
 The PNG files are still previews for places that cannot run HTML, such as a chat
 message or a slide.
 
+Archify embeds an em dash (U+2014) in its own interface strings. After every
+regeneration the four pages are normalized to a hyphen, because the project
+check rejects that character in docs.
+
 ---
 
 # المخططات
