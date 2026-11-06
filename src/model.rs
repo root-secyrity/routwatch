@@ -187,6 +187,11 @@ pub struct Snapshot {
     /// The device's own "all bands" mask - never a hardcoded constant.
     #[serde(default)]
     pub all_bands_mask: Option<String>,
+    /// The network-level all-bands mask from `BandList`. On H122-373 this is the
+    /// 32-bit `3FFFFFFF` the firmware itself echoes in `NetworkBand`, while
+    /// `all_bands_mask` holds the 64-bit value from `LTEBandList`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_bands_mask: Option<String>,
     /// Ids of reads this firmware refused (`unsupported`, `denied`, or a plain
     /// 404). A panel that reads one says so; an empty list is omitted from
     /// `--json`, so nothing changes for a firmware that answers everything.

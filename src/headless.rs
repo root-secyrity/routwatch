@@ -131,16 +131,21 @@ pub fn collect_traced(
         step(trace, Phase::Sms, || c.get("sms/sms-count").ok()).map(|n| parse::parse_sms_count(&n));
     let dns = step(trace, Phase::Dns, || c.get("dhcp/settings").ok()).map(|n| parse::parse_dns(&n));
 
-    let (supported_bands, all_bands_mask) =
+    let (supported_bands, all_bands_mask, network_bands_mask) =
         match step(trace, Phase::Bands, || c.get("net/net-mode-list")) {
             Ok(node) => {
-                let (defs, all) = bands::from_net_mode_list(&node);
+                let catalog = bands::from_net_mode_list(&node);
                 (
-                    defs.iter().filter_map(|d| d.band.map(u32::from)).collect(),
-                    all.map(bands::to_hex),
+                    catalog
+                        .defs
+                        .iter()
+                        .filter_map(|d| d.band.map(u32::from))
+                        .collect(),
+                    catalog.lte_all.map(bands::to_hex),
+                    catalog.network_all.map(bands::to_hex),
                 )
             }
-            Err(_) => (Vec::new(), None),
+            Err(_) => (Vec::new(), None, None),
         };
 
     Ok(Snapshot {
@@ -161,6 +166,7 @@ pub fn collect_traced(
         temperature,
         supported_bands,
         all_bands_mask,
+        network_bands_mask,
         unsupported,
     })
 }
@@ -239,6 +245,15 @@ pub struct DoctorReport {
     pub platform: &'static str,
     pub router: Option<String>,
     pub capabilities: Vec<Capability>,
+}
+
+/// The failures `doctor --live` should exit non-zero on. Reachability, auth and
+/// config are the promises every firmware must keep; a missing optional endpoint
+/// is reported as degraded, not as a broken router.
+pub fn first_core_failure(caps: &[Capability]) -> Option<&Capability> {
+    caps.iter().find(|c| {
+        c.state == "failed" && matches!(c.id.as_str(), "reachability" | "auth" | "config")
+    })
 }
 
 fn cap(
@@ -470,15 +485,18 @@ pub fn doctor(
 
     match client.get("net/net-mode-list") {
         Ok(node) => {
-            let (defs, all) = bands::from_net_mode_list(&node);
+            let catalog = bands::from_net_mode_list(&node);
             caps.push(cap(
                 "bands",
                 "ready",
                 "device_band_list",
                 format!(
                     "{} LTE bands, all-bands mask {}",
-                    defs.len(),
-                    all.map(bands::to_hex).unwrap_or_else(|| "unknown".into())
+                    catalog.defs.len(),
+                    catalog
+                        .lte_all
+                        .map(bands::to_hex)
+                        .unwrap_or_else(|| "unknown".into())
                 ),
                 Some("routwatch bands --list shows the map the UI will use"),
             ));
@@ -853,6 +871,29 @@ mod doctor_tests {
         assert_eq!(
             cred.detail,
             format!("checked {}", crate::config::CREDENTIAL_SOURCES)
+        );
+    }
+
+    /// A healthy mock that simply lacks optional endpoints must not fail the
+    /// doctor: a 404 is "not served", not "broken router".
+    #[test]
+    fn a_live_doctor_on_a_healthy_mock_has_no_core_failure() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
+        let mut cfg = Config::default();
+        cfg.router.ip = mock.addr().to_string();
+        cfg.router.password = "pw".into();
+        let report = doctor(&cfg, "/tmp/absent/config.toml", true, Some("pw"));
+        let quota = capability(&report, "monitoring/month_statistics");
+        assert_eq!(quota.state, "unsupported", "detail {:?}", quota.detail);
+        assert!(
+            first_core_failure(&report.capabilities).is_none(),
+            "an optional 404 must not fail the exit code: {:?}",
+            report
+                .capabilities
+                .iter()
+                .filter(|c| c.state == "failed")
+                .map(|c| (&c.id, &c.detail))
+                .collect::<Vec<_>>()
         );
     }
 }

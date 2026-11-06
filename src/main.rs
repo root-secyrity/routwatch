@@ -331,8 +331,9 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     println!("  {:<34} {:<12} {}", c.id, c.state, c.detail);
                 }
             }
-            // A failed check must be visible to scripts in the exit code too.
-            if let Some(failed) = report.capabilities.iter().find(|c| c.state == "failed") {
+            // Only the core capabilities decide the exit code: a firmware that
+            // lacks an optional endpoint is still a healthy router.
+            if let Some(failed) = crate::headless::first_core_failure(&report.capabilities) {
                 let detail = failed.detail.trim_start_matches("network: ").to_string();
                 return Err(match failed.id.as_str() {
                     "reachability" => ApiError::Network(detail),
@@ -387,15 +388,26 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             });
             let mut client = connect(&cfg, cli.password_stdin)?;
             let mut written = 0u64;
+            let mut failures = 0u32;
             loop {
                 match headless::collect(&mut client, &cfg.router.ip) {
                     Ok(snap) => {
                         record::append(&path, &record::RecordFrame::capture(snap))
                             .map_err(|e| ApiError::Config(format!("recording: {e}")))?;
                         written += 1;
+                        failures = 0;
                         eprintln!("recorded {written} → {}", path.display());
                     }
-                    Err(e) => eprintln!("routwatch: sample failed ({e}) - continuing"),
+                    Err(e) => {
+                        failures += 1;
+                        eprintln!("routwatch: sample failed ({e}) - {failures}/3");
+                        if failures >= 3 {
+                            client.logout();
+                            return Err(ApiError::Network(format!(
+                                "three samples in a row failed ({e}); giving up after {written} frames"
+                            )));
+                        }
+                    }
                 }
                 if let Some(limit) = count {
                     if written >= limit {
@@ -477,10 +489,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     ApiError::Config(format!("unknown mode {mode:?}; use auto, 4g or 5g"))
                 })?;
                 let selection = bands::parse_list(&list_arg).map_err(ApiError::Config)?;
-                let all_mask = client
+                let catalog = client
                     .get("net/net-mode-list")
                     .ok()
-                    .and_then(|n| bands::from_net_mode_list(&n).1)
+                    .map(|n| bands::from_net_mode_list(&n));
+                let lte_all = catalog.as_ref().and_then(|c| c.lte_all).map(bands::to_hex);
+                let network_all = catalog
+                    .as_ref()
+                    .and_then(|c| c.network_all)
                     .map(bands::to_hex);
                 let option_code = match &option {
                     Some(o) => Some(
@@ -497,7 +513,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 let payload = bands::resolve(
                     mode_code,
                     &selection,
-                    all_mask.as_deref(),
+                    lte_all.as_deref(),
+                    network_all.as_deref(),
                     option_code.as_deref(),
                 );
                 let (current, current_mask) = write::read_mask(&mut client)?;
@@ -560,16 +577,17 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 }
             } else {
                 let node = client.get("net/net-mode-list")?;
-                let (defs, all) = bands::from_net_mode_list(&node);
+                let catalog = bands::from_net_mode_list(&node);
                 let mode = parse::parse_net_mode(&client.get("net/net-mode")?);
                 client.logout();
 
                 if json {
                     let payload = serde_json::json!({
-                        "supported": defs.iter().map(|d| serde_json::json!({
+                        "supported": catalog.defs.iter().map(|d| serde_json::json!({
                             "band": d.band, "label": d.label, "mask": format!("{:X}", d.value)
                         })).collect::<Vec<_>>(),
-                        "all_bands_mask": all.map(bands::to_hex),
+                        "all_bands_mask": catalog.lte_all.map(bands::to_hex),
+                        "network_bands_mask": catalog.network_all.map(bands::to_hex),
                         "current": mode,
                         "current_bands": mode.lte_band.as_deref()
                             .and_then(bands::from_hex)
@@ -579,10 +597,13 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 } else if list {
                     println!(
                         "device supports {} LTE bands; all-bands mask {}",
-                        defs.len(),
-                        all.map(bands::to_hex).unwrap_or_else(|| "unknown".into())
+                        catalog.defs.len(),
+                        catalog
+                            .lte_all
+                            .map(bands::to_hex)
+                            .unwrap_or_else(|| "unknown".into())
                     );
-                    for d in &defs {
+                    for d in &catalog.defs {
                         println!("  {:<5} mask 0x{:X}", d.label, d.value);
                     }
                     if let Some(hex) = &mode.lte_band {
@@ -1276,8 +1297,14 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             }
             KeyCode::Char('v') => app.view = app.view.next(),
             KeyCode::Char('g') => app.graph = app.graph.next(),
-            KeyCode::Char('[') => app.adjust_refresh(-500),
-            KeyCode::Char(']') => app.adjust_refresh(500),
+            KeyCode::Char('[') => {
+                app.adjust_refresh(-500);
+                let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
+            }
+            KeyCode::Char(']') => {
+                app.adjust_refresh(500);
+                let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
+            }
             KeyCode::Char('-') => app.adjust_budget(-10.0),
             KeyCode::Char('+') => app.adjust_budget(10.0),
             KeyCode::Char('w') => save_settings(app),
@@ -1495,6 +1522,16 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         // Settings: `,` is the family convention, `s` works everywhere except the
         // Clients tab (where it sorts), and Shift+S still opens it there.
         KeyCode::Char(',') => app.settings_open = true,
+        // Refresh period: `[` and `]` work from any view, not only inside the
+        // settings overlay (where they also appear).
+        KeyCode::Char('[') => {
+            app.adjust_refresh(-500);
+            let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
+        }
+        KeyCode::Char(']') => {
+            app.adjust_refresh(500);
+            let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
+        }
         KeyCode::Char('s') => app.settings_open = true,
         KeyCode::Char(c @ '1'..='9') => {
             if let Some(tab) = ui::tab_from_key(c) {
@@ -1690,6 +1727,9 @@ fn send_apply(app: &mut App, tx: &Sender<WorkerCmd>) {
                 &app.band_mode,
                 &app.bands_selected,
                 snap.all_bands_mask.as_deref(),
+                snap.network_bands_mask
+                    .as_deref()
+                    .or(snap.all_bands_mask.as_deref()),
                 Some(app.band_option.as_str()),
             );
             let _ = tx.send(WorkerCmd::ApplyBands {
@@ -1863,6 +1903,30 @@ mod key_tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn the_refresh_keys_work_without_the_settings_overlay() {
+        use super::WorkerCmd;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+
+        handle_key(&mut app, key(KeyCode::Char('[')), &tx);
+        assert_eq!(app.refresh_ms, 1500, "`[` must shorten the period");
+        assert!(
+            matches!(rx.try_recv(), Ok(WorkerCmd::SetInterval(1500))),
+            "the worker was not told about the new period"
+        );
+
+        handle_key(&mut app, key(KeyCode::Char(']')), &tx);
+        assert_eq!(app.refresh_ms, 2000);
+        assert!(matches!(rx.try_recv(), Ok(WorkerCmd::SetInterval(2000))));
     }
 
     /// `--tab` used to advertise seven sections while `dns` and `signal` worked,

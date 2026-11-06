@@ -82,12 +82,13 @@ pub fn parse_list(s: &str) -> Result<Vec<u8>, String> {
 pub fn resolve(
     mode_code: &str,
     selected: &[u8],
-    all_bands_hex: Option<&str>,
+    lte_all: Option<&str>,
+    network_all: Option<&str>,
     option: Option<&str>,
 ) -> BandPayload {
     let lte = to_hex(mask_from_bands(selected));
     let network_band = if mode_code == "00" {
-        all_bands_hex.unwrap_or(&lte).to_string()
+        network_all.or(lte_all).unwrap_or(&lte).to_string()
     } else {
         lte.clone()
     };
@@ -128,18 +129,41 @@ pub fn from_hex(s: &str) -> Option<u64> {
     u64::from_str_radix(t, 16).ok()
 }
 
-/// Read the device's own supported-band list and its "all bands" mask.
-pub fn from_net_mode_list(n: &Node) -> (Vec<BandDef>, Option<u64>) {
+/// What `net/net-mode-list` reports: the list a user picks from, plus two
+/// different "all bands" values. `BandList` carries the 32-bit network mask and
+/// `LTEBandList` the 64-bit LTE one; feeding one to the other silently drops
+/// bands 38-43 or sends a mask the device did not advertise.
+pub struct BandCatalog {
+    pub defs: Vec<BandDef>,
+    pub lte_all: Option<u64>,
+    pub network_all: Option<u64>,
+}
+
+/// Read the device's supported-band list and both all-bands masks.
+pub fn from_net_mode_list(n: &Node) -> BandCatalog {
     let mut defs = Vec::new();
-    let mut all = None;
+    let mut lte_all = None;
+    let mut network_all = None;
+
+    if let Some(list) = n.find("BandList") {
+        for entry in list.children_named("Band") {
+            if entry
+                .value("Name")
+                .map(|v| v.eq_ignore_ascii_case("all bands"))
+                == Some(true)
+            {
+                network_all = entry.value("Value").and_then(from_hex);
+            }
+        }
+    }
 
     if let Some(list) = n.find("LTEBandList") {
         for entry in list.children_named("LTEBand") {
             let name = entry.value("Name").unwrap_or("").to_string();
             let value = entry.value("Value").and_then(from_hex);
             if name.eq_ignore_ascii_case("all bands") {
-                if all.is_none() {
-                    all = value;
+                if lte_all.is_none() {
+                    lte_all = value;
                 }
                 continue;
             }
@@ -154,7 +178,11 @@ pub fn from_net_mode_list(n: &Node) -> (Vec<BandDef>, Option<u64>) {
     }
     defs.sort_by_key(|d| d.band.unwrap_or(0));
     defs.dedup_by_key(|d| d.band);
-    (defs, all)
+    BandCatalog {
+        defs,
+        lte_all,
+        network_all,
+    }
 }
 
 /// "LTE BC1/LTE BC3/LTE BC20" -> [1, 3, 20]
@@ -220,18 +248,19 @@ mod tests {
     #[test]
     fn parses_the_real_device_list() {
         let doc = parse(NETMODE_XML).unwrap();
-        let (defs, all) = from_net_mode_list(&doc);
-        assert_eq!(defs.len(), 15);
+        let catalog = from_net_mode_list(&doc);
+        assert_eq!(catalog.defs.len(), 15);
         assert!(
-            defs.iter().any(|d| d.band == Some(7)),
+            catalog.defs.iter().any(|d| d.band == Some(7)),
             "B7 missing from the app's old constant list"
         );
-        assert_eq!(all, from_hex("7fffffffffffffff"));
+        assert_eq!(catalog.lte_all, from_hex("7fffffffffffffff"));
+        assert_eq!(catalog.network_all, from_hex("3fffffff"));
     }
 
     #[test]
     fn payload_for_4g_matches_firmware_shape() {
-        let p = resolve("03", &[1, 3, 5], Some("7fffffffffffffff"), None);
+        let p = resolve("03", &[1, 3, 5], Some("7fffffffffffffff"), None, None);
         assert_eq!(p.lte_band, "15");
         assert_eq!(p.network_band, "15");
         assert_eq!(p.network_option, None);
@@ -243,19 +272,36 @@ mod tests {
 
     #[test]
     fn auto_uses_the_device_all_bands_mask() {
-        let p = resolve("00", &[1, 3], Some("7fffffffffffffff"), None);
+        let p = resolve("00", &[1, 3], Some("7fffffffffffffff"), None, None);
         assert_eq!(p.network_band, "7fffffffffffffff");
         assert_eq!(p.lte_band, "5");
     }
 
     #[test]
+    fn auto_sends_the_network_mask_not_the_lte_one() {
+        // The device reports two different all-bands values; NetworkBand must
+        // carry the 32-bit one, LTEBand the 64-bit one.
+        let p = resolve(
+            "00",
+            &[1, 3],
+            Some("7fffffffffffffff"),
+            Some("3FFFFFFF"),
+            None,
+        );
+        assert_eq!(p.network_band, "3FFFFFFF");
+        assert_eq!(p.lte_band, "5");
+    }
+
+    #[test]
     fn five_g_carries_the_nr_option() {
-        let p = resolve("08", &[1], None, Some("1"));
+        let p = resolve("08", &[1], None, None, Some("1"));
         assert_eq!(p.network_option.as_deref(), Some("1"));
         assert!(p.xml().contains("<NetworkOption>1</NetworkOption>"));
         // default when the caller gives nothing
         assert_eq!(
-            resolve("08", &[1], None, None).network_option.as_deref(),
+            resolve("08", &[1], None, None, None)
+                .network_option
+                .as_deref(),
             Some("0")
         );
     }
@@ -298,12 +344,12 @@ mod tests {
              </LTEBandList></response>",
         )
         .unwrap();
-        let (defs, all) = from_net_mode_list(&doc);
-        assert_eq!(defs.len(), 15);
+        let catalog = from_net_mode_list(&doc);
+        assert_eq!(catalog.defs.len(), 15);
         assert!(
-            defs.iter().any(|d| d.band == Some(7)),
+            catalog.defs.iter().any(|d| d.band == Some(7)),
             "B7 is supported by the router"
         );
-        assert_eq!(all, from_hex("7fffffffffffffff"));
+        assert_eq!(catalog.lte_all, from_hex("7fffffffffffffff"));
     }
 }

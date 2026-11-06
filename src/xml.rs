@@ -57,6 +57,10 @@ impl Node {
     }
 }
 
+/// A router document nests a handful of levels; anything deeper is hostile
+/// input that would blow the stack while the tree is dropped.
+const MAX_DEPTH: usize = 256;
+
 pub fn parse(src: &str) -> Result<Node, ApiError> {
     let mut reader = Reader::from_str(src);
     reader.config_mut().trim_text(true);
@@ -69,6 +73,11 @@ pub fn parse(src: &str) -> Result<Node, ApiError> {
             Ok(Event::Start(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 stack.push(Node::new(name));
+                if stack.len() > MAX_DEPTH {
+                    return Err(ApiError::Parse(format!(
+                        "document nests deeper than {MAX_DEPTH} levels"
+                    )));
+                }
             }
             Ok(Event::Empty(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
@@ -217,5 +226,32 @@ mod tests {
         assert_eq!(n.value("note"), Some("&abcdefghijé;"));
         let arabic = parse("<response><note>&اختبار;</note></response>").unwrap();
         assert_eq!(arabic.value("note"), Some("&اختبار;"));
+    }
+
+    /// A hostile document must be refused, not aborted by a stack overflow while
+    /// the tree is dropped (SIGABRT cannot be caught by the caller).
+    #[test]
+    fn a_deeply_nested_document_is_rejected_not_aborted() {
+        let mut doc = String::from("<response>");
+        for _ in 0..(MAX_DEPTH - 1) {
+            doc.push_str("<a>");
+        }
+        for _ in 0..(MAX_DEPTH - 1) {
+            doc.push_str("</a>");
+        }
+        doc.push_str("</response>");
+        assert!(
+            parse(&doc).is_ok(),
+            "a document at the limit must still parse"
+        );
+
+        doc = String::from("<response>");
+        for _ in 0..MAX_DEPTH {
+            doc.push_str("<a>");
+        }
+        assert!(
+            matches!(parse(&doc), Err(ApiError::Parse(_))),
+            "one level past the limit must be a parse error"
+        );
     }
 }

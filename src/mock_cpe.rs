@@ -114,6 +114,7 @@ pub struct MockCpe {
     stop: Arc<AtomicBool>,
     logins: Arc<AtomicUsize>,
     logouts: Arc<AtomicUsize>,
+    signals: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -126,14 +127,16 @@ impl MockCpe {
         let flag = Arc::clone(&stop);
         let logins = Arc::new(AtomicUsize::new(0));
         let logouts = Arc::new(AtomicUsize::new(0));
+        let signals = Arc::new(AtomicUsize::new(0));
         let (li, lo) = (Arc::clone(&logins), Arc::clone(&logouts));
+        let sig = Arc::clone(&signals);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let _ = serve(stream, profile, &li, &lo);
+                let _ = serve(stream, profile, &li, &lo, &sig);
             }
         });
         MockCpe {
@@ -141,6 +144,7 @@ impl MockCpe {
             stop,
             logins,
             logouts,
+            signals,
             thread: Some(thread),
         }
     }
@@ -158,6 +162,12 @@ impl MockCpe {
     /// `POST /api/user/logout` calls seen so far.
     pub fn logouts(&self) -> usize {
         self.logouts.load(Ordering::SeqCst)
+    }
+
+    /// `GET /api/device/signal` calls seen so far: one per poll cycle, which is
+    /// how a test sees the worker's actual interval.
+    pub fn signals(&self) -> usize {
+        self.signals.load(Ordering::SeqCst)
     }
 }
 
@@ -178,6 +188,7 @@ fn serve(
     profile: Profile,
     logins: &AtomicUsize,
     logouts: &AtomicUsize,
+    signals: &AtomicUsize,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -185,6 +196,10 @@ fn serve(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("/").to_string();
+
+    if path.starts_with("/api/device/signal") {
+        signals.fetch_add(1, Ordering::SeqCst);
+    }
 
     // Drain headers so the client is not left writing into a closed socket.
     let mut content_length = 0usize;

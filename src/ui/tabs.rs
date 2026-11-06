@@ -1798,10 +1798,11 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
         ("SINR", &app.history_sinr, t.sinr_color(12.0), -10.0, 30.0),
     ];
 
-    // Allocate rows so that all three series always render, even on a short
-    // terminal: three label lines, the rest shared between the traces.
+    // Every series gets the rows that are actually left. When there is not even
+    // one row per series, print the labels without traces instead of clamping
+    // to 1 and letting the last series fall off the panel.
     let avail = (inner.height as usize).saturating_sub(3);
-    let rows = (avail / 3).clamp(1, 4);
+    let rows = (avail / 3).min(4);
     let width = (inner.width as usize).saturating_sub(14).max(8);
 
     let mut lines: Vec<Line> = Vec::new();
@@ -1820,9 +1821,11 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
             ),
             Span::styled(format!("{min:.0}…{max:.0}"), Style::default().fg(t.dim)),
         ]));
-        lines.extend(crate::ui::widgets::spark_scaled(
-            hist, width, rows, app.graph, colour, min, max,
-        ));
+        if rows > 0 {
+            lines.extend(crate::ui::widgets::spark_scaled(
+                hist, width, rows, app.graph, colour, min, max,
+            ));
+        }
     }
     if wide && inner.height as usize > lines.len() {
         lines.push(Line::from(Span::styled(

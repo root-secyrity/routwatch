@@ -126,9 +126,16 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_events(f, area, app);
     }
 
-    // `sky` and `paper` own a panel fill. Widgets leave most cells with
-    // `Reset`, so the fill is applied last: it only replaces cells nobody
-    // deliberately painted (selection bars keep their own background).
+    if !matches!(app.write, crate::write::WriteState::Idle) {
+        draw_write_modal(f, area, app);
+    }
+    if app.settings_open {
+        draw_settings(f, area, app);
+    }
+
+    // `sky` and `paper` own a panel fill. Applied last so it also covers the
+    // modal's `Clear` cells, which otherwise fall back to the terminal default
+    // and leave dark text on a dark terminal.
     if app.theme.paints_bg() {
         let bg = app.theme.bg;
         let buf = f.buffer_mut();
@@ -140,12 +147,6 @@ pub fn draw(f: &mut Frame, app: &App) {
                 }
             }
         }
-    }
-    if !matches!(app.write, crate::write::WriteState::Idle) {
-        draw_write_modal(f, area, app);
-    }
-    if app.settings_open {
-        draw_settings(f, area, app);
     }
 }
 
@@ -1655,6 +1656,44 @@ mod tests {
         let text = render_to_string(&app, 120, 34);
         for needle in ["v / V", "l / L", "S / ,", "jump to a section from ANY view"] {
             assert!(text.contains(needle), "help is missing {needle:?}\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_painted_theme_fills_the_settings_modal_too() {
+        let mut app = fixture_app();
+        app.theme = crate::theme::by_name("paper");
+        app.settings_open = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let reset_cells = (0..24u16)
+            .flat_map(|y| (0..80u16).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].bg == ratatui::style::Color::Reset)
+            .count();
+        assert_eq!(
+            reset_cells, 0,
+            "a modal cell fell back to the terminal background"
+        );
+    }
+
+    #[test]
+    fn every_signal_series_has_a_row_at_eighteen_lines() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        let text = render_to_string(&app, 120, 18);
+        for label in ["RSRP", "RSRQ", "SINR"] {
+            assert!(text.contains(label), "{label} missing at 120x18\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_short_signal_panel_keeps_every_label() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        let text = render_to_string(&app, 120, 15);
+        for label in ["RSRP", "RSRQ", "SINR"] {
+            assert!(text.contains(label), "{label} missing at 120x15\n{text}");
         }
     }
 
