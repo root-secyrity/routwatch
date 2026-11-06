@@ -24,10 +24,9 @@ identifiers are placeholders. The remaining seven sections are in
 ## Visual maps
 
 Two maps of the codebase, in English and Arabic: one for the architecture, one
-for a single fetch cycle. Both are rendered by `routwatch preview` from
-`fixtures/sample-snapshot.json`, and every claim drawn inside the HTML carries
-the source line it came from. Each image below links to the interactive map it
-belongs to.
+for a single fetch cycle. Both are generated with Archify from the source at
+commit `a2610eed97dbc879ebfa30f49ef38db7d05e3d4a`, and every claim drawn inside the HTML carries the source line it
+came from. Each image below links to the interactive map it belongs to.
 
 | Arabic | English |
 |---|---|
