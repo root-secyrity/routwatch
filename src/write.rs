@@ -157,6 +157,23 @@ pub fn read_mode(client: &mut HuaweiClient) -> Result<NetMode, ApiError> {
     Ok(parse::parse_net_mode(&node))
 }
 
+/// True when the device answered an auto-mode write by reporting `NetworkBand 0`
+/// while the LTE mask it kept is the one we asked for. H122-373 does exactly
+/// this: it accepts `3FFFFFFF`, applies it, and then publishes 0 for the
+/// network mask. Treating that as a mismatch turned a successful write into a
+/// failed one on real hardware.
+pub fn auto_reports_zero_band(current: &NetMode, payload: &BandPayload) -> bool {
+    let zero = current.network_band.as_deref().and_then(bands::from_hex) == Some(0);
+    let lte_ok = current
+        .lte_band
+        .as_deref()
+        .and_then(bands::from_hex)
+        .zip(bands::from_hex(&payload.lte_band))
+        .map(|(a, b)| a == b)
+        .unwrap_or(false);
+    payload.network_mode == "00" && zero && lte_ok
+}
+
 /// Does the device now match every field the payload asked for?
 ///
 /// The pre-write no-op guard keeps `same_band_target`; this one is the
@@ -170,7 +187,8 @@ pub fn matches_after(current: &NetMode, payload: &BandPayload) -> bool {
             .unwrap_or(false)
     };
     let mode_ok = current.network_mode.as_deref() == Some(payload.network_mode.as_str());
-    let band_ok = hex_eq(current.network_band.as_deref(), &payload.network_band)
+    let band_ok = (hex_eq(current.network_band.as_deref(), &payload.network_band)
+        || auto_reports_zero_band(current, payload))
         && hex_eq(current.lte_band.as_deref(), &payload.lte_band);
     let want_opt = payload
         .network_option
@@ -261,16 +279,24 @@ pub fn apply_bands(
 
     if let Ok(current) = &after {
         if matches_after(current, payload) {
+            let zero = if auto_reports_zero_band(current, payload) {
+                "; device reports NetworkBand 0 in auto mode"
+            } else {
+                ""
+            };
             return WriteState::Success {
                 intent,
-                note: match &sent {
-                    Ok(_) => format!(
-                        "verified, device mode {} mask 0x{}",
-                        current.network_mode.clone().unwrap_or_else(|| "-".into()),
-                        bands::to_hex(target)
-                    ),
-                    Err(e) => format!("{}; read-back confirms the change", write_cause(e)),
-                },
+                note: format!(
+                    "{}{zero}",
+                    match &sent {
+                        Ok(_) => format!(
+                            "verified, device mode {} mask 0x{}",
+                            current.network_mode.clone().unwrap_or_else(|| "-".into()),
+                            bands::to_hex(target)
+                        ),
+                        Err(e) => format!("{}; read-back confirms the change", write_cause(e)),
+                    }
+                ),
             };
         }
     }
@@ -567,6 +593,50 @@ mod tests {
         };
         let payload = bands::resolve("00", &[1, 3, 7, 8, 20], None, Some("3FFFFFFF"), None);
         assert!(matches_after(&current, &payload));
+    }
+
+    /// H122-373 accepts NetworkBand=3FFFFFFF in auto mode and then publishes
+    /// 0 for that field. The write did land, so the verdict must be success.
+    #[test]
+    fn an_auto_write_that_reads_back_zero_is_a_success() {
+        let current = NetMode {
+            network_mode: Some("00".into()),
+            network_band: Some("0".into()),
+            lte_band: Some("800D5".into()),
+            network_option: None,
+        };
+        let payload = bands::resolve("00", &[1, 3, 5, 7, 8, 20], None, Some("3FFFFFFF"), None);
+        assert!(auto_reports_zero_band(&current, &payload));
+        assert!(matches_after(&current, &payload));
+    }
+
+    /// The exception is narrow: a zero NetworkBand with a different LTE mask is
+    /// still a device that did not land on what was asked.
+    #[test]
+    fn a_zero_band_with_the_wrong_lte_mask_is_still_a_failure() {
+        let current = NetMode {
+            network_mode: Some("00".into()),
+            network_band: Some("0".into()),
+            lte_band: Some("800C5".into()),
+            network_option: None,
+        };
+        let payload = bands::resolve("00", &[1, 3, 5, 7, 8, 20], None, Some("3FFFFFFF"), None);
+        assert!(!auto_reports_zero_band(&current, &payload));
+        assert!(!matches_after(&current, &payload));
+    }
+
+    /// Outside auto mode a zero mask is never an acceptable answer.
+    #[test]
+    fn a_zero_band_outside_auto_mode_is_still_a_failure() {
+        let current = NetMode {
+            network_mode: Some("03".into()),
+            network_band: Some("0".into()),
+            lte_band: Some("1".into()),
+            network_option: None,
+        };
+        let payload = bands::resolve("03", &[1], None, None, None);
+        assert!(!auto_reports_zero_band(&current, &payload));
+        assert!(!matches_after(&current, &payload));
     }
 
     /// A lost response is not a refusal; the message has to say which one it was.
