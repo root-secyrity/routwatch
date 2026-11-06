@@ -12,6 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The smallest frame that still says something: below this `too_small` speaks.
 pub fn min_size() -> (u16, u16) {
@@ -356,14 +357,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     }
     let mut right_width: u16 = right
         .iter()
-        .map(|span| span.content.chars().count() as u16)
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()) as u16)
         .sum();
     let poll = format!(" · poll {}ms ", app.last_poll_ms);
     // Keep at least 34 columns for the left side: the PLMN is worth more than
     // the polling interval.
-    if right_width + poll.chars().count() as u16 + 34 <= area.width {
+    if right_width + UnicodeWidthStr::width(poll.as_str()) as u16 + 34 <= area.width {
         right.push(Span::styled(poll.clone(), Style::default().fg(t.dim)));
-        right_width += poll.chars().count() as u16;
+        right_width += UnicodeWidthStr::width(poll.as_str()) as u16;
     }
     // The right side is drawn over the same row, so the left side has to know
     // how much room it may take - otherwise " routwatch " and "waiting" merge
@@ -384,8 +385,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             ));
         }
     }
+    let left_w: u16 = left
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()) as u16)
+        .sum();
     f.render_widget(Paragraph::new(Line::from(left)), area);
-    if area.width >= 30 {
+    // Show the state whenever it actually fits: the old `>= 30` check hid it on
+    // 24..29 columns even when the text had room.
+    if (area.width as usize) > left_w as usize + right_width as usize {
         f.render_widget(
             Paragraph::new(Line::from(right)).alignment(ratatui::layout::Alignment::Right),
             area,
@@ -576,11 +583,21 @@ fn hint_fit(s: &str, room: usize) -> String {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+    if UnicodeWidthStr::width(s) <= n {
+        return s.to_string();
     }
+    let mut out = String::new();
+    let mut w = 0usize;
+    let room = n.saturating_sub(1);
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > room {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out + "…"
 }
 
 /// The event feed: a window over `app.event_log`, newest line at the top.
@@ -665,7 +682,7 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_help(f: &mut Frame, area: Rect, theme: &Theme) {
     let rows = [
-        ("1..7 / Tab", "switch tab"),
+        ("1..9 / Tab", "switch tab"),
         ("j k / ↑ ↓", "move selection"),
         ("i", "event feed: j/k reads back, space pauses, Esc closes"),
         ("space / a", "bands: toggle / apply (confirm with y)"),
@@ -1657,6 +1674,45 @@ mod tests {
         for needle in ["v / V", "l / L", "S / ,", "jump to a section from ANY view"] {
             assert!(text.contains(needle), "help is missing {needle:?}\n{text}");
         }
+    }
+
+    #[test]
+    fn the_header_keeps_the_state_at_twenty_nine_columns() {
+        let mut app = fixture_app();
+        app.session = crate::app::SessionState::Live;
+        let text = render_to_string(&app, 29, 6);
+        assert!(
+            text.contains("live"),
+            "the state fits but was hidden at 29 columns:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_help_names_all_nine_sections() {
+        let mut app = fixture_app();
+        app.help = true;
+        let text = render_to_string(&app, 100, 40);
+        assert!(text.contains("1..9 / Tab"), "help is stale:\n{text}");
+    }
+
+    #[test]
+    fn wide_characters_never_widen_the_frame() {
+        use unicode_width::UnicodeWidthStr;
+        // A wide grapheme is two cells but one char; cutting by chars let
+        // `Net📺📺📺📺📺` overflow the room it was given.
+        let cut = truncate("Net📺📺📺📺📺", 10);
+        assert!(
+            UnicodeWidthStr::width(cut.as_str()) <= 10,
+            "truncate kept {cut:?} at {} cells",
+            UnicodeWidthStr::width(cut.as_str())
+        );
+        let mut app = fixture_app();
+        if let Some(snap) = app.snap.as_mut() {
+            snap.plmn.name = "Net📺📺📺📺📺".into();
+        }
+        // The header must still be the frame width, not wider.
+        let text = render_to_string(&app, 80, 20);
+        assert_eq!(text.lines().count(), 20);
     }
 
     #[test]

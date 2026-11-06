@@ -25,12 +25,19 @@ pub enum GraphStyle {
 }
 
 impl GraphStyle {
-    pub fn parse(s: &str) -> GraphStyle {
+    /// Strict form for CLI values: an unknown name must be a usage error, not
+    /// a silent fall back to dots.
+    pub fn try_parse(s: &str) -> Option<GraphStyle> {
         match s.to_ascii_lowercase().as_str() {
-            "bars" | "bar" => GraphStyle::Bars,
-            "braille" | "btop" => GraphStyle::Braille,
-            _ => GraphStyle::Dots,
+            "dots" | "dot" => Some(GraphStyle::Dots),
+            "bars" | "bar" => Some(GraphStyle::Bars),
+            "braille" | "btop" => Some(GraphStyle::Braille),
+            _ => None,
         }
+    }
+
+    pub fn parse(s: &str) -> GraphStyle {
+        Self::try_parse(s).unwrap_or(GraphStyle::Dots)
     }
 
     pub fn name(&self) -> &'static str {
@@ -183,6 +190,18 @@ impl Theme {
         if v >= -80.0 {
             self.ok
         } else if v >= -100.0 {
+            self.warn
+        } else {
+            self.danger
+        }
+    }
+
+    /// RSSI has its own scale (-113..-51), roughly 20 dB above RSRP. Using the
+    /// RSRP thresholds painted a -78 dBm RSSI green while its label said fair.
+    pub fn rssi_color(&self, v: f32) -> Color {
+        if v >= -75.0 {
+            self.ok
+        } else if v >= -95.0 {
             self.warn
         } else {
             self.danger
@@ -855,5 +874,13 @@ color7 = "#EFE9DD"
             contrast(derived.fg, derived.bg)
         );
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn rssi_uses_its_own_thresholds() {
+        let t = Theme::get("terminal");
+        assert_eq!(t.rssi_color(-70.0), t.ok);
+        assert_eq!(t.rssi_color(-78.0), t.warn, "-78 is fair on the RSSI scale");
+        assert_eq!(t.rssi_color(-100.0), t.danger);
     }
 }

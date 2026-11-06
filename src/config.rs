@@ -73,8 +73,6 @@ pub struct App {
     /// `true` includes serial/IMEI/WAN/client identities in `e` reports.
     #[serde(default)]
     pub report_identity: bool,
-    #[serde(default)]
-    pub secure_trust: bool,
     /// `None` = the key was never written, so the built-in merges are used.
     /// `Some([])` = the user deleted every preset and means it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,7 +89,6 @@ impl Default for App {
             graph_style: "dots".into(),
             budget_gb: 100,
             report_identity: false,
-            secure_trust: false,
             presets: None,
         }
     }
@@ -134,10 +131,10 @@ pub fn generate(explicit: Option<PathBuf>) -> Result<PathBuf, ApiError> {
         .map_err(|e| ApiError::Config(format!("serialize: {e}")))?;
     let header = "# routwatch config - see `routwatch --help`\n\
                   # Password is optional here: prefer ROUTWATCH_PASSWORD or secret-tool.\n";
-    fs::write(&path, format!("{header}{body}"))
+    // Created 0600 from the first byte, never 0644 and then chmod: the file can
+    // hold a password, and the window between the two calls is readable.
+    crate::output::write_private(&path, format!("{header}{body}").as_bytes(), true)
         .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-        .map_err(|e| ApiError::Config(format!("chmod 600 {}: {e}", path.display())))?;
     Ok(path)
 }
 
@@ -148,10 +145,8 @@ pub fn save(explicit: Option<PathBuf>, cfg: &Config) -> Result<PathBuf, ApiError
         toml::to_string_pretty(cfg).map_err(|e| ApiError::Config(format!("serialize: {e}")))?;
     let header = "# routwatch config - see `routwatch --help`\n\
                   # Password is optional here: prefer ROUTWATCH_PASSWORD or secret-tool.\n";
-    fs::write(&path, format!("{header}{body}"))
+    crate::output::write_private(&path, format!("{header}{body}").as_bytes(), true)
         .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-        .map_err(|e| ApiError::Config(format!("chmod 600 {}: {e}", path.display())))?;
     Ok(path)
 }
 
@@ -429,6 +424,21 @@ budget_gb = 100
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(load(Some(path.clone())).is_err());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn generate_is_private_and_has_no_dead_keys() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rw-gen-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        std::fs::remove_dir_all(&dir).ok();
+
+        generate(Some(path.clone())).expect("generate");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "config must be private from creation");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("secure_trust"), "dead key came back: {text}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
