@@ -42,7 +42,7 @@ lists all eight files.
 
 | Route | Command |
 |---|---|
-| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.2.4/routwatch-0.2.4-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.2.4-1-x86_64.pkg.tar.zst` |
+| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.2.5/routwatch-0.2.5-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.2.5-1-x86_64.pkg.tar.zst` |
 | Static musl binary | [routwatch-x86_64-linux-musl](https://github.com/root-secyrity/routwatch/releases/latest/download/routwatch-x86_64-linux-musl) - a permanent link, links nothing, runs on Arch, Debian, Ubuntu, Fedora, Alpine, Raspberry Pi OS |
 | Any distro, from source | `git clone https://github.com/root-secyrity/routwatch.git && cd routwatch && sudo make install` (or `PREFIX=$HOME/.local`) |
 | Build the static binary | `./packaging/musl-build.sh` - needs docker, writes `dist/` |
