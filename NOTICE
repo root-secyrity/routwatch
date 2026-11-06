@@ -22,6 +22,11 @@ defaulting to the terminal's own palette, the V/L/F view cycle, `--tab` and
 detail/next_check), shell completion emitted by the binary itself, and the
 habit of stating a limitation in the UI instead of showing a plausible zero.
 
+The chart module (src/ui/chart.rs) follows the behaviour of netwatch's
+src/graph.rs: a braille area plot coloured by cell height, one zero row for a
+mirrored rx/tx pair, and time-window resampling before drawing. It is a
+reimplementation against routwatch's own data types, not a copy of that file.
+
 No source code from syswatch or diskwatch was copied into this repository.
 
 The feature set and the router behaviour it encodes (endpoints, band masks,

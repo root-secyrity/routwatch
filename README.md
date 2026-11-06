@@ -151,7 +151,7 @@ refresh_ms = 2000
 timeout_ms = 3000
 theme = "terminal"      # follows your terminal / desktop theme
 view = "full"           # full · gauges · lite · dense
-graph_style = "dots"    # dots · bars · braille
+graph_style = "dots"    # dots and bars colour each cell by its height; braille is flat
 budget_gb = 100         # local budget only; the monthly counters are not read
 ```
 
@@ -305,11 +305,17 @@ routwatch preview --tab bands --size 120x30 --ansi
   columns the status line keeps one fact plus the keys, below 40 only the keys; the
   dashboard drops from four blocks to signal + speed + history (under 25 rows) and
   to one signal panel at the 24x6 floor, where `too small` names the size it needs.
+- **Graph colour assumes a dark terminal when the theme has no background of its
+  own**: six of the eight themes set `bg = Reset`, where the background belongs to
+  the terminal and cannot be read. The ramp then anchors on a stated dark
+  assumption, so the dimmest cells can be dimmer than the measured 4:1 floor on a
+  light terminal. `sky` and `paper` paint their own background and are measured
+  exactly.
 
 ## Development
 
 ```sh
-cargo test                 # 222 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
+cargo test                 # 242 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
