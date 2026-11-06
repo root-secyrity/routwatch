@@ -96,15 +96,17 @@ pub fn spark_scaled<'a>(
     min: f64,
     max: f64,
 ) -> Vec<Line<'a>> {
-    if width == 0 || height == 0 {
-        return Vec::new();
-    }
-    match style {
-        GraphStyle::Bars => vec![bars_row_scaled(values, width, color, min, max)],
-        _ => braille_scaled(values, width, height, color, min, max),
-    }
+    crate::ui::chart::spark_lines_scaled(
+        values,
+        width,
+        height,
+        style.is_bars(),
+        color,
+        min,
+        max,
+        crate::ui::chart::ChartOpts::default(),
+    )
 }
-
 /// Segmented threshold ruler: the bar itself carries the quality zones, and the
 /// fill shows where the reading sits. Replaces the circular gauge for signal
 /// metrics (circles stay for download/upload).
@@ -180,80 +182,7 @@ pub fn ruler<'a>(value: f64, spec: &RulerSpec, ok: Color, warn: Color, danger: C
         Span::styled(run, Style::default().fg(colour))
     });
     Line::from(spans)
-}
-
-fn bars_row_scaled<'a>(
-    values: &VecDeque<f64>,
-    width: usize,
-    color: Color,
-    min: f64,
-    max: f64,
-) -> Line<'a> {
-    let data: Vec<f64> = values.iter().rev().take(width).rev().copied().collect();
-    let span = (max - min).max(1e-9);
-    let mut s = String::new();
-    for _ in 0..width.saturating_sub(data.len()) {
-        s.push('·');
-    }
-    for v in &data {
-        let idx = (((v - min) / span).clamp(0.0, 1.0) * 8.0).round() as usize;
-        s.push(LEVELS[idx]);
-    }
-    Line::from(Span::styled(s, Style::default().fg(color)))
-}
-
-fn braille_scaled<'a>(
-    values: &VecDeque<f64>,
-    width: usize,
-    height: usize,
-    color: Color,
-    min: f64,
-    max: f64,
-) -> Vec<Line<'a>> {
-    let gw = width * 2;
-    let gh = height * 4;
-    let span = (max - min).max(1e-9);
-    let data: Vec<f64> = values.iter().rev().take(gw).rev().copied().collect();
-    let mut bits = vec![vec![false; gw]; gh];
-    let offset = gw.saturating_sub(data.len());
-    for (i, v) in data.iter().enumerate() {
-        let x = offset + i;
-        let norm = ((v - min) / span).clamp(0.0, 1.0);
-        let filled = ((norm * gh as f64).round() as usize).clamp(1, gh);
-        for r in 0..filled {
-            bits[gh - 1 - r][x] = true;
-        }
-    }
-    let mut lines = Vec::with_capacity(height);
-    for row in 0..height {
-        let mut s = String::with_capacity(width);
-        for col in 0..width {
-            let mut code = 0x2800u32;
-            for dy in 0..4 {
-                for dx in 0..2 {
-                    if bits[row * 4 + dy][col * 2 + dx] {
-                        code |= match (dx, dy) {
-                            (0, 0) => 0x01,
-                            (0, 1) => 0x02,
-                            (0, 2) => 0x04,
-                            (0, 3) => 0x40,
-                            (1, 0) => 0x08,
-                            (1, 1) => 0x10,
-                            (1, 2) => 0x20,
-                            (1, 3) => 0x80,
-                            _ => 0,
-                        };
-                    }
-                }
-            }
-            s.push(char::from_u32(code).unwrap_or(' '));
-        }
-        lines.push(Line::from(Span::styled(s, Style::default().fg(color))));
-    }
-    lines
-}
-
-/// Sparkline in one of the three styles the plan promises.
+}/// Sparkline in one of the three styles the plan promises.
 pub fn spark<'a>(
     values: &VecDeque<f64>,
     width: usize,
@@ -261,76 +190,16 @@ pub fn spark<'a>(
     style: GraphStyle,
     color: Color,
 ) -> Vec<Line<'a>> {
-    if width == 0 || height == 0 {
-        return Vec::new();
-    }
-    match style {
-        GraphStyle::Bars => vec![bars_row(values, width, color)],
-        _ => braille(values, width, height, color),
-    }
+    crate::ui::chart::spark_auto(
+        values,
+        width,
+        height,
+        style.is_bars(),
+        color,
+        crate::ui::chart::ChartOpts::default(),
+    )
 }
-
-const LEVELS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-fn bars_row<'a>(values: &VecDeque<f64>, width: usize, color: Color) -> Line<'a> {
-    let data: Vec<f64> = values.iter().rev().take(width).rev().copied().collect();
-    let max = data.iter().cloned().fold(0.0_f64, f64::max).max(1e-9);
-    let mut s = String::new();
-    for _ in 0..width.saturating_sub(data.len()) {
-        s.push(' ');
-    }
-    for v in &data {
-        let idx = ((v / max) * 8.0).round().clamp(0.0, 8.0) as usize;
-        s.push(LEVELS[idx]);
-    }
-    Line::from(Span::styled(s, Style::default().fg(color)))
-}
-
 /// Braille canvas: 2 dots horizontally and 4 vertically per cell, filled from the
-/// bottom, newest value at the right edge.
-fn braille<'a>(values: &VecDeque<f64>, width: usize, height: usize, color: Color) -> Vec<Line<'a>> {
-    let gw = width * 2;
-    let gh = height * 4;
-    let data: Vec<f64> = values.iter().rev().take(gw).rev().copied().collect();
-    let max = data.iter().cloned().fold(0.0_f64, f64::max).max(1e-9);
-    let mut bits = vec![vec![false; gw]; gh];
-    let offset = gw.saturating_sub(data.len());
-    for (i, v) in data.iter().enumerate() {
-        let x = offset + i;
-        let filled = (((v / max) * gh as f64).round() as usize).min(gh);
-        for r in 0..filled {
-            bits[gh - 1 - r][x] = true;
-        }
-    }
-    let mut lines = Vec::with_capacity(height);
-    for row in 0..height {
-        let mut s = String::with_capacity(width);
-        for col in 0..width {
-            let mut code = 0x2800u32;
-            for dy in 0..4 {
-                for dx in 0..2 {
-                    if bits[row * 4 + dy][col * 2 + dx] {
-                        code |= match (dx, dy) {
-                            (0, 0) => 0x01,
-                            (0, 1) => 0x02,
-                            (0, 2) => 0x04,
-                            (0, 3) => 0x40,
-                            (1, 0) => 0x08,
-                            (1, 1) => 0x10,
-                            (1, 2) => 0x20,
-                            (1, 3) => 0x80,
-                            _ => 0,
-                        };
-                    }
-                }
-            }
-            s.push(char::from_u32(code).unwrap_or(' '));
-        }
-        lines.push(Line::from(Span::styled(s, Style::default().fg(color))));
-    }
-    lines
-}
-
 pub fn title_style(color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
@@ -685,6 +554,28 @@ mod tests {
             .filter(|c| *c != '\u{2800}')
             .count();
         assert_eq!(painted, 40, "a top-of-range value fills both lines");
+    }
+
+    #[test]
+    fn a_negative_domain_keeps_its_middle_height() {
+        // -96 of a -140..-44 domain sits at 46%: seven of sixteen sub-rows, so
+        // two of the four rows carry ink. The broken version cast the domain to
+        // u64 (min 0, max 1), so every sample collapsed onto the baseline row
+        // and this counted 1.
+        let mut v = VecDeque::new();
+        for _ in 0..40 {
+            v.push_back(-96.0);
+        }
+        let lines = spark_scaled(&v, 20, 4, GraphStyle::Braille, Color::Reset, -140.0, -44.0);
+        let painted_rows = lines
+            .iter()
+            .filter(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.chars().any(|c| c != ' ' && c != '\u{2800}'))
+            })
+            .count();
+        assert_eq!(painted_rows, 2, "46% of the domain fills two of four rows");
     }
 
     #[test]
