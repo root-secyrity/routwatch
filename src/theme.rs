@@ -55,6 +55,11 @@ impl GraphStyle {
             GraphStyle::Braille => GraphStyle::Dots,
         }
     }
+
+    /// True for the block style, false for both braille names.
+    pub fn is_bars(self) -> bool {
+        matches!(self, GraphStyle::Bars)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +188,13 @@ impl Theme {
     /// terminal's background alone.
     pub fn paints_bg(&self) -> bool {
         self.bg != Color::Reset
+    }
+
+    /// True for the one palette that promises never to synthesise a colour.
+    /// `bg` is not the test: six themes leave it `Reset` while still owning
+    /// named colours, and a ramp over named colours must still be blended.
+    pub fn defers_to_palette(&self) -> bool {
+        self.id == "terminal"
     }
 
     /// Quality colour for signal readings (3GPP-ish thresholds, same as the plan).
