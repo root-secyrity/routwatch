@@ -1522,6 +1522,16 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         // Settings: `,` is the family convention, `s` works everywhere except the
         // Clients tab (where it sorts), and Shift+S still opens it there.
         KeyCode::Char(',') => app.settings_open = true,
+        // Refresh period: `[` and `]` work from any view, not only inside the
+        // settings overlay (where they also appear).
+        KeyCode::Char('[') => {
+            app.adjust_refresh(-500);
+            let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
+        }
+        KeyCode::Char(']') => {
+            app.adjust_refresh(500);
+            let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
+        }
         KeyCode::Char('s') => app.settings_open = true,
         KeyCode::Char(c @ '1'..='9') => {
             if let Some(tab) = ui::tab_from_key(c) {
@@ -1893,6 +1903,30 @@ mod key_tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn the_refresh_keys_work_without_the_settings_overlay() {
+        use super::WorkerCmd;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+
+        handle_key(&mut app, key(KeyCode::Char('[')), &tx);
+        assert_eq!(app.refresh_ms, 1500, "`[` must shorten the period");
+        assert!(
+            matches!(rx.try_recv(), Ok(WorkerCmd::SetInterval(1500))),
+            "the worker was not told about the new period"
+        );
+
+        handle_key(&mut app, key(KeyCode::Char(']')), &tx);
+        assert_eq!(app.refresh_ms, 2000);
+        assert!(matches!(rx.try_recv(), Ok(WorkerCmd::SetInterval(2000))));
     }
 
     /// `--tab` used to advertise seven sections while `dns` and `signal` worked,

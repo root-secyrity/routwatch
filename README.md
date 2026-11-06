@@ -297,7 +297,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 207 unit + 4 binary + 9 CLI tests, no router and no fixtures on disk
+cargo test                 # 207 unit + 5 binary + 9 CLI tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
