@@ -6,7 +6,7 @@
 use crate::app::{App, View};
 use crate::theme::Theme;
 use crate::ui::active_text_colour;
-use crate::ui::widgets::{bar, bps, bytes, dur, kv, opt_f, opt_s, pad, spark, title_style};
+use crate::ui::widgets::{bar, bps, bytes, dur, kv, opt_f, opt_s, pad, title_style};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -832,12 +832,13 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
         kv("budget", format!("{used_gb:.1} GB of {:.0} GB session budget (local - no plan counter on this firmware)", app.budget_gb), Style::default().fg(colour), t.dim),
         bar(frac, (top.width.saturating_sub(24)) as usize, colour, t.dim),
     ];
-    lines.extend(spark(
+    lines.extend(crate::ui::chart::spark_auto(
         &app.history_dl,
         top.width.saturating_sub(4) as usize,
         3,
-        app.graph,
+        app.graph.is_bars(),
         t.ok,
+        app.chart_opts(),
     ));
     f.render_widget(Paragraph::new(lines).block(panel("TRAFFIC".into(), t)), top);
 
@@ -1832,12 +1833,13 @@ fn speed_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
         ),
         Style::default().fg(t.dim),
     )));
-    lines.extend(spark(
+    lines.extend(crate::ui::chart::spark_auto(
         &app.history_dl,
         rest.width.saturating_sub(2) as usize,
         (rest.height as usize).saturating_sub(2).clamp(1, 3),
-        app.graph,
+        app.graph.is_bars(),
         t.ok,
+        app.chart_opts(),
     ));
     f.render_widget(Paragraph::new(lines), rest);
 }
@@ -1875,7 +1877,13 @@ fn network_strip(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapsho
 
 fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     let t = &app.theme;
-    let block = panel("SIGNAL GRAPHS · last 120 samples".into(), t);
+    let block = panel(
+        format!(
+            "SIGNAL GRAPHS · last {}s",
+            app.history_rsrp.len() as u64 * app.refresh_ms.max(1) / 1000
+        ),
+        t,
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1917,8 +1925,15 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
             Span::styled(format!("{min:.0}…{max:.0}"), Style::default().fg(t.dim)),
         ]));
         if rows > 0 {
-            lines.extend(crate::ui::widgets::spark_scaled(
-                hist, width, rows, app.graph, colour, min, max,
+            lines.extend(crate::ui::chart::spark_lines_scaled(
+                hist,
+                width,
+                rows,
+                app.graph.is_bars(),
+                colour,
+                min,
+                max,
+                app.chart_opts(),
             ));
         }
     }
