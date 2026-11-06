@@ -441,12 +441,53 @@ pub fn spark_lines(
             let spans: Vec<Span<'static>> = (0..width as u16)
                 .map(|x| {
                     let cell = &buf[(x, y)];
-                    Span::styled(cell.symbol().to_string(), Style::default().fg(cell.fg))
+                    // An untouched cell is a space in the buffer, but a braille
+                    // plot has always spelled "no dot" as U+2800: keeping that
+                    // keeps the series' texture and the fill-count tests honest.
+                    let symbol = if !bars && cell.symbol() == " " {
+                        "\u{2800}".to_string()
+                    } else {
+                        cell.symbol().to_string()
+                    };
+                    Span::styled(symbol, Style::default().fg(cell.fg))
                 })
                 .collect();
             Line::from(spans)
         })
         .collect()
+}
+
+/// [`spark_lines`] for a series with a signed physical domain (RSRP -140..-44
+/// dBm, RSRQ -20..-3 dB, SINR -10..30 dB).
+///
+/// The values are shifted onto zero here, so the renderer keeps one unsigned
+/// range while the caller keeps its float domain. Casting a negative domain
+/// straight to `u64` (`(-44.0).max(1.0) as u64 == 1`) collapsed every signal
+/// graph to a flat line, and the existing tests did not catch it because a
+/// baseline dot still paints.
+#[allow(clippy::too_many_arguments)]
+pub fn spark_lines_scaled(
+    values: &VecDeque<f64>,
+    width: usize,
+    height: usize,
+    bars: bool,
+    base: Color,
+    min: f64,
+    max: f64,
+    opts: ChartOpts,
+) -> Vec<Line<'static>> {
+    let span = (max - min).max(1.0);
+    let shifted: VecDeque<f64> = values.iter().map(|v| v - min).collect();
+    spark_lines(
+        &shifted,
+        width,
+        height,
+        bars,
+        base,
+        0,
+        span.round() as u64,
+        opts,
+    )
 }
 
 /// [`spark_lines`] with the ceiling derived from the data.
