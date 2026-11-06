@@ -413,6 +413,7 @@ pub fn two_per_column(data: &[u64], width: u16) -> Vec<u64> {
 /// `bars` is a one-row contract: a block sparkline is a row of eighths, and
 /// `height` is ignored for it. The dashboard passes 2 and the old tests pin
 /// one line, so the distinction is kept here rather than at every call site.
+#[allow(clippy::too_many_arguments)]
 pub fn spark_lines(
     values: &VecDeque<f64>,
     width: usize,
@@ -509,6 +510,149 @@ pub fn robust_max(data: &[u64], percentile: f64) -> u64 {
     let median = vals[vals.len() / 2];
     let headroom = median.saturating_add(median / 2).max(median + 1);
     p.max(headroom).max(1)
+}
+
+/// A shared-axis pair: rx growing up from the zero line, tx hanging below it.
+/// The zero line is one row and belongs to rx, so the two halves cannot draw
+/// two parallel baselines a row apart.
+///
+/// Returns the height of the rx half so the caller can label that row `0`
+/// without recomputing the split and drifting from it.
+#[allow(clippy::too_many_arguments)]
+pub fn render_mirrored_scaled(
+    buf: &mut Buffer,
+    plot: Rect,
+    rx: &[u64],
+    tx: &[u64],
+    rx_max: u64,
+    tx_max: u64,
+    bars: bool,
+    rx_color: Color,
+    tx_color: Color,
+    opts: ChartOpts,
+) -> u16 {
+    if plot.width == 0 || plot.height == 0 {
+        return 0;
+    }
+    let tx_h = plot.height / 2;
+    let rx_h = plot.height - tx_h;
+    render_half(
+        buf,
+        Rect { height: rx_h, ..plot },
+        rx,
+        rx_max,
+        bars,
+        rx_color,
+        opts,
+        false,
+    );
+    render_half(
+        buf,
+        Rect { y: plot.y + rx_h, height: tx_h, ..plot },
+        tx,
+        tx_max,
+        bars,
+        tx_color,
+        // The zero row the rx half draws is this half's floor too.
+        ChartOpts { baseline: false, ..opts },
+        true,
+    );
+    rx_h
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_half(
+    buf: &mut Buffer,
+    area: Rect,
+    data: &[u64],
+    max: u64,
+    bars: bool,
+    color: Color,
+    opts: ChartOpts,
+    flip: bool,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let ramp = fade_ramp(color, opts).unwrap_or_else(|| Ramp::flat(color));
+    let samples = two_per_column(data, area.width);
+    if bars {
+        if flip {
+            render_bars_flipped(buf, area, data, max, &ramp, opts);
+        } else {
+            render_bars(buf, area, data, max, &ramp, opts);
+        }
+    } else {
+        area_graph(buf, area, &samples, max, &ramp, flip, opts.baseline);
+    }
+}
+
+/// The x-axis strip under a time-series plot: the window's start, its
+/// midpoint, and `now`, spread across `width`.
+pub fn time_axis(width: u16, secs: u64) -> String {
+    let w = width as usize;
+    let mut out = String::new();
+    for (i, frac) in [0.0f32, 0.5, 1.0].iter().enumerate() {
+        let text = match i {
+            2 => "now".to_string(),
+            _ => format!("-{}s", (secs as f32 * (1.0 - frac)).round() as u64),
+        };
+        let target = ((w.saturating_sub(text.chars().count())) as f32 * frac).round() as usize;
+        while out.chars().count() < target {
+            out.push(' ');
+        }
+        out.push_str(&text);
+    }
+    out
+}
+
+/// Top-anchored blocks, for the mirrored half of a `bars` graph.
+///
+/// Three fill levels, not eight: the bottom-anchored eighths (`▁`..`▇`) have no
+/// top-anchored counterparts outside Symbols for Legacy Computing, whose font
+/// coverage is exactly what `bars` exists to avoid depending on. A coarser
+/// mirror beats a mirrored half made of tofu.
+fn render_bars_flipped(
+    buf: &mut Buffer,
+    area: Rect,
+    data: &[u64],
+    max: u64,
+    ramp: &Ramp,
+    opts: ChartOpts,
+) {
+    // `▔` 1/8, `▀` 1/2, `█` full: all in Block Elements.
+    const GLYPHS: [char; 3] = ['▔', '▀', '█'];
+    if max == 0 {
+        return;
+    }
+    let cell_w = area.width as usize;
+    let cell_h = area.height as usize;
+    let start = data.len().saturating_sub(cell_w);
+    let samples = &data[start..];
+    let offset = cell_w.saturating_sub(samples.len());
+    for (i, &v) in samples.iter().enumerate() {
+        let mut eighths = (v.min(max) as u128 * cell_h as u128 * 8 / max as u128) as usize;
+        if opts.baseline {
+            eighths = eighths.max(1);
+        } else if eighths == 0 {
+            continue;
+        }
+        let x = area.x + (offset + i) as u16;
+        for cy in 0..cell_h {
+            let level = eighths.saturating_sub(cy * 8).min(8);
+            let glyph = match level {
+                0 => continue,
+                1..=3 => GLYPHS[0],
+                4..=7 => GLYPHS[1],
+                _ => GLYPHS[2],
+            };
+            let f = (cy as f32 + 0.5) / cell_h as f32;
+            if let Some(cell) = buf.cell_mut((x, area.y + cy as u16)) {
+                cell.set_char(glyph);
+                cell.set_style(Style::default().fg(ramp.at(f)));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -652,6 +796,51 @@ mod tests {
         let m = robust_max(&data, 0.95);
         assert!(m > 2, "the body must still have room: {m}");
         assert!(m < 200, "one spike may not own the ceiling: {m}");
+    }
+
+    #[test]
+    fn the_mirror_shares_one_zero_row() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 3));
+        let plot = buf.area;
+        let opts = ChartOpts::default();
+        let rx_h = render_mirrored_scaled(
+            &mut buf, plot, &[9, 9], &[9, 9], 9, 9, false, Color::Green, Color::Cyan, opts,
+        );
+        assert_eq!(rx_h, 2, "the odd row goes to the busier half");
+        assert_ne!(buf[(1, 0)].symbol(), " ", "rx grows up from the zero row");
+        assert_ne!(buf[(1, 1)].symbol(), " ", "the zero row is rx's floor");
+        assert_ne!(buf[(1, 2)].symbol(), " ", "tx grows down from the same row");
+    }
+
+    #[test]
+    fn an_axis_names_its_own_window() {
+        let s = time_axis(20, 240);
+        assert!(s.ends_with("now"), "{s}");
+        assert!(s.starts_with("-240s"), "{s}");
+        assert!(s.contains("-120s"), "the midpoint is named: {s}");
+        assert_eq!(s.chars().count(), 20, "the strip fills exactly the width");
+    }
+
+    #[test]
+    fn a_bars_tx_half_paints_downward() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 3));
+        let plot = buf.area;
+        render_mirrored_scaled(
+            &mut buf,
+            plot,
+            &[9, 9],
+            &[9, 9],
+            9,
+            9,
+            true,
+            Color::Green,
+            Color::Cyan,
+            ChartOpts::default(),
+        );
+        // `bars` sends BOTH halves through the block renderer, so the rx half
+        // is a full block, not braille: a full sample fills its one row.
+        assert_eq!(buf[(1, 0)].symbol(), "█", "rx is a bottom-anchored block");
+        assert_eq!(buf[(1, 2)].symbol(), "█", "tx reaches the bottom edge");
     }
 
     fn luminance_of(c: Color) -> f64 {
