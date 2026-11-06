@@ -119,35 +119,7 @@ fn dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(speed_lines(app)).block(panel("SPEED".into(), theme)),
         right,
     );
-    let mut lines = vec![Line::from(vec![
-        Span::styled("down ", Style::default().fg(theme.dim)),
-        Span::styled(bps(last(&app.history_dl)), Style::default().fg(theme.ok)),
-    ])];
-    lines.extend(spark(
-        &app.history_dl,
-        graph.width.saturating_sub(8) as usize,
-        1,
-        app.graph,
-        theme.ok,
-    ));
-    lines.push(Line::from(vec![
-        Span::styled("up   ", Style::default().fg(theme.dim)),
-        Span::styled(
-            bps(last(&app.history_ul)),
-            Style::default().fg(theme.accent),
-        ),
-    ]));
-    lines.extend(spark(
-        &app.history_ul,
-        graph.width.saturating_sub(8) as usize,
-        1,
-        app.graph,
-        theme.accent,
-    ));
-    f.render_widget(
-        Paragraph::new(lines).block(panel("THROUGHPUT".into(), theme)),
-        graph,
-    );
+    throughput_panel(f, graph, app);
 }
 
 /// Name of the active graph style, for the panel title.
