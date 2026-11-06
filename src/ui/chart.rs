@@ -11,6 +11,8 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use std::collections::VecDeque;
 
 /// A five-stop colour ramp, sampled 0.0..=1.0 along the axis it colours.
 pub struct Ramp {
@@ -339,6 +341,130 @@ fn sub_height(v: u64, min: u64, max: u64, sub_h: usize) -> usize {
     ((v as u128 * sub_h as u128 * 2 + span as u128) / (span as u128 * 2)) as usize
 }
 
+/// Draw `data` (oldest first) into `area`, one value per column bucket.
+pub fn render_with_max(
+    buf: &mut Buffer,
+    area: Rect,
+    data: &[u64],
+    max: u64,
+    bars: bool,
+    base: Color,
+    opts: ChartOpts,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let ramp = fade_ramp(base, opts).unwrap_or_else(|| Ramp::flat(base));
+    if bars {
+        render_bars(buf, area, data, max, &ramp, opts);
+    } else {
+        let samples = two_per_column(data, area.width);
+        area_graph(buf, area, &samples, max, &ramp, false, opts.baseline);
+    }
+}
+
+/// Bottom-anchored eighths, one glyph per cell, coloured by height.
+fn render_bars(buf: &mut Buffer, area: Rect, data: &[u64], max: u64, ramp: &Ramp, opts: ChartOpts) {
+    const GLYPHS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if max == 0 {
+        return;
+    }
+    let cell_w = area.width as usize;
+    let cell_h = area.height as usize;
+    let start = data.len().saturating_sub(cell_w);
+    let samples = &data[start..];
+    let offset = cell_w.saturating_sub(samples.len());
+    for (i, &v) in samples.iter().enumerate() {
+        let mut eighths = (v.min(max) as u128 * cell_h as u128 * 8 / max as u128) as usize;
+        if opts.baseline {
+            eighths = eighths.max(1);
+        } else if eighths == 0 {
+            continue;
+        }
+        let x = area.x + (offset + i) as u16;
+        for cy in 0..cell_h {
+            let from_bottom = cell_h - 1 - cy;
+            let level = eighths.saturating_sub(from_bottom * 8).min(8);
+            let glyph = GLYPHS[level];
+            if glyph == ' ' {
+                continue;
+            }
+            let f = (from_bottom as f32 + 0.5) / cell_h as f32;
+            if let Some(cell) = buf.cell_mut((x, area.y + cy as u16)) {
+                cell.set_char(glyph);
+                cell.set_style(Style::default().fg(ramp.at(f)));
+            }
+        }
+    }
+}
+
+/// Right-align `data` into exactly `2 * width` samples, zero-padding the left.
+pub fn two_per_column(data: &[u64], width: u16) -> Vec<u64> {
+    let want = width as usize * 2;
+    let take = data.len().min(want);
+    let mut out = vec![0u64; want - take];
+    out.extend_from_slice(&data[data.len() - take..]);
+    out
+}
+
+/// An in-text sparkline: the same renderer, converted back to `Line`s so it
+/// slots into a `Paragraph` beside its label.
+///
+/// `bars` is a one-row contract: a block sparkline is a row of eighths, and
+/// `height` is ignored for it. The dashboard passes 2 and the old tests pin
+/// one line, so the distinction is kept here rather than at every call site.
+pub fn spark_lines(
+    values: &VecDeque<f64>,
+    width: usize,
+    height: usize,
+    bars: bool,
+    base: Color,
+    min: u64,
+    max: u64,
+    opts: ChartOpts,
+) -> Vec<Line<'static>> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let height = if bars { 1 } else { height };
+    let (min, max) = if max <= min { (min, min + 1) } else { (min, max) };
+    let data: Vec<u64> = values
+        .iter()
+        .map(|v| (v.max(0.0) as u64).clamp(min, max) - min)
+        .collect();
+    let mut buf = Buffer::empty(Rect::new(0, 0, width as u16, height as u16));
+    let area = buf.area;
+    render_with_max(&mut buf, area, &data, max - min, bars, base, opts);
+    (0..height as u16)
+        .map(|y| {
+            let spans: Vec<Span<'static>> = (0..width as u16)
+                .map(|x| {
+                    let cell = &buf[(x, y)];
+                    Span::styled(cell.symbol().to_string(), Style::default().fg(cell.fg))
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// [`spark_lines`] with the ceiling derived from the data.
+pub fn spark_auto(
+    values: &VecDeque<f64>,
+    width: usize,
+    height: usize,
+    bars: bool,
+    base: Color,
+    opts: ChartOpts,
+) -> Vec<Line<'static>> {
+    let max = values
+        .iter()
+        .cloned()
+        .fold(0.0_f64, f64::max)
+        .max(1.0) as u64;
+    spark_lines(values, width, height, bars, base, 0, max, opts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +534,50 @@ mod tests {
         let r = Ramp::flat(Color::Green);
         area_graph(&mut buf, area, &[0, 0], 1, &r, false, false);
         assert_eq!(buf[(0, 0)].symbol(), " ");
+    }
+
+    #[test]
+    fn render_covers_the_area_and_right_aligns() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        let area = buf.area;
+        render_with_max(&mut buf, area, &[10, 10], 10, false, Color::Green, ChartOpts::default());
+        // Two samples fill the right-most column only; the left three stay empty.
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+        assert_eq!(buf[(3, 1)].symbol(), "\u{28ff}");
+    }
+
+    #[test]
+    fn a_bars_sparkline_is_one_row_of_eighths() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        let area = buf.area;
+        render_with_max(&mut buf, area, &[1, 4, 8], 8, true, Color::Green, ChartOpts::default());
+        let row: String = (0..3).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "\u{2581}\u{2584}\u{2588}", "1/8, 4/8, 8/8");
+    }
+
+    #[test]
+    fn spark_lines_match_the_requested_size() {
+        let mut v: VecDeque<f64> = VecDeque::new();
+        for i in 0..40 {
+            v.push_back(i as f64);
+        }
+        let lines = spark_auto(&v, 20, 3, false, Color::Green, ChartOpts::default());
+        assert_eq!(lines.len(), 3);
+        for line in &lines {
+            assert_eq!(line.width(), 20);
+        }
+    }
+
+    #[test]
+    fn bars_keep_the_one_row_contract() {
+        let mut v: VecDeque<f64> = VecDeque::new();
+        for i in 0..10 {
+            v.push_back(i as f64);
+        }
+        // `widgets::bars_are_one_row` pins this: a block sparkline is one row
+        // of eighths, so `height` must not multiply it.
+        let lines = spark_auto(&v, 10, 3, true, Color::Green, ChartOpts::default());
+        assert_eq!(lines.len(), 1, "bars are one row");
     }
 
     fn luminance_of(c: Color) -> f64 {
