@@ -917,6 +917,22 @@ mod tests {
     use crate::theme::GraphStyle;
 
     #[test]
+    fn the_dashboard_waits_for_its_first_sample() {
+        let mut app = fixture_app();
+        app.history_dl.clear();
+        app.history_ul.clear();
+        let frame = crate::ui::render_to_string(&app, 120, 40);
+        assert!(
+            frame.contains("waiting for the first sample"),
+            "an empty plot must say so"
+        );
+        assert!(
+            !frame.contains("last 1s"),
+            "no sample means no window: {frame}"
+        );
+    }
+
+    #[test]
     fn the_dashboard_names_its_window_and_draws_an_axis() {
         let mut app = App::new(
             crate::theme::by_name("dark"),

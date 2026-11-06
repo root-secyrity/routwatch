@@ -283,10 +283,15 @@ fn draw_map(f: &mut Frame, area: Rect, app: &App) {
     // Two facts the squares cannot carry themselves: how much time one of them
     // covers, and what the three colours mean.
     let per_cell = (secs as f64 / cols as f64).max(1.0);
-    let caption = truncate(
-        &format!("last {secs}s · 1■ = {per_cell:.0}s"),
-        inner.width as usize,
-    );
+    let caption = if app.history_rsrp.is_empty() {
+        // The strip is empty, so there is no span to name yet.
+        truncate("no samples yet", inner.width as usize)
+    } else {
+        truncate(
+            &format!("last {secs}s · 1■ = {per_cell:.0}s"),
+            inner.width as usize,
+        )
+    };
     if inner.height >= 4 {
         let legend = Line::from(vec![
             Span::styled("■", Style::default().fg(theme.rsrp_color(-70.0))),
@@ -358,6 +363,14 @@ mod tests {
             band.iter().any(|l| l.contains('■')),
             "CLIENTS keeps its meter"
         );
+    }
+
+    #[test]
+    fn the_map_waits_for_its_first_sample() {
+        let mut app = app();
+        app.history_rsrp.clear();
+        let text = frame(&app);
+        assert!(text.contains("no samples yet"), "empty map must say so");
     }
 
     #[test]

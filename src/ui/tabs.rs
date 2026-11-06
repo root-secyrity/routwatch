@@ -139,17 +139,32 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
     let refresh = app.refresh_ms.max(1);
     let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
     let tx: Vec<u64> = app.history_ul.iter().map(|v| v.max(0.0) as u64).collect();
-    let secs = (rx.len().max(tx.len()) as u64 * refresh / 1000).max(1);
+    let samples = rx.len().max(tx.len());
+    let secs = (samples as u64 * refresh / 1000).max(1);
 
-    let block = panel(
+    // No sample means no window: a "last 1s" title would be a claim about data
+    // that does not exist yet.
+    let title = if samples == 0 {
+        format!("THROUGHPUT · {}", graph_style_name(app.graph))
+    } else {
         format!(
             "THROUGHPUT · {} · last {secs}s",
             graph_style_name(app.graph)
-        ),
-        theme,
-    );
+        )
+    };
+    let block = panel(title, theme);
     let inner = block.inner(area);
     f.render_widget(block, area);
+    if samples == 0 {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "waiting for the first sample",
+                Style::default().fg(theme.dim),
+            ))),
+            inner,
+        );
+        return;
+    }
 
     if inner.height < 4 || inner.width < 16 {
         // No room for a plot: one honest line beats a broken one.
