@@ -8,7 +8,9 @@
 //! No `App`, no `Theme`, no network: a `Buffer`, a `Rect`, plain samples and
 //! colours in, pixels out.
 
-use ratatui::style::Color;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
 
 /// A five-stop colour ramp, sampled 0.0..=1.0 along the axis it colours.
 pub struct Ramp {
@@ -232,6 +234,111 @@ pub fn fade_ramp(base: Color, opts: ChartOpts) -> Option<Ramp> {
     Some(magnitude_ramp(base, opts.bg))
 }
 
+/// Braille dot bit per sub-row, left then right column of a cell.
+const BRAILLE_LEFT: [u8; 4] = [0x01, 0x02, 0x04, 0x40];
+const BRAILLE_RIGHT: [u8; 4] = [0x08, 0x10, 0x20, 0x80];
+const BRAILLE_BASE: u32 = 0x2800;
+
+/// Braille area plot at two samples per cell column, growing up from the
+/// bottom edge (`flip` grows down from the top: that is the mirrored half).
+///
+/// `samples` is oldest-first. Every cell is coloured by its own height, so
+/// severity is pre-attentive: the spike is visible before the axis is read.
+pub fn area_graph(
+    buf: &mut Buffer,
+    area: Rect,
+    samples: &[u64],
+    max: u64,
+    ramp: &Ramp,
+    flip: bool,
+    baseline: bool,
+) {
+    area_graph_range(buf, area, samples, 0, max, ramp, flip, baseline);
+}
+
+/// [`area_graph`] over an explicit range, for a series with a physical domain
+/// (RSRP lives between -140 and -44 dBm, and its floor is not zero).
+#[allow(clippy::too_many_arguments)]
+pub fn area_graph_range(
+    buf: &mut Buffer,
+    area: Rect,
+    samples: &[u64],
+    min: u64,
+    max: u64,
+    ramp: &Ramp,
+    flip: bool,
+    baseline: bool,
+) {
+    if area.width == 0 || area.height == 0 || max <= min {
+        return;
+    }
+    let w = area.width as usize;
+    let h = area.height as usize;
+    let sub_h = h * 4;
+
+    for cx in 0..w {
+        let lh = sub_height(samples.get(cx * 2).copied().unwrap_or(min), min, max, sub_h);
+        let rh = sub_height(
+            samples.get(cx * 2 + 1).copied().unwrap_or(min),
+            min,
+            max,
+            sub_h,
+        );
+        // A zero sample still draws its baseline dot: a gap reads as "no data"
+        // when what happened was "no traffic".
+        let (lh, rh) = if baseline {
+            (lh.max(1), rh.max(1))
+        } else if lh == 0 && rh == 0 {
+            continue;
+        } else {
+            (lh, rh)
+        };
+
+        for cy in 0..h {
+            let mut bits: u8 = 0;
+            for s in 0..4 {
+                let from_top = cy * 4 + s;
+                let depth = if flip { from_top + 1 } else { sub_h - from_top };
+                if lh >= depth {
+                    bits |= BRAILLE_LEFT[s];
+                }
+                if rh >= depth {
+                    bits |= BRAILLE_RIGHT[s];
+                }
+            }
+            if bits == 0 {
+                continue;
+            }
+            // The cell's vertical midpoint, measured along the direction of
+            // growth, so both halves of a mirrored pair brighten as traffic
+            // climbs.
+            let mid = (cy * 4 + 2) as f32;
+            let f = if flip {
+                mid / sub_h as f32
+            } else {
+                (sub_h as f32 - mid) / sub_h as f32
+            };
+            let Some(ch) = char::from_u32(BRAILLE_BASE | bits as u32) else {
+                continue;
+            };
+            if let Some(cell) = buf.cell_mut((area.x + cx as u16, area.y + cy as u16)) {
+                cell.set_char(ch);
+                cell.set_style(Style::default().fg(ramp.at(f)));
+            }
+        }
+    }
+}
+
+/// Sub-cell height of `v` inside `min..=max`, rounded half up in integers.
+fn sub_height(v: u64, min: u64, max: u64, sub_h: usize) -> usize {
+    if max <= min {
+        return 0;
+    }
+    let v = v.clamp(min, max) - min;
+    let span = max - min;
+    ((v as u128 * sub_h as u128 * 2 + span as u128) / (span as u128 * 2)) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +381,33 @@ mod tests {
         let r = palette_ramp(Color::Green);
         assert_eq!(r.at(0.0), Color::Green);
         assert_eq!(r.at(1.0), Color::LightGreen);
+    }
+
+    #[test]
+    fn a_full_sample_paints_the_whole_braille_cell() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+        let area = buf.area;
+        let r = Ramp::flat(Color::Green);
+        area_graph(&mut buf, area, &[1, 1], 1, &r, false, true);
+        assert_eq!(buf[(0, 0)].symbol(), "\u{28ff}", "full height is eight dots");
+    }
+
+    #[test]
+    fn a_zero_sample_still_draws_its_baseline() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+        let area = buf.area;
+        let r = Ramp::flat(Color::Green);
+        area_graph(&mut buf, area, &[0, 0], 1, &r, false, true);
+        assert_eq!(buf[(0, 0)].symbol(), "\u{28c0}", "bottom row of dots");
+    }
+
+    #[test]
+    fn without_a_baseline_an_empty_column_stays_empty() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+        let area = buf.area;
+        let r = Ramp::flat(Color::Green);
+        area_graph(&mut buf, area, &[0, 0], 1, &r, false, false);
+        assert_eq!(buf[(0, 0)].symbol(), " ");
     }
 
     fn luminance_of(c: Color) -> f64 {
