@@ -1069,7 +1069,10 @@ mod tests {
             100,
             2000,
         );
-        assert!(t.chart_opts().terminal_palette, "no colour is invented there");
+        assert!(
+            t.chart_opts().terminal_palette,
+            "no colour is invented there"
+        );
     }
 
     #[test]

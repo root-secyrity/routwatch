@@ -142,7 +142,10 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
     let secs = (rx.len().max(tx.len()) as u64 * refresh / 1000).max(1);
 
     let block = panel(
-        format!("THROUGHPUT · {} · last {secs}s", graph_style_name(app.graph)),
+        format!(
+            "THROUGHPUT · {} · last {secs}s",
+            graph_style_name(app.graph)
+        ),
         theme,
     );
     let inner = block.inner(area);
@@ -169,9 +172,7 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
     let peak = rx_peak.max(tx_peak).max(1);
     // Split the scales only when the quieter direction would otherwise be a
     // single row, and only when it has something to show.
-    let split = rx_peak > 0
-        && tx_peak > 0
-        && (rx_peak / tx_peak >= 20 || tx_peak / rx_peak >= 20);
+    let split = rx_peak > 0 && tx_peak > 0 && (rx_peak / tx_peak >= 20 || tx_peak / rx_peak >= 20);
 
     // The widest label the scale can print: `robust_max` may sit half again
     // above the peak for a steady series, so the gutter is sized for that.
@@ -200,13 +201,12 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("▲ ", Style::default().fg(theme.ok)),
             Span::styled(bps(last(&app.history_dl)), Style::default().fg(theme.ok)),
             Span::styled("  ▼ ", Style::default().fg(theme.accent)),
-            Span::styled(bps(last(&app.history_ul)), Style::default().fg(theme.accent)),
             Span::styled(
-                format!(
-                    "   peak {} · avg {}",
-                    bps(peak as f64),
-                    bps(mean as f64)
-                ),
+                bps(last(&app.history_ul)),
+                Style::default().fg(theme.accent),
+            ),
+            Span::styled(
+                format!("   peak {} · avg {}", bps(peak as f64), bps(mean as f64)),
                 Style::default().fg(theme.dim),
             ),
         ])),
@@ -243,8 +243,16 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
 
     let mut label = |y: u16, text: String| {
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(text, Style::default().fg(theme.dim)))),
-            Rect { x: inner.x, y, width: gutter, height: 1 },
+            Paragraph::new(Line::from(Span::styled(
+                text,
+                Style::default().fg(theme.dim),
+            ))),
+            Rect {
+                x: inner.x,
+                y,
+                width: gutter,
+                height: 1,
+            },
         );
     };
     label(plot.y, bps(rx_max as f64));

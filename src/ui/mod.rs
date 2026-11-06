@@ -1,7 +1,7 @@
 //! Frame composition: header, tab bar, body, status line, help overlay.
 
-pub mod tabs;
 pub mod chart;
+pub mod tabs;
 pub mod tiles;
 pub mod widgets;
 
@@ -938,7 +938,10 @@ mod tests {
             "the title names the window actually drawn"
         );
         assert!(frame.contains("now"), "the x-axis is drawn");
-        assert!(frame.contains("peak "), "the meta line carries peak and average");
+        assert!(
+            frame.contains("peak "),
+            "the meta line carries peak and average"
+        );
         assert!(!frame.contains("120 samples"), "the old claim is gone");
     }
 
