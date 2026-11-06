@@ -150,6 +150,155 @@ fn dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// Name of the active graph style, for the panel title.
+fn graph_style_name(style: crate::theme::GraphStyle) -> &'static str {
+    match style {
+        crate::theme::GraphStyle::Bars => "bars",
+        crate::theme::GraphStyle::Dots => "dots",
+        crate::theme::GraphStyle::Braille => "braille",
+    }
+}
+
+/// The throughput plot: rx above the zero row, tx below it, one scale, one
+/// time window, and an axis that names the window actually drawn.
+fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let opts = app.chart_opts();
+    let refresh = app.refresh_ms.max(1);
+    let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
+    let tx: Vec<u64> = app.history_ul.iter().map(|v| v.max(0.0) as u64).collect();
+    let secs = (rx.len().max(tx.len()) as u64 * refresh / 1000).max(1);
+
+    let block = panel(
+        format!("THROUGHPUT · {} · last {secs}s", graph_style_name(app.graph)),
+        theme,
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if inner.height < 4 || inner.width < 16 {
+        // No room for a plot: one honest line beats a broken one.
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "down {} · up {}",
+                    bps(last(&app.history_dl)),
+                    bps(last(&app.history_ul))
+                ),
+                Style::default().fg(theme.dim),
+            ))),
+            inner,
+        );
+        return;
+    }
+
+    let rx_peak = rx.iter().copied().max().unwrap_or(0);
+    let tx_peak = tx.iter().copied().max().unwrap_or(0);
+    let peak = rx_peak.max(tx_peak).max(1);
+    // Split the scales only when the quieter direction would otherwise be a
+    // single row, and only when it has something to show.
+    let split = rx_peak > 0
+        && tx_peak > 0
+        && (rx_peak / tx_peak >= 20 || tx_peak / rx_peak >= 20);
+
+    // The widest label the scale can print: `robust_max` may sit half again
+    // above the peak for a steady series, so the gutter is sized for that.
+    let top_hint = bps((peak * 3 / 2) as f64);
+    let gutter = (top_hint.chars().count() as u16 + 1).clamp(4, 14);
+    if inner.width <= gutter + 8 {
+        return;
+    }
+    let plot = Rect {
+        x: inner.x + gutter,
+        y: inner.y + 1,
+        width: inner.width - gutter,
+        height: inner.height - 2,
+    };
+
+    let mean = {
+        let n = rx.len() + tx.len();
+        if n == 0 {
+            0
+        } else {
+            (rx.iter().sum::<u64>() + tx.iter().sum::<u64>()) / n as u64
+        }
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("▲ ", Style::default().fg(theme.ok)),
+            Span::styled(bps(last(&app.history_dl)), Style::default().fg(theme.ok)),
+            Span::styled("  ▼ ", Style::default().fg(theme.accent)),
+            Span::styled(bps(last(&app.history_ul)), Style::default().fg(theme.accent)),
+            Span::styled(
+                format!(
+                    "   peak {} · avg {}",
+                    bps(peak as f64),
+                    bps(mean as f64)
+                ),
+                Style::default().fg(theme.dim),
+            ),
+        ])),
+        Rect { height: 1, ..inner },
+    );
+
+    let slots = plot.width as usize * 2;
+    let per_sample = (refresh / 1000).max(1);
+    let rx_plot = crate::ui::chart::resample_to_window(&rx, per_sample, secs, slots);
+    let tx_plot = crate::ui::chart::resample_to_window(&tx, per_sample, secs, slots);
+    // A percentile ceiling, not the peak: one burst stays visible as a clipped
+    // tower instead of flattening the body of the series onto the floor. The
+    // meta line still reports the true peak and average.
+    let rx_clip = crate::ui::chart::robust_max(&rx_plot, 0.95);
+    let tx_clip = crate::ui::chart::robust_max(&tx_plot, 0.95);
+    let (rx_max, tx_max) = if split {
+        (rx_clip, tx_clip)
+    } else {
+        let shared = rx_clip.max(tx_clip);
+        (shared, shared)
+    };
+    let rx_h = crate::ui::chart::render_mirrored_scaled(
+        f.buffer_mut(),
+        plot,
+        &rx_plot,
+        &tx_plot,
+        rx_max,
+        tx_max,
+        app.graph.is_bars(),
+        theme.ok,
+        theme.accent,
+        opts,
+    );
+
+    let mut label = |y: u16, text: String| {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, Style::default().fg(theme.dim)))),
+            Rect { x: inner.x, y, width: gutter, height: 1 },
+        );
+    };
+    label(plot.y, bps(rx_max as f64));
+    // The zero row needs a row of its own: with `plot.height == 2` the rx half is
+    // one row, and a second label there would overwrite the scale with "0".
+    if rx_h > 1 {
+        label(plot.y + rx_h - 1, "0".to_string());
+    }
+    if split {
+        label(plot.y + plot.height - 1, bps(tx_max as f64));
+    }
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            crate::ui::chart::time_axis(plot.width, secs),
+            Style::default().fg(theme.dim),
+        ))),
+        Rect {
+            x: plot.x,
+            y: inner.y + inner.height - 1,
+            width: plot.width,
+            height: 1,
+        },
+    );
+}
+
 fn dashboard_roomy(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let [top, mid, graph, bottom] = Layout::vertical([
@@ -182,44 +331,7 @@ fn dashboard_roomy(f: &mut Frame, area: Rect, app: &App) {
         b,
     );
 
-    let mut lines = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("down ", Style::default().fg(theme.dim)),
-        Span::styled(bps(last(&app.history_dl)), Style::default().fg(theme.ok)),
-    ]));
-    lines.extend(spark(
-        &app.history_dl,
-        graph.width.saturating_sub(8) as usize,
-        2,
-        app.graph,
-        theme.ok,
-    ));
-    lines.push(Line::from(vec![
-        Span::styled("up   ", Style::default().fg(theme.dim)),
-        Span::styled(
-            bps(last(&app.history_ul)),
-            Style::default().fg(theme.accent),
-        ),
-    ]));
-    lines.extend(spark(
-        &app.history_ul,
-        graph.width.saturating_sub(8) as usize,
-        2,
-        app.graph,
-        theme.accent,
-    ));
-    let style = match app.graph {
-        crate::theme::GraphStyle::Bars => "bars",
-        crate::theme::GraphStyle::Dots => "dots",
-        crate::theme::GraphStyle::Braille => "braille",
-    };
-    f.render_widget(
-        Paragraph::new(lines).block(panel(
-            format!("THROUGHPUT · {style} · last 120 samples"),
-            theme,
-        )),
-        graph,
-    );
+    throughput_panel(f, graph, app);
 
     // Bottom: the two things a router page never shows side by side - hosts and errors.
     let [c, d] =

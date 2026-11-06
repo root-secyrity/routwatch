@@ -916,6 +916,32 @@ mod tests {
     use crate::app::View;
     use crate::theme::GraphStyle;
 
+    #[test]
+    fn the_dashboard_names_its_window_and_draws_an_axis() {
+        let mut app = App::new(
+            crate::theme::by_name("dark"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.snap = Some(
+            serde_json::from_str(include_str!("../../fixtures/sample-snapshot.json")).unwrap(),
+        );
+        for i in 0..120 {
+            app.history_dl.push_back(1_000_000.0 + i as f64);
+            app.history_ul.push_back(100_000.0);
+        }
+        let frame = crate::ui::render_to_string(&app, 120, 40);
+        assert!(
+            frame.contains("THROUGHPUT · dots · last 240s"),
+            "the title names the window actually drawn"
+        );
+        assert!(frame.contains("now"), "the x-axis is drawn");
+        assert!(frame.contains("peak "), "the meta line carries peak and average");
+        assert!(!frame.contains("120 samples"), "the old claim is gone");
+    }
+
     fn fixture_app() -> App {
         let snap: crate::model::Snapshot =
             serde_json::from_str(include_str!("../../fixtures/sample-snapshot.json"))
