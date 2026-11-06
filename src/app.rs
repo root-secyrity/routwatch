@@ -371,6 +371,22 @@ pub struct App {
 }
 
 impl App {
+    /// One place decides how every graph is coloured. `braille` is the flat
+    /// renderer the tool shipped before the ramp existed, so it keeps its
+    /// solid colour on purpose.
+    ///
+    /// `bg` is `Reset` on six themes, where the real background belongs to the
+    /// terminal and cannot be read. The ramp then anchors on a documented dark
+    /// assumption (`ASSUMED_DARK_BG`), which is why README's Limits says so.
+    pub fn chart_opts(&self) -> crate::ui::chart::ChartOpts {
+        crate::ui::chart::ChartOpts {
+            fade: self.graph != GraphStyle::Braille,
+            bg: self.theme.bg,
+            terminal_palette: self.theme.defers_to_palette(),
+            baseline: true,
+        }
+    }
+
     /// Choosing a section leaves a stripped view: Lite/Dense are single-screen
     /// summaries that ignore `tab`, so a digit there used to look dead.
     pub fn select_tab(&mut self, tab: Tab) {
@@ -1030,6 +1046,31 @@ fn ip_key(ip: &str) -> (u32, u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chart_opts_follow_the_style_and_the_theme() {
+        let mut a = App::new(
+            crate::theme::by_name("dark"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        assert!(a.chart_opts().fade, "dots carries the ramp");
+        assert!(!a.chart_opts().terminal_palette);
+
+        a.graph = GraphStyle::Braille;
+        assert!(!a.chart_opts().fade, "braille stays a flat series");
+
+        let t = App::new(
+            crate::theme::by_name("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        assert!(t.chart_opts().terminal_palette, "no colour is invented there");
+    }
 
     #[test]
     fn tabs_cycle_both_ways() {
