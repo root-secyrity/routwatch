@@ -148,9 +148,10 @@ pub fn parse_signal(n: &Node) -> Signal {
     let ul_codes = mcs_values(n, &["ul_mcs", "ULMCS", "ulmcs", "nr_ul_mcs"]);
     // CQI is 0..=15; the firmware pads the unused carrier with 127, which is not a
     // reading and must not be shown.
-    let cqi = u32_of(n, "cqi0")
-        .or_else(|| u32_of(n, "cqi1"))
-        .filter(|v| *v <= 15)
+    let cqi = ["cqi0", "cqi1"]
+        .iter()
+        .filter_map(|k| u32_of(n, k))
+        .find(|v| *v <= 15)
         .map(|v| v as u8);
 
     Signal {
@@ -575,5 +576,13 @@ mod tests {
         assert_eq!(s.pusch_dbm, Some(2.0));
         assert_eq!(s.tac, Some(516));
         assert!(s.nr.is_none(), "empty NR fields must stay absent");
+    }
+
+    #[test]
+    fn a_padded_cqi0_does_not_hide_cqi1() {
+        let n = parse("<response><cqi0>127</cqi0><cqi1>11</cqi1></response>").unwrap();
+        assert_eq!(parse_signal(&n).cqi, Some(11));
+        let n = parse("<response><cqi0>127</cqi0><cqi1>127</cqi1></response>").unwrap();
+        assert_eq!(parse_signal(&n).cqi, None);
     }
 }

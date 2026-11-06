@@ -254,7 +254,20 @@ fn main() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // `--help` and `--version` are successes; every other parse failure
+            // is the documented usage failure (exit 3), not clap's default 2
+            // which this project uses for network errors.
+            let ok = matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            );
+            let _ = e.print();
+            std::process::exit(if ok { 0 } else { 3 });
+        }
+    };
     let code = match run(cli) {
         Ok(()) => 0,
         Err(e) => {
@@ -310,7 +323,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
 
     match cli.cmd {
         None => {
-            let app = build_app(&cli, &cfg);
+            let app = build_app(&cli, &cfg)?;
             let stdin_password = read_stdin_password(cli.password_stdin)?;
             let password = read_password(&cfg, stdin_password.as_deref())?;
             run_tui(app, cfg, password)
@@ -357,7 +370,10 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     return Err(e);
                 }
             };
-            let snap = snap.expect("checked above");
+            let mut snap = snap.expect("checked above");
+            if cli.redact {
+                snap = routwatch::report::redacted(&snap);
+            }
             if waybar {
                 let payload = headless::status_waybar(Some(&snap), None);
                 println!("{}", serde_json::to_string(&payload).unwrap());
@@ -368,10 +384,13 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 );
             } else {
                 println!(
-                    "{}\t{}\t{:.0} dBm",
+                    "{}\t{}\t{}",
                     snap.plmn.name,
                     snap.connection.net_type,
-                    snap.signal.rsrp_dbm.unwrap_or(0.0)
+                    snap.signal
+                        .rsrp_dbm
+                        .map(|v| format!("{v:.0} dBm"))
+                        .unwrap_or_else(|| "-".to_string())
                 );
             }
             Ok(())
@@ -392,6 +411,11 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             loop {
                 match headless::collect(&mut client, &cfg.router.ip) {
                     Ok(snap) => {
+                        let snap = if cli.redact {
+                            routwatch::report::redacted(&snap)
+                        } else {
+                            snap
+                        };
                         record::append(&path, &record::RecordFrame::capture(snap))
                             .map_err(|e| ApiError::Config(format!("recording: {e}")))?;
                         written += 1;
@@ -435,7 +459,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 return Ok(());
             }
             let mut app = ui_opts.build(&cfg);
-            run_replay(&mut app, frames, speed.max(1))
+            run_replay(&mut app, frames, speed.max(1), cli.redact)
         }
         Some(Cmd::Snapshot { json, raw }) => {
             // A flag that looks like protection and is not is worse than none:
@@ -572,7 +596,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     }
                     other => {
                         println!("result: {}", other.label());
-                        Err(ApiError::Router(0))
+                        Err(ApiError::WriteFailed(other.label()))
                     }
                 }
             } else {
@@ -646,6 +670,11 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             force,
             json,
         }) => {
+            if reset && set.is_some() {
+                return Err(ApiError::Usage(
+                    "--set and --reset contradict each other; pass one".into(),
+                ));
+            }
             let mut client = connect(&cfg, cli.password_stdin)?;
             let current = client
                 .get("dhcp/settings")
@@ -734,7 +763,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             println!("result: {}", settled.label());
             match settled {
                 WriteState::Success { .. } => Ok(()),
-                _ => Err(ApiError::Router(0)),
+                other => Err(ApiError::WriteFailed(other.label())),
             }
         }
         Some(Cmd::Sms { inbox, json }) => {
@@ -996,8 +1025,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             ansi,
         }) => {
             let (w, h) = parse_size(size)?;
-            let mut app = build_app(&cli, &cfg);
-            let snap: Snapshot = match fixture {
+            let mut app = build_app(&cli, &cfg)?;
+            let mut snap: Snapshot = match fixture {
                 Some(path) => {
                     let raw = std::fs::read_to_string(path)
                         .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
@@ -1011,6 +1040,9 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     s
                 }
             };
+            if cli.redact {
+                snap = routwatch::report::redacted(&snap);
+            }
             app.on_snapshot(snap, 0);
             if demo_confirm {
                 app.begin_confirm();
@@ -1070,19 +1102,20 @@ impl UiOpts {
     }
 }
 
-fn build_app(cli: &Cli, cfg: &config::Config) -> App {
+fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
     let theme = cli.theme.clone().unwrap_or_else(|| cfg.app.theme.clone());
-    let view = cli
-        .view
-        .as_deref()
-        .and_then(View::parse)
-        .or_else(|| View::parse(&cfg.app.view))
-        .unwrap_or(View::Full);
-    let graph = cli
-        .graph
-        .as_deref()
-        .map(GraphStyle::parse)
-        .unwrap_or_else(|| GraphStyle::parse(&cfg.app.graph_style));
+    let view = match cli.view.as_deref() {
+        Some(v) => View::parse(v).ok_or_else(|| {
+            ApiError::Usage(format!("unknown view {v:?}; use full, lite or dense"))
+        })?,
+        None => View::parse(&cfg.app.view).unwrap_or(View::Full),
+    };
+    let graph = match cli.graph.as_deref() {
+        Some(g) => GraphStyle::try_parse(g).ok_or_else(|| {
+            ApiError::Usage(format!("unknown graph {g:?}; use dots, bars or braille"))
+        })?,
+        None => GraphStyle::parse(&cfg.app.graph_style),
+    };
     let mut app = App::new(
         Theme::get(&theme),
         graph,
@@ -1090,7 +1123,10 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> App {
         cfg.app.budget_gb,
         cfg.app.refresh_ms,
     );
-    if let Some(tab) = cli.tab.as_deref().and_then(Tab::parse) {
+    if let Some(name) = cli.tab.as_deref() {
+        let tab = Tab::parse(name).ok_or_else(|| {
+            ApiError::Usage(format!("unknown tab {name:?}; run --help for the list"))
+        })?;
         app.tab = tab;
     }
     if let Some(presets) = &cfg.app.presets {
@@ -1098,17 +1134,27 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> App {
     }
     app.report_identity = cli.report_identity || cfg.app.report_identity;
     app.config_path = cli.config.clone();
-    app
+    Ok(app)
 }
 
 fn parse_size(s: &str) -> Result<(u16, u16), ApiError> {
     let (w, h) = s
         .split_once(['x', 'X'])
-        .ok_or_else(|| ApiError::Config(format!("bad size {s:?}; expected WIDTHxHEIGHT")))?;
-    Ok((
-        w.trim().parse().unwrap_or(100),
-        h.trim().parse().unwrap_or(30),
-    ))
+        .ok_or_else(|| ApiError::Usage(format!("bad size {s:?}; expected WIDTHxHEIGHT")))?;
+    let w: u16 = w
+        .trim()
+        .parse()
+        .map_err(|_| ApiError::Usage(format!("bad width {:?} in {s:?}", w.trim())))?;
+    let h: u16 = h
+        .trim()
+        .parse()
+        .map_err(|_| ApiError::Usage(format!("bad height {:?} in {s:?}", h.trim())))?;
+    if w < 24 || h < 6 {
+        return Err(ApiError::Usage(format!(
+            "{w}x{h} is below the 24x6 minimum the frame can draw"
+        )));
+    }
+    Ok((w, h))
 }
 
 /// `--password-stdin` is read here, once, so every caller (commands, doctor and
@@ -1212,7 +1258,12 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
 }
 
 /// Replay recorded frames into the same UI, with no router contact at all.
-fn run_replay(app: &mut App, frames: Vec<record::RecordFrame>, speed: u64) -> Result<(), ApiError> {
+fn run_replay(
+    app: &mut App,
+    frames: Vec<record::RecordFrame>,
+    speed: u64,
+    redact: bool,
+) -> Result<(), ApiError> {
     install_restore_hook();
     enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
     let _restore = RestoreOnDrop(Some(restore_terminal));
@@ -1231,7 +1282,12 @@ fn run_replay(app: &mut App, frames: Vec<record::RecordFrame>, speed: u64) -> Re
 
     while idx < frames.len() && !quit {
         let frame = &frames[idx];
-        app.on_snapshot(frame.snapshot.clone(), 0);
+        let snapshot = if redact {
+            routwatch::report::redacted(&frame.snapshot)
+        } else {
+            frame.snapshot.clone()
+        };
+        app.on_snapshot(snapshot, 0);
         terminal.draw(|f| ui::draw(f, app)).ok();
 
         let mut held = Duration::ZERO;
@@ -1474,7 +1530,7 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             app.open_input(InputKind::PingHost);
         }
         // --- Clients tab: sort / copy ---
-        KeyCode::Char('s') if app.tab == Tab::Clients => {
+        KeyCode::Char('s') if app.tab == Tab::Clients && !shift => {
             app.sort_next();
         }
         KeyCode::Char('c') if app.tab == Tab::Clients => copy_selected(app),
@@ -1927,6 +1983,52 @@ mod key_tests {
         handle_key(&mut app, key(KeyCode::Char(']')), &tx);
         assert_eq!(app.refresh_ms, 2000);
         assert!(matches!(rx.try_recv(), Ok(WorkerCmd::SetInterval(2000))));
+    }
+
+    #[test]
+    fn completion_lists_exactly_the_cli_surface() {
+        use clap::CommandFactory;
+        let names: Vec<String> = <super::Cli as CommandFactory>::command()
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect();
+        for name in &names {
+            assert!(
+                routwatch::completion::SUBCOMMANDS.contains(&name.as_str()),
+                "completion is missing subcommand {name}"
+            );
+        }
+        for sub in routwatch::completion::SUBCOMMANDS {
+            assert!(
+                names.contains(&(*sub).to_string()),
+                "no such subcommand {sub}"
+            );
+        }
+        for flag in ["--redact", "--report-identity", "--generate-config"] {
+            assert!(
+                routwatch::completion::GLOBAL_FLAGS.contains(&flag),
+                "completion is missing {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn shift_s_opens_settings_on_the_clients_tab() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.tab = Tab::Clients;
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT),
+            &tx,
+        );
+        assert!(app.settings_open, "Shift+S must open settings, not sort");
     }
 
     /// `--tab` used to advertise seven sections while `dns` and `signal` worked,

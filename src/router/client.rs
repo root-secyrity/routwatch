@@ -33,6 +33,10 @@ fn build_agent(timeout_ms: u64) -> Agent {
         .timeout_global(Some(Duration::from_millis(timeout_ms)))
         .timeout_recv_body(Some(Duration::from_secs(2)))
         .http_status_as_error(false)
+        // A router never legitimately redirects an API call. Following one
+        // carried `__RequestVerificationToken` to whatever host `Location`
+        // named, so refuse instead.
+        .max_redirects(0)
         .build();
     config.into()
 }

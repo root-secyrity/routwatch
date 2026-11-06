@@ -14,6 +14,9 @@ pub enum ApiError {
     Busy(u32),
     #[error("unknown router error ({0})")]
     Router(u32),
+    /// A write the router did not accept, with the real reason (exit 1).
+    #[error("write failed: {0}")]
+    WriteFailed(String),
     #[error("http status {0}")]
     Http(u16),
     #[error("network: {0}")]
@@ -52,6 +55,7 @@ impl ApiError {
             ApiError::Invalid(_) => "invalid",
             ApiError::Busy(_) => "busy",
             ApiError::Router(_) => "router_error",
+            ApiError::WriteFailed(_) => "write",
             ApiError::Http(_) => "http",
             ApiError::Network(_) => "network",
             ApiError::Parse(_) => "parse",

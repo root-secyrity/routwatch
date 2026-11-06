@@ -595,7 +595,7 @@ pub fn status_waybar(snap: Option<&Snapshot>, err: Option<&str>) -> WaybarStatus
         return WaybarStatus {
             text: format!("{net}  - "),
             tooltip: "routwatch · this firmware reports no RSRP".into(),
-            class: "offline".into(),
+            class: "unknown".into(),
             percentage: 0,
         };
     };
@@ -699,11 +699,12 @@ pub fn status_json(s: &Snapshot) -> serde_json::Value {
         "band": s.signal.band,
         "dl_mhz": s.signal.dl_mhz,
         "pci": s.signal.pci,
-        "dl_bps": s.traffic.dl_rate_bytes,
-        "ul_bps": s.traffic.ul_rate_bytes,
+        "dl_bps": s.traffic.dl_rate_bytes * 8,
+        "ul_bps": s.traffic.ul_rate_bytes * 8,
         "session_dl_bytes": s.traffic.session_dl_bytes,
         "session_ul_bytes": s.traffic.session_ul_bytes,
         "clients": s.clients.len(),
+        "clients_known": !s.unsupported.iter().any(|u| u == "clients"),
         "net_mode": s.net_mode.network_mode,
         "dns_primary": s.dns.as_ref().and_then(|d| d.primary.clone()),
         "generated_at": s.generated_at,
@@ -767,6 +768,37 @@ mod status_tests {
         assert!(w.text.starts_with("5G"), "{}", w.text);
         assert_eq!(w.class, "poor");
         assert!(w.tooltip.contains("NR  RSRP -115"));
+    }
+
+    #[test]
+    fn a_live_link_without_rsrp_is_unknown_not_offline() {
+        let s = snap_with(None, false, None);
+        let w = status_waybar(Some(&s), None);
+        assert_eq!(
+            w.class, "unknown",
+            "a live link without RSRP is not offline"
+        );
+        assert_eq!(w.percentage, 0);
+    }
+
+    #[test]
+    fn status_rates_are_bits_per_second() {
+        let mut s = snap_with(Some(-96.0), false, None);
+        s.traffic.dl_rate_bytes = 1_000;
+        s.traffic.ul_rate_bytes = 250;
+        let v = status_json(&s);
+        assert_eq!(v["dl_bps"], 8_000);
+        assert_eq!(v["ul_bps"], 2_000);
+    }
+
+    #[test]
+    fn clients_known_is_false_when_the_firmware_refused_the_list() {
+        let mut s = snap_with(Some(-96.0), false, None);
+        assert_eq!(status_json(&s)["clients_known"], true);
+        s.unsupported = vec!["clients".into()];
+        let v = status_json(&s);
+        assert_eq!(v["clients_known"], false);
+        assert_eq!(v["clients"], 0);
     }
 
     #[test]

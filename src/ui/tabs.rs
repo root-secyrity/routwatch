@@ -12,14 +12,24 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn truncate(s: &str, n: usize) -> String {
-    let count = s.chars().count();
-    if count <= n {
-        s.to_string()
-    } else {
-        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+    if UnicodeWidthStr::width(s) <= n {
+        return s.to_string();
     }
+    let mut out = String::new();
+    let mut w = 0usize;
+    let room = n.saturating_sub(1);
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > room {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out + "…"
 }
 
 pub(crate) fn panel(title: String, theme: &Theme) -> Block<'static> {
@@ -1515,6 +1525,7 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
             "RSRP" => m.value.map(|v| t.rsrp_color(v)).unwrap_or(t.dim),
             "RSRQ" => m.value.map(|v| t.rsrq_color(v)).unwrap_or(t.dim),
             "SINR" => m.value.map(|v| t.sinr_color(v)).unwrap_or(t.dim),
+            "RSSI" => m.value.map(|v| t.rssi_color(v)).unwrap_or(t.dim),
             _ => m.value.map(|v| t.rsrp_color(v)).unwrap_or(t.dim),
         };
         let qual = quality_label(m.label, m.value);

@@ -227,14 +227,17 @@ Waybar module:
 }
 ```
 
-Exit codes: `0` ok · `2` network/unreachable (the Waybar document still prints,
-`class: "offline"`) · `3` credentials or config.
+Exit codes: `0` ok · `1` router or write failure (the real reason is printed) ·
+`2` network/unreachable (the Waybar document still prints, `class: "offline"`) ·
+`3` usage, credentials or config.
 
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
 IMEI, MACs, WAN IP, client names and addresses, and the operator name with
 `(hidden)`, `dump --redact` does the same to the raw XML (keeping every tag name,
 and covering wifi keys and every `*ssid`/`*ipaddress` spelling), and
 `snapshot --raw --redact` is refused outright rather than pretending to be safe.
+`--redact` also covers `status`, `record`, `replay` and `preview`, so the flag
+means the same thing on every command.
 `routwatch share` writes the whole ask-for-a-model document - capabilities,
 endpoint field names, redacted snapshot - as `0600` in the current directory.
 `dump` follows the same rule for its output (json or text): `0600` inside a
@@ -297,7 +300,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 210 unit + 5 binary + 9 CLI tests, no router and no fixtures on disk
+cargo test                 # 219 unit + 7 binary + 9 CLI tests, no router and no fixtures on disk
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
