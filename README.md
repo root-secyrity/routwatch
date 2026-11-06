@@ -24,9 +24,10 @@ identifiers are placeholders. The remaining seven sections are in
 ## Visual maps
 
 Two maps of the codebase, in English and Arabic: one for the architecture, one
-for a single fetch cycle. Both were generated from commit `2ef59c9`, and every
-claim drawn inside the HTML carries the source line it came from. Each image
-below links to the interactive map it belongs to.
+for a single fetch cycle. Both are rendered by `routwatch preview` from
+`fixtures/sample-snapshot.json`, and every claim drawn inside the HTML carries
+the source line it came from. Each image below links to the interactive map it
+belongs to.
 
 | Arabic | English |
 |---|---|
@@ -231,6 +232,11 @@ Exit codes: `0` ok · `1` router or write failure (the real reason is printed) �
 `2` network/unreachable (the Waybar document still prints, `class: "offline"`) ·
 `3` usage, credentials or config.
 
+The Waybar `class` is one of `good`, `fair`, `poor`, `unknown` (a live link the
+firmware gives no RSRP for) or `offline` (no link). `status --json` reports
+`dl_bps` and `ul_bps` in bits per second, and `clients_known` is false when the
+firmware refused the host list instead of printing a fake zero.
+
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
 IMEI, MACs, WAN IP, client names and addresses, and the operator name with
 `(hidden)`, `dump --redact` does the same to the raw XML (keeping every tag name,
@@ -273,7 +279,10 @@ routwatch preview --tab bands --size 120x30 --ansi
 
 ## Limits (stated, not hidden)
 
-- **SMS** is blocked by the firmware (`100005`); the tab shows counters and says so.
+- **SMS**: reading the inbox works on H122-373 when the request carries
+  `Ascending` (it did not before). A firmware that still answers `100005` is
+  reporting a format error; the tab says the request was rejected, not that SMS
+  is blocked.
 - **5G per-field metrics** (`nrrsrp`, `nrsinr`, `nrdlmcs`) are empty on some
   firmware even with ENDC active. Only `SignalIconNr` (0–5 bars) and the ENDC flag
   are reliable there; the UI switches to a bars panel instead of faking dBm.
@@ -292,7 +301,8 @@ routwatch preview --tab bands --size 120x30 --ansi
   band re-flows to four, five or six equal cells instead of leaving a hole. It
   needs 27 body rows; below that the dashboard blocks keep the space.
 - **Small terminals**: the frame degrades in a fixed order instead of clipping. The
-  tab bar becomes `1/9 Dash · Tab next` below 12 rows or 76 columns; below 60
+  tab bar disappears entirely below 12 rows (measured: 100x11 has none), and
+  becomes `1/9 Dash · Tab next` below 76 columns; below 60
   columns the status line keeps one fact plus the keys, below 40 only the keys; the
   dashboard drops from four blocks to signal + speed + history (under 25 rows) and
   to one signal panel at the 24x6 floor, where `too small` names the size it needs.
@@ -300,7 +310,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 219 unit + 7 binary + 9 CLI tests, no router and no fixtures on disk
+cargo test                 # 222 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
