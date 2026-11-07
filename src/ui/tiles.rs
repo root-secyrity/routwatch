@@ -29,6 +29,9 @@ struct Tile {
     /// A one-row trend strip drawn in the meter's place, in the metric's own
     /// domain so two readings stay comparable.
     trend: Option<(Vec<u64>, u64)>,
+    /// Clients per radio, in drawing order: 5 GHz, 2.4 GHz, unknown band.
+    /// One square per client, so a reader counts people, not percent.
+    clients: Option<[usize; 3]>,
     color: Color,
 }
 
@@ -89,6 +92,7 @@ fn slots(app: &App) -> Vec<Slot> {
                 .collect(),
             96,
         )),
+        clients: None,
         color: rsrp.map(|v| theme.rsrp_color(v)).unwrap_or(theme.dim),
     }));
 
@@ -116,6 +120,7 @@ fn slots(app: &App) -> Vec<Slot> {
                 .collect(),
             50,
         )),
+        clients: None,
         color: sinr.map(|v| theme.sinr_color(v)).unwrap_or(theme.dim),
     }));
 
@@ -123,13 +128,26 @@ fn slots(app: &App) -> Vec<Slot> {
     // these numbers", so it belongs next to the reading, not at the far edge.
     slots.push(Slot::Map);
 
+    // The router gives each client's radio, so the tile can split them instead
+    // of drawing a count against an arbitrary denominator.
+    let mut per_band = [0usize; 3];
+    if let Some(snap) = &app.snap {
+        for client in &snap.clients {
+            per_band[band_index(client.freq.as_deref())] += 1;
+        }
+    }
     let clients = app.snap.as_ref().map(|s| s.clients.len()).unwrap_or(0);
+    let mut note = format!("5 ×{} · 2.4 ×{}", per_band[0], per_band[1]);
+    if per_band[2] > 0 {
+        note.push_str(&format!(" · ? ×{}", per_band[2]));
+    }
     slots.push(Slot::Metric(Tile {
         title: "CLIENTS",
         value: clients.to_string(),
-        note: "2.4/5 GHz".to_string(),
-        share: Some((clients as f64 / 16.0).clamp(0.0, 1.0)),
+        note,
+        share: None,
         trend: None,
+        clients: Some(per_band),
         color: theme.accent,
     }));
 
@@ -141,6 +159,7 @@ fn slots(app: &App) -> Vec<Slot> {
                 note: "since boot".to_string(),
                 share: None,
                 trend: None,
+                clients: None,
                 color: theme.accent,
             }));
         }
@@ -160,6 +179,7 @@ fn slots(app: &App) -> Vec<Slot> {
             note: note.to_string(),
             share: Some((f64::from(temp) / 100.0).clamp(0.0, 1.0)),
             trend: None,
+            clients: None,
             color,
         }));
     }
@@ -197,7 +217,9 @@ fn draw_tile(
         ))),
         note,
     );
-    if let Some((trend, span)) = &tile.trend {
+    if let Some(counts) = tile.clients {
+        client_dots(f, rest, counts, theme);
+    } else if let Some((trend, span)) = &tile.trend {
         let values: VecDeque<f64> = trend.iter().map(|&v| v as f64).collect();
         let line = crate::ui::chart::spark_lines(
             &values,
@@ -223,6 +245,77 @@ fn truncate(text: &str, room: usize) -> String {
         .take(room.saturating_sub(1))
         .chain(std::iter::once('…'))
         .collect()
+}
+
+/// Which radio a client's frequency belongs to: `0` 5 GHz, `1` 2.4 GHz,
+/// `2` unknown.
+///
+/// The firmware writes `"5GHz"` / `"2.4GHz"` on some builds and a bare
+/// `"5180"` / `"2437"` on others, so a numeric value is read as MHz.
+fn band_index(freq: Option<&str>) -> usize {
+    let Some(freq) = freq else { return 2 };
+    let lower = freq.to_ascii_lowercase();
+    if lower.starts_with("5") {
+        return 0;
+    }
+    if lower.starts_with("2.4") {
+        return 1;
+    }
+    let mhz: u32 = lower
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    match mhz {
+        0 => 2,
+        3000.. => 0,
+        _ => 1,
+    }
+}
+
+/// One square per client, coloured by radio. When they do not fit, the strip
+/// says how many are missing instead of pretending to be proportional: the
+/// whole point of this shape is that a square is a person.
+fn client_dots(f: &mut Frame, area: Rect, counts: [usize; 3], theme: &Theme) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let room = area.width.saturating_sub(1) as usize;
+    let total: usize = counts.iter().sum();
+    if total == 0 {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "no clients",
+                Style::default().fg(theme.dim),
+            ))),
+            Rect { height: 1, ..area },
+        );
+        return;
+    }
+    let (dots, tail) = if total <= room {
+        (total, String::new())
+    } else {
+        let shown = room.saturating_sub(4);
+        (shown, format!("+{}", total - shown))
+    };
+    let colours = [theme.ok, theme.accent, theme.dim];
+    let mut spans = Vec::with_capacity(4);
+    let mut left = dots;
+    for (i, &n) in counts.iter().enumerate() {
+        let k = n.min(left);
+        if k > 0 {
+            spans.push(Span::styled("■".repeat(k), Style::default().fg(colours[i])));
+            left -= k;
+        }
+    }
+    if !tail.is_empty() {
+        spans.push(Span::styled(tail, Style::default().fg(theme.dim)));
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect { height: 1, ..area },
+    );
 }
 
 fn meter(f: &mut Frame, area: Rect, share: f64, color: Color, theme: &Theme) {
@@ -374,6 +467,37 @@ mod tests {
         app.history_rsrp.clear();
         let text = frame(&app);
         assert!(text.contains("no samples yet"), "empty map must say so");
+    }
+
+    #[test]
+    fn the_clients_tile_draws_one_dot_per_client() {
+        let mut app = app();
+        let client = |freq: &str| crate::model::Client {
+            freq: Some(freq.to_string()),
+            ..Default::default()
+        };
+        if let Some(snap) = app.snap.as_mut() {
+            snap.clients = vec![client("5GHz"), client("5GHz"), client("2.4GHz")];
+        }
+        let text = frame(&app);
+        assert!(text.contains("5 ×2 · 2.4 ×1"), "band split missing: {text}");
+        assert!(text.contains('■'), "one square per client");
+    }
+
+    #[test]
+    fn a_full_band_says_how_many_clients_are_not_shown() {
+        let mut app = app();
+        let clients = vec![crate::model::Client::default(); 40];
+        if let Some(snap) = app.snap.as_mut() {
+            snap.clients = clients;
+        }
+        let text = frame(&app);
+        assert!(text.contains("40"), "the count is still stated");
+        assert!(
+            text.contains('+'),
+            "overflow is stated, not hidden:
+{text}"
+        );
     }
 
     #[test]
