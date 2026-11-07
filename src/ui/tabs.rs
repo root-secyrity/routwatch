@@ -128,6 +128,7 @@ fn graph_style_name(style: crate::theme::GraphStyle) -> &'static str {
         crate::theme::GraphStyle::Bars => "bars",
         crate::theme::GraphStyle::Dots => "dots",
         crate::theme::GraphStyle::Braille => "braille",
+        crate::theme::GraphStyle::Ascii => "ascii",
     }
 }
 

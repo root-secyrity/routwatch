@@ -151,7 +151,9 @@ refresh_ms = 2000
 timeout_ms = 3000
 theme = "terminal"      # follows your terminal / desktop theme
 view = "full"           # full · gauges · lite · dense
-graph_style = "dots"    # dots and bars colour each cell by its height; braille is flat
+graph_style = "dots"    # dots/bars colour each cell by height; braille is flat;
+                        # ascii is the single-width fallback for fonts that draw
+                        # braille or blocks wider than one cell
 budget_gb = 100         # local budget only; the monthly counters are not read
 ```
 
@@ -315,7 +317,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 252 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
+cargo test                 # 254 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
