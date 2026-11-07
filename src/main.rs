@@ -1112,7 +1112,9 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
     };
     let graph = match cli.graph.as_deref() {
         Some(g) => GraphStyle::try_parse(g).ok_or_else(|| {
-            ApiError::Usage(format!("unknown graph {g:?}; use dots, bars or braille"))
+            ApiError::Usage(format!(
+                "unknown graph {g:?}; use dots, bars, braille or ascii"
+            ))
         })?,
         None => GraphStyle::parse(&cfg.app.graph_style),
     };

@@ -383,6 +383,7 @@ impl App {
             fade: self.graph != GraphStyle::Braille,
             bg: self.theme.bg,
             terminal_palette: self.theme.defers_to_palette(),
+            ascii: self.graph.is_ascii(),
             baseline: true,
         }
     }

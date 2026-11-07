@@ -22,6 +22,9 @@ pub enum GraphStyle {
     Bars,
     Dots,
     Braille,
+    /// Single-width ASCII glyphs, for terminals whose font draws braille or
+    /// block characters wider than one cell.
+    Ascii,
 }
 
 impl GraphStyle {
@@ -32,6 +35,7 @@ impl GraphStyle {
             "dots" | "dot" => Some(GraphStyle::Dots),
             "bars" | "bar" => Some(GraphStyle::Bars),
             "braille" | "btop" => Some(GraphStyle::Braille),
+            "ascii" | "text" => Some(GraphStyle::Ascii),
             _ => None,
         }
     }
@@ -45,6 +49,7 @@ impl GraphStyle {
             GraphStyle::Bars => "bars",
             GraphStyle::Dots => "dots",
             GraphStyle::Braille => "braille",
+            GraphStyle::Ascii => "ascii",
         }
     }
 
@@ -53,12 +58,19 @@ impl GraphStyle {
             GraphStyle::Dots => GraphStyle::Bars,
             GraphStyle::Bars => GraphStyle::Braille,
             GraphStyle::Braille => GraphStyle::Dots,
+            // Not in the cycle: reaching it takes an explicit --graph ascii.
+            GraphStyle::Ascii => GraphStyle::Dots,
         }
     }
 
     /// True for the block style, false for both braille names.
     pub fn is_bars(self) -> bool {
         matches!(self, GraphStyle::Bars)
+    }
+
+    /// True for the single-width fallback, which the chart draws with ASCII.
+    pub fn is_ascii(self) -> bool {
+        matches!(self, GraphStyle::Ascii)
     }
 }
 
@@ -704,6 +716,9 @@ mod tests {
         assert_eq!(GraphStyle::Bars.next(), GraphStyle::Braille);
         assert_eq!(GraphStyle::Braille.next(), GraphStyle::Dots);
         assert_eq!(GraphStyle::parse("btop"), GraphStyle::Braille);
+        assert_eq!(GraphStyle::parse("ascii"), GraphStyle::Ascii);
+        assert_eq!(GraphStyle::Ascii.name(), "ascii");
+        assert_eq!(GraphStyle::Ascii.next(), GraphStyle::Dots);
     }
 
     const RYOKU_FIXTURE: &str = r##"{

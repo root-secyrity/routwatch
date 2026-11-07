@@ -54,6 +54,8 @@ pub struct ChartOpts {
     pub bg: Color,
     /// True under the `terminal` theme, where no colour may be synthesised.
     pub terminal_palette: bool,
+    /// Single-width ASCII glyphs instead of braille or blocks.
+    pub ascii: bool,
     /// Draw a floor dot under a zero sample, so quiet reads as quiet.
     pub baseline: bool,
 }
@@ -64,6 +66,7 @@ impl Default for ChartOpts {
             fade: true,
             bg: Color::Reset,
             terminal_palette: false,
+            ascii: false,
             baseline: true,
         }
     }
@@ -359,11 +362,61 @@ pub fn render_with_max(
         return;
     }
     let ramp = fade_ramp(base, opts).unwrap_or_else(|| Ramp::flat(base));
-    if bars {
+    if opts.ascii {
+        render_ascii(buf, area, data, max, &ramp, opts, false);
+    } else if bars {
         render_bars(buf, area, data, max, &ramp, opts);
     } else {
         let samples = two_per_column(data, area.width);
         area_graph(buf, area, &samples, max, &ramp, false, opts.baseline);
+    }
+}
+
+/// Single-width fallback glyphs, bottom-anchored in the same order as the
+/// eighths. A font that draws braille or blocks double-width still gets one
+/// character per cell here, so a line cannot wrap in the middle of a plot.
+const ASCII_LEVELS: [char; 9] = [' ', '.', ':', '-', '=', '+', '*', '#', '%'];
+
+/// One ASCII glyph per cell, coloured by height. `flip` hangs it from the top
+/// for the mirrored half.
+fn render_ascii(
+    buf: &mut Buffer,
+    area: Rect,
+    data: &[u64],
+    max: u64,
+    ramp: &Ramp,
+    opts: ChartOpts,
+    flip: bool,
+) {
+    if max == 0 || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let cell_w = area.width as usize;
+    let cell_h = area.height as usize;
+    let start = data.len().saturating_sub(cell_w);
+    let samples = &data[start..];
+    let offset = cell_w.saturating_sub(samples.len());
+    for (i, &v) in samples.iter().enumerate() {
+        let mut eighths = (v.min(max) as u128 * cell_h as u128 * 8 / max as u128) as usize;
+        if opts.baseline {
+            eighths = eighths.max(1);
+        } else if eighths == 0 {
+            continue;
+        }
+        let x = area.x + (offset + i) as u16;
+        for cy in 0..cell_h {
+            let from_bottom = if flip { cy } else { cell_h - 1 - cy };
+            let level = eighths.saturating_sub(from_bottom * 8).min(8);
+            let glyph = ASCII_LEVELS[level];
+            if glyph == ' ' {
+                continue;
+            }
+            let f = (from_bottom as f32 + 0.5) / cell_h as f32;
+            if let Some(cell) = buf.cell_mut((x, area.y + cy as u16)) {
+                cell.set_char(glyph);
+                cell.set_style(Style::default().fg(ramp.at(f)));
+            }
+        }
     }
 }
 
@@ -669,7 +722,9 @@ fn render_half(
     }
     let ramp = fade_ramp(color, opts).unwrap_or_else(|| Ramp::flat(color));
     let samples = two_per_column(data, area.width);
-    if bars {
+    if opts.ascii {
+        render_ascii(buf, area, data, max, &ramp, opts, flip);
+    } else if bars {
         if flip {
             render_bars_flipped(buf, area, data, max, &ramp, opts);
         } else {
@@ -874,6 +929,49 @@ mod tests {
         for line in &lines {
             assert_eq!(line.width(), 20);
         }
+    }
+
+    #[test]
+    fn the_ascii_style_is_single_width_and_fills_the_row() {
+        let mut v: VecDeque<f64> = VecDeque::new();
+        for i in 0..40 {
+            v.push_back(i as f64);
+        }
+        let opts = ChartOpts {
+            ascii: true,
+            ..ChartOpts::default()
+        };
+        let lines = spark_auto(&v, 20, 3, false, Color::Green, opts);
+        assert_eq!(lines.len(), 3);
+        for line in &lines {
+            let text: String = line.spans.iter().map(|s| s.content.clone()).collect();
+            assert_eq!(text.chars().count(), 20, "one glyph per cell: {text:?}");
+            assert!(text.is_ascii(), "every glyph is single width: {text:?}");
+        }
+    }
+
+    #[test]
+    fn the_ascii_mirror_paints_both_halves() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 3));
+        let plot = buf.area;
+        let opts = ChartOpts {
+            ascii: true,
+            ..ChartOpts::default()
+        };
+        render_mirrored_scaled(
+            &mut buf,
+            plot,
+            &[9, 9],
+            &[9, 9],
+            9,
+            9,
+            false,
+            Color::Green,
+            Color::Cyan,
+            opts,
+        );
+        assert_eq!(buf[(1, 0)].symbol(), "%", "rx grows up to the ceiling");
+        assert_eq!(buf[(1, 2)].symbol(), "%", "tx hangs from the zero row");
     }
 
     #[test]
