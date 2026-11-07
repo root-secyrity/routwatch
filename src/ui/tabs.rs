@@ -10,7 +10,7 @@ use crate::ui::widgets::{bar, bps, bytes, dur, kv, opt_f, opt_s, pad, title_styl
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -1909,6 +1909,11 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
+    // The panel owns its rectangle: blank it before drawing, so a glyph left by
+    // an earlier frame, a resize or another tab cannot survive as a stray
+    // character beside a label. Nothing else paints a background here, so a
+    // reset is invisible.
+    f.render_widget(Clear, inner);
 
     // Fixed physical domains: the same reading always sits at the same height,
     // and one sample is still visible (auto-scaling hid both facts).
