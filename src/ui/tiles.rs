@@ -119,6 +119,10 @@ fn slots(app: &App) -> Vec<Slot> {
         color: sinr.map(|v| theme.sinr_color(v)).unwrap_or(theme.dim),
     }));
 
+    // Beside SINR: the map answers "was the signal good while I was looking at
+    // these numbers", so it belongs next to the reading, not at the far edge.
+    slots.push(Slot::Map);
+
     let clients = app.snap.as_ref().map(|s| s.clients.len()).unwrap_or(0);
     slots.push(Slot::Metric(Tile {
         title: "CLIENTS",
@@ -160,7 +164,6 @@ fn slots(app: &App) -> Vec<Slot> {
         }));
     }
 
-    slots.push(Slot::Map);
     slots
 }
 
@@ -371,6 +374,19 @@ mod tests {
         app.history_rsrp.clear();
         let text = frame(&app);
         assert!(text.contains("no samples yet"), "empty map must say so");
+    }
+
+    #[test]
+    fn the_map_sits_beside_sinr() {
+        let text = frame(&app());
+        let band = text.lines().nth(2).unwrap_or_default();
+        let sinr = band.find("SINR").expect("SINR tile");
+        let map = band.find("SIGNAL MAP").expect("map tile");
+        let clients = band.find("CLIENTS").expect("clients tile");
+        assert!(
+            sinr < map && map < clients,
+            "band order must be RSRP | SINR | SIGNAL MAP | CLIENTS: {band}"
+        );
     }
 
     #[test]
