@@ -931,14 +931,23 @@ mod tests {
                 .iter()
                 .position(|l| l.contains("SIGNAL GRAPHS"))
                 .expect("graphs panel");
-            let trace = lines[start + 2];
-            let inner = trace
-                .strip_prefix('│')
-                .and_then(|l| l.strip_suffix('│'))
-                .unwrap_or(trace);
+            // The baseline row of the first series is always inked, so one of the
+            // trace rows must carry ink in the panel's very last cell.
+            let reaches_edge = lines
+                .iter()
+                .skip(start + 1)
+                .take(16)
+                .filter_map(|l| l.strip_prefix('│').and_then(|x| x.strip_suffix('│')))
+                .any(|inner| {
+                    inner
+                        .chars()
+                        .next_back()
+                        .map(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+                        .unwrap_or(false)
+                });
             assert!(
-                !inner.contains(' '),
-                "the trace must fill the panel at {width}: {inner:?}"
+                reaches_edge,
+                "the newest sample must paint the last cell at {width}"
             );
         }
     }

@@ -448,15 +448,11 @@ pub fn spark_lines(
             let spans: Vec<Span<'static>> = (0..width as u16)
                 .map(|x| {
                     let cell = &buf[(x, y)];
-                    // An untouched cell is a space in the buffer, but a braille
-                    // plot has always spelled "no dot" as U+2800: keeping that
-                    // keeps the series' texture and the fill-count tests honest.
-                    let symbol = if !bars && cell.symbol() == " " {
-                        "\u{2800}".to_string()
-                    } else {
-                        cell.symbol().to_string()
-                    };
-                    Span::styled(symbol, Style::default().fg(cell.fg))
+                    // Untouched cells stay spaces. A braille blank (U+2800)
+                    // would be invisible in most fonts, but a font without that
+                    // glyph paints a fallback box in every empty cell of the
+                    // plot, which reads as a stray character.
+                    Span::styled(cell.symbol().to_string(), Style::default().fg(cell.fg))
                 })
                 .collect();
             Line::from(spans)
@@ -1020,14 +1016,11 @@ mod tests {
             })
             .collect();
         assert_eq!(text.chars().count(), 60, "20 cells x 3 rows");
-        let painted = text.chars().filter(|c| *c != '\u{2800}').count();
+        let ink = |c: char| c != ' ' && c != '\u{2800}';
+        let painted = text.chars().filter(|c| ink(*c)).count();
         assert!(painted > 20, "expected filled cells, got {painted}");
-        let last_col_painted = (0..3).any(|row| {
-            text.chars()
-                .nth(row * 20 + 19)
-                .map(|c| c != '\u{2800}')
-                .unwrap_or(false)
-        });
+        let last_col_painted =
+            (0..3).any(|row| text.chars().nth(row * 20 + 19).map(ink).unwrap_or(false));
         assert!(last_col_painted, "right edge must show the newest value");
     }
 
