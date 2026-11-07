@@ -1929,7 +1929,10 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     // to 1 and letting the last series fall off the panel.
     let avail = (inner.height as usize).saturating_sub(3);
     let rows = (avail / 3).min(4);
-    let width = (inner.width as usize).saturating_sub(14).max(8);
+    // The traces own their rows: the label, value and domain sit on the line
+    // above, so there is no gutter to reserve. Subtracting one used to leave the
+    // trace ending fourteen cells before the panel edge.
+    let width = (inner.width as usize).max(8);
 
     let mut lines: Vec<Line> = Vec::new();
     for (label, hist, colour, min, max) in series {

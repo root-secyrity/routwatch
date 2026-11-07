@@ -917,6 +917,33 @@ mod tests {
     use crate::theme::GraphStyle;
 
     #[test]
+    fn the_signal_graphs_reach_the_panel_edge() {
+        let mut app = fixture_app();
+        app.tab = crate::app::Tab::Signal;
+        for i in 0..60 {
+            app.history_rsrp.push_back(-80.0 - (i as f64 % 20.0));
+        }
+        // Two widths: the trace must follow the panel, not a fixed gutter.
+        for width in [130u16, 100, 80] {
+            let text = render_to_string(&app, width, 40);
+            let lines: Vec<&str> = text.lines().collect();
+            let start = lines
+                .iter()
+                .position(|l| l.contains("SIGNAL GRAPHS"))
+                .expect("graphs panel");
+            let trace = lines[start + 2];
+            let inner = trace
+                .strip_prefix('│')
+                .and_then(|l| l.strip_suffix('│'))
+                .unwrap_or(trace);
+            assert!(
+                !inner.contains(' '),
+                "the trace must fill the panel at {width}: {inner:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_dashboard_waits_for_its_first_sample() {
         let mut app = fixture_app();
         app.history_dl.clear();
