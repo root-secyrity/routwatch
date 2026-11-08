@@ -34,51 +34,68 @@ fail() {
 # Set README_FILE to point the check at a fixture.
 check_readme_versions() {
 	local readme="${README_FILE:-README.md}"
-	local pkg slug tag newest assets v name bad=0
+	local pkg recipe slug tag newest assets v name installed bad=0
 
 	pkg="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
 	[[ -f "$readme" ]] || fail "$readme not found"
 
-	if ! slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || [[ -z "$slug" ]]; then
-		echo "! skipped: README versions vs release assets (no GitHub access)"
-		return 0
+	# One number, four witnesses. The recipe, the README, the tag and the
+	# installed package all have to name what Cargo.toml carries: a tree at
+	# 0.4.1 that ships a README installing 0.2.5 is a false public claim, and
+	# accepting "the coming release" as equal is how that passed for a day.
+	recipe="$(grep -m1 '^pkgver=' packaging/PKGBUILD.release 2>/dev/null | cut -d= -f2)"
+	if [[ "$recipe" != "$pkg" ]]; then
+		echo "✗ packaging/PKGBUILD.release says pkgver=$recipe, Cargo.toml says $pkg" >&2
+		bad=1
 	fi
-	if ! tag="$(gh release view --repo "$slug" --json tagName --jq .tagName 2>/dev/null)" || [[ -z "$tag" ]]; then
-		echo "! skipped: README versions vs release assets (no release in $slug yet)"
-		return 0
-	fi
-	newest="${tag#v}"
-	assets="$(gh release view "$tag" --repo "$slug" --json assets --jq '.assets[].name' 2>/dev/null || true)"
 
 	while read -r v; do
 		[[ -n "$v" ]] || continue
-		[[ "$v" == "$newest" || "$v" == "$pkg" ]] && continue
-		echo "✗ $readme downloads v$v; the newest release is $tag and Cargo.toml says $pkg" >&2
-		bad=1
+		if [[ "$v" != "$pkg" ]]; then
+			echo "✗ $readme installs v$v; the tree carries $pkg" >&2
+			bad=1
+		fi
 	done < <(grep -oE '/releases/download/v[0-9]+\.[0-9]+\.[0-9]+' "$readme" | sed 's#.*/v##' | sort -u)
+
+	# A version nobody tagged cannot be reproduced, whatever the files say.
+	if ! git rev-parse -q --verify "refs/tags/v$pkg" >/dev/null; then
+		echo "✗ v$pkg is not tagged; cut the tag before publishing" >&2
+		bad=1
+	fi
+	installed="$(pacman -Q routwatch 2>/dev/null | awk '{print $2}')"
+	if [[ -n "$installed" && "${installed%%-*}" != "$pkg" ]]; then
+		echo "✗ pacman has routwatch $installed; the tree carries $pkg" >&2
+		bad=1
+	fi
+	[[ "$bad" -eq 0 ]] || fail "Cargo.toml, PKGBUILD.release, README, the tag and the installed package disagree"
+
+	if ! slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || [[ -z "$slug" ]]; then
+		echo "! skipped: release asset names (no GitHub access)"
+		return 0
+	fi
+	if ! tag="$(gh release view --repo "$slug" --json tagName --jq .tagName 2>/dev/null)" || [[ -z "$tag" ]]; then
+		echo "! skipped: release asset names (no release in $slug yet)"
+		return 0
+	fi
+	newest="${tag#v}"
+	if [[ "$newest" != "$pkg" ]]; then
+		echo "✗ the newest release is $tag; the tree carries $pkg" >&2
+		bad=1
+	fi
+	assets="$(gh release view "$tag" --repo "$slug" --json assets --jq '.assets[].name' 2>/dev/null || true)"
 
 	while read -r name; do
 		[[ -n "$name" ]] || continue
 		if grep -qxF "$name" <<<"$assets"; then
 			continue
 		fi
-		if [[ "$name" == *"$pkg"* ]]; then
-			echo "! $name is not published yet (it ships with $pkg)"
-			continue
-		fi
 		echo "✗ $readme names $name, which $tag does not publish" >&2
 		bad=1
 	done < <(grep -oE 'routwatch-[0-9][0-9A-Za-z._-]*\.pkg\.tar\.zst(\.sha256)?|routwatch-x86_64-linux-musl(\.sha256)?' "$readme" | sort -u)
 
-	[[ "$bad" -eq 0 ]] || fail "$readme names a version or a file the release does not carry"
-	echo "✓ README versions match $tag"
+	[[ "$bad" -eq 0 ]] || fail "$readme, the release assets and the tree disagree"
+	echo "✓ version $pkg is one number in Cargo.toml, the recipe, the README, $tag and pacman"
 }
-
-command -v gh >/dev/null || fail "gh is not installed (pacman -S github-cli)"
-gh auth status >/dev/null 2>&1 || fail "gh is not logged in - run: gh auth login"
-
-[[ -z "$(git status --porcelain)" ]] || fail "working tree is dirty; commit first"
-
 check_readme_versions
 
 if [[ "$mode" == check ]]; then
