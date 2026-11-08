@@ -997,6 +997,35 @@ mod tests {
         assert!(!frame.contains("120 samples"), "the old claim is gone");
     }
 
+    #[test]
+    fn a_single_sample_says_collecting_and_draws_one_mark() {
+        let mut app = App::new(
+            crate::theme::by_name("dark"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.snap = Some(
+            serde_json::from_str(include_str!("../../fixtures/sample-snapshot.json")).unwrap(),
+        );
+        app.history_dl.push_back(4_000_000.0);
+        app.history_ul.push_back(200_000.0);
+        let frame = crate::ui::render_to_string(&app, 120, 40);
+        assert!(
+            frame.contains("THROUGHPUT · dots · 1 sample, collecting"),
+            "one sample is a reading, not a window"
+        );
+        assert!(
+            !frame.contains("last 2s"),
+            "no window is claimed before one exists"
+        );
+        assert!(
+            frame.contains("collecting…"),
+            "the axis says what is happening instead of naming a span"
+        );
+    }
+
     fn fixture_app() -> App {
         let snap: crate::model::Snapshot =
             serde_json::from_str(include_str!("../../fixtures/sample-snapshot.json"))
