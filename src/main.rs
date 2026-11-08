@@ -1239,6 +1239,13 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
         if event::poll(Duration::from_millis(200)).unwrap_or(false) {
             match event::read() {
                 Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => handle_key(&mut app, k, &tx),
+                // A resize must repaint from scratch: the terminal has already
+                // discarded the old cells, and anything the diff thinks it
+                // already drew is now a hole. Clearing costs one full frame and
+                // is what keeps a plot from looking cut after a zoom.
+                Ok(Event::Resize(_, _)) => {
+                    terminal.clear().ok();
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }
