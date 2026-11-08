@@ -326,7 +326,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 254 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
+cargo test                 # 255 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
