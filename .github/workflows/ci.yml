@@ -21,7 +21,19 @@ jobs:
       # its install script cannot change under us.
       - name: Lint workflows (actionlint 1.7.12)
         run: |
-          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          set -euo pipefail
+          v=1.7.12
+          a="actionlint_${v}_linux_amd64.tar.gz"
+          # The releases/download path sits behind a CDN that sometimes answers
+          # 504 with a 92-byte HTML page. curl follows it happily and tar then
+          # dies with "not in gzip format", which reds a build over a network
+          # fault. The API asset endpoint serves the same bytes, and -f makes a
+          # bad response fail here rather than inside tar.
+          id=$(curl -fsSL "https://api.github.com/repos/rhysd/actionlint/releases/tags/v$v" |
+            python3 -c 'import sys,json; n=sys.argv[1]; print(next(a["id"] for a in json.load(sys.stdin)["assets"] if a["name"]==n))' "$a")
+          curl -fsSL --retry 3 --retry-delay 2 -H "Accept: application/octet-stream" \
+            -o "$a" "https://api.github.com/repos/rhysd/actionlint/releases/assets/$id"
+          tar xzf "$a"
           ./actionlint -color
 
       - uses: dtolnay/rust-toolchain@stable
