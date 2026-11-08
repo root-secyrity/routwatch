@@ -41,7 +41,7 @@ lists all eight files.
 
 | Route | Command |
 |---|---|
-| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.2.5/routwatch-0.2.5-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.2.5-1-x86_64.pkg.tar.zst` |
+| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.4.1/routwatch-0.4.1-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.4.1-1-x86_64.pkg.tar.zst` |
 | Static musl binary | [routwatch-x86_64-linux-musl](https://github.com/root-secyrity/routwatch/releases/latest/download/routwatch-x86_64-linux-musl) - a permanent link, links nothing, runs on Arch, Debian, Ubuntu, Fedora, Alpine, Raspberry Pi OS |
 | Any distro, from source | `git clone https://github.com/root-secyrity/routwatch.git && cd routwatch && sudo make install` (or `PREFIX=$HOME/.local`) |
 | Build the static binary | `./packaging/musl-build.sh` - needs docker, writes `dist/` |
@@ -313,6 +313,15 @@ routwatch preview --tab bands --size 120x30 --ansi
   assumption, so the dimmest cells can be dimmer than the measured 4:1 floor on a
   light terminal. `sky` and `paper` paint their own background and are measured
   exactly.
+- **One renderer draws every plot**: `ui::chart` owns the braille area, the
+  mirrored pair and the axis. `ui::widgets` no longer carries `spark` or
+  `spark_scaled`; a panel that wants a trend calls `chart::spark_auto` (auto
+  ceiling) or `chart::spark_lines_scaled` (a fixed, possibly negative domain such
+  as RSRP).
+- **`bars` uses the height it is given**: a block sparkline used to be clamped to
+  one row whatever the caller asked for, so a three-row slot in the speed panel
+  left two rows empty. It now stacks eighths over the whole slot; `dots` and
+  `braille` are still the braille plots, and `braille` stays a flat colour.
 
 ## Development
 
