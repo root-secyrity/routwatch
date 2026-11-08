@@ -145,13 +145,18 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
 
     // No sample means no window: a "last 1s" title would be a claim about data
     // that does not exist yet.
-    let title = if samples == 0 {
-        format!("THROUGHPUT · {}", graph_style_name(app.graph))
-    } else {
-        format!(
+    let title = match samples {
+        0 => format!("THROUGHPUT · {}", graph_style_name(app.graph)),
+        // One sample is a reading, not a window: naming a span here was a claim
+        // about data that does not exist yet.
+        1 => format!(
+            "THROUGHPUT · {} · 1 sample, collecting",
+            graph_style_name(app.graph)
+        ),
+        _ => format!(
             "THROUGHPUT · {} · last {secs}s",
             graph_style_name(app.graph)
-        )
+        ),
     };
     let block = panel(title, theme);
     let inner = block.inner(area);
@@ -229,10 +234,29 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
         Rect { height: 1, ..inner },
     );
 
-    let slots = plot.width as usize * 2;
-    let per_sample = (refresh / 1000).max(1);
-    let rx_plot = crate::ui::chart::resample_to_window(&rx, per_sample, secs, slots);
-    let tx_plot = crate::ui::chart::resample_to_window(&tx, per_sample, secs, slots);
+    // One sample is not a trend: resampling it across the window drew a flat
+    // line over half the plot with a gap after it, which reads as "traffic
+    // stopped". Keep the single column it really is, with no baseline, and let
+    // the title and the axis say why there is only one.
+    let collecting = samples == 1;
+    let opts = if collecting {
+        crate::ui::chart::ChartOpts {
+            baseline: false,
+            ..opts
+        }
+    } else {
+        opts
+    };
+    let (rx_plot, tx_plot) = if collecting {
+        (rx.clone(), tx.clone())
+    } else {
+        let slots = plot.width as usize * 2;
+        let per_sample = (refresh / 1000).max(1);
+        (
+            crate::ui::chart::resample_to_window(&rx, per_sample, secs, slots),
+            crate::ui::chart::resample_to_window(&tx, per_sample, secs, slots),
+        )
+    };
     // A percentile ceiling, not the peak: one burst stays visible as a clipped
     // tower instead of flattening the body of the series onto the floor. The
     // meta line still reports the true peak and average.
@@ -281,9 +305,14 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
         label(plot.y + plot.height - 1, bps(tx_max as f64));
     }
 
+    let axis = if collecting {
+        "collecting…".to_string()
+    } else {
+        crate::ui::chart::time_axis(plot.width, secs)
+    };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            crate::ui::chart::time_axis(plot.width, secs),
+            axis,
             Style::default().fg(theme.dim),
         ))),
         Rect {
