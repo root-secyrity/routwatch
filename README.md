@@ -199,6 +199,10 @@ is the last thing dropped.
 Select several bands (`space`), save the combination as a preset (`s`), and cycle
 the ready-made ones with `n`. Nothing is sent until `a` and `y`.
 
+The grid is grouped `low` / `mid` / `high` by frequency, so dropping every low
+band is visible before it costs you range; the band the radio is on is
+underlined, and the panel says when your tick already equals the device.
+
 ![routwatch bands](docs/screenshots/02-bands.png)
 
 Presets live in `~/.config/routwatch/config.toml` (`[[app.presets]]`). No
@@ -326,7 +330,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 255 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
+cargo test                 # 268 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
