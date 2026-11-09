@@ -1358,7 +1358,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         match k.code {
             KeyCode::Esc | KeyCode::Char('S') => app.settings_open = false,
             KeyCode::Char('t') => {
-                app.theme = Theme::get(routwatch::theme::next_name(&app.theme.id));
+                app.theme = routwatch::theme::cycle(&app.theme.id);
+                app.note(format!("theme {} · w saves", app.theme.id));
             }
             KeyCode::Char('v') => app.view = app.view.next(),
             KeyCode::Char('g') => app.graph = app.graph.next(),
@@ -1444,6 +1445,23 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         return;
     }
+    // `u` belongs to the verdict it undoes, so it is read before the banner that
+    // swallows every other key while a write is settled.
+    if app.tab == Tab::Bands && matches!(normalise_key(k.code), KeyCode::Char('u')) {
+        match app.band_undo() {
+            Some(label) => {
+                app.note(label);
+                if app.write.is_settled() {
+                    app.settle_write(WriteState::Idle);
+                }
+            }
+            // Two different facts: an old point with no usable band, versus no
+            // point at all.
+            None if app.undo_mask.is_some() => app.note("undo point has no band this device lists"),
+            None => app.note("nothing to undo: no apply yet this session"),
+        }
+        return;
+    }
     if app.write.is_settled() {
         if matches!(k.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ')) {
             app.settle_write(WriteState::Idle);
@@ -1493,6 +1511,16 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             app.events_paused = false;
             app.events_back = 0;
         }
+        // The theme is an appearance key: it answers from any section, and the
+        // settings overlay keeps its own `t` so the row there still works.
+        KeyCode::Char('t') => {
+            app.theme = routwatch::theme::cycle(&app.theme.id);
+            app.note(format!(
+                "theme {}{}",
+                app.theme.id,
+                if app.settings_open { " · w saves" } else { "" }
+            ));
+        }
         KeyCode::Char('?') => app.help = !app.help,
         KeyCode::Esc => app.help = false,
         KeyCode::Char('v') => app.cycle_view(),
@@ -1513,9 +1541,14 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         // Must stay AFTER the SMS/Device arm above: those two sections own `e`.
         KeyCode::Char('e') => export_report(app),
-        KeyCode::Char('p') => {
+        // Two keys, one job each: `p` pings, `P` pauses, from any section.
+        // Shift represents `P` here because letters are matched case-free.
+        KeyCode::Char('p') if shift => {
             app.paused = !app.paused;
             let _ = tx.send(WorkerCmd::Pause(app.paused));
+        }
+        KeyCode::Char('p') => {
+            app.open_input(InputKind::PingHost);
         }
         // --- Traffic / DNS tab ---
         KeyCode::Char('d') if matches!(app.tab, Tab::Traffic | Tab::Dns) => {
@@ -1533,10 +1566,6 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             } else {
                 app.begin_dns_preset();
             }
-        }
-        // --- Network tab: local ping ---
-        KeyCode::Char('t') if app.tab == Tab::Network => {
-            app.open_input(InputKind::PingHost);
         }
         // --- Clients tab: sort / copy ---
         KeyCode::Char('s') if app.tab == Tab::Clients && !shift => {
@@ -1968,6 +1997,133 @@ mod key_tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn shift_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c.to_ascii_uppercase()), KeyModifiers::SHIFT)
+    }
+
+    fn bare_app() -> App {
+        App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        )
+    }
+
+    #[test]
+    fn t_cycles_the_theme_from_any_section_without_opening_a_prompt() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        let before = app.theme.id.clone();
+        handle_key(&mut app, key(KeyCode::Char('t')), &tx);
+        assert_ne!(app.theme.id, before, "t must cycle the theme");
+        assert!(
+            app.input.is_none(),
+            "t must not open the ping prompt any more"
+        );
+        assert!(
+            app.live_notice().unwrap_or("").contains("theme "),
+            "the change must be announced, got {:?}",
+            app.live_notice()
+        );
+
+        // The handler is case-free, so Shift+T does the same from another tab.
+        app.select_tab(Tab::Bands);
+        let before = app.theme.id.clone();
+        handle_key(&mut app, key(KeyCode::Char('T')), &tx);
+        assert_ne!(app.theme.id, before, "T must cycle too");
+        assert_eq!(
+            app.theme.id, "auto",
+            "the requested name is what the cycle reports"
+        );
+    }
+
+    #[test]
+    fn a_typing_prompt_keeps_t_for_itself() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        handle_key(&mut app, key(KeyCode::Char('p')), &tx);
+        assert!(
+            app.input.is_some(),
+            "p must open the ping prompt on Network"
+        );
+
+        let before = app.theme.id.clone();
+        handle_key(&mut app, key(KeyCode::Char('t')), &tx);
+        assert_eq!(app.theme.id, before, "typing must not cycle the theme");
+        let typed = app
+            .input
+            .as_ref()
+            .map(|i| i.value.clone())
+            .unwrap_or_default();
+        assert!(
+            typed.ends_with('t'),
+            "the letter belongs to the prompt, got {typed:?}"
+        );
+    }
+
+    #[test]
+    fn p_pings_and_shift_p_pauses_from_any_section() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        // `p` pings from Network and from anywhere else; one job only.
+        for tab in [Tab::Network, Tab::Dashboard, Tab::Bands] {
+            let mut app = bare_app();
+            app.select_tab(tab);
+            handle_key(&mut app, key(KeyCode::Char('p')), &tx);
+            assert!(
+                app.input.is_some(),
+                "p must open the ping prompt on {tab:?}"
+            );
+            assert!(!app.paused, "p must not pause on {tab:?}");
+        }
+
+        // `P` pauses everywhere, including Network.
+        for tab in [Tab::Network, Tab::Dashboard] {
+            let mut app = bare_app();
+            app.select_tab(tab);
+            handle_key(&mut app, shift_key('p'), &tx);
+            assert!(app.paused, "P must pause on {tab:?}");
+            assert!(app.input.is_none(), "P must not open a prompt on {tab:?}");
+        }
+    }
+
+    #[test]
+    fn the_undo_key_answers_over_a_settled_verdict() {
+        use routwatch::write::WriteState;
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.select_tab(Tab::Bands);
+        app.bands_supported = vec![1, 3, 5];
+        app.bands_selected = vec![1];
+        app.undo_mask = Some(vec![1, 3]);
+        app.settle_write(WriteState::Success {
+            intent: app.band_intent(),
+            note: "verified".into(),
+        });
+        assert!(matches!(app.write, WriteState::Success { .. }));
+
+        handle_key(&mut app, key(KeyCode::Char('u')), &tx);
+        assert_eq!(
+            app.bands_selected,
+            vec![1, 3],
+            "u must reach undo even while the verdict banner is up"
+        );
+        assert!(
+            matches!(app.write, WriteState::Idle),
+            "the banner yields after the undo key"
+        );
     }
 
     #[test]

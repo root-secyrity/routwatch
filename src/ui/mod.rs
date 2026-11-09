@@ -1,6 +1,7 @@
 //! Frame composition: header, tab bar, body, status line, help overlay.
 
 pub mod chart;
+pub mod help;
 pub mod tabs;
 pub mod tiles;
 pub mod widgets;
@@ -122,7 +123,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     if app.help {
-        draw_help(f, area, &app.theme);
+        draw_help(f, area, &app.theme, app.allow_write);
     }
     if app.events_open {
         draw_events(f, area, app);
@@ -559,7 +560,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Fit a `·`-separated hint list into `room` columns, cutting between entries
-/// so it never ends mid-word (`… · o opt…` reads as a typo).
+/// so it never ends mid-word (`… · o nr…` reads as a typo).
 fn hint_fit(s: &str, room: usize) -> String {
     if s.chars().count() <= room {
         return s.to_string();
@@ -681,86 +682,8 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_help(f: &mut Frame, area: Rect, theme: &Theme) {
-    let rows = [
-        ("1..9 / Tab", "switch tab"),
-        ("j k / ↑ ↓", "move selection"),
-        ("i", "event feed: j/k reads back, space pauses, Esc closes"),
-        ("space / a", "bands: toggle / apply (confirm with y)"),
-        ("m / o", "bands: network mode / NR option"),
-        (
-            "n / s / x",
-            "bands: next merge preset / save the ticked merge / delete it",
-        ),
-        (
-            "1-9 / Tab",
-            "jump to a section from ANY view (Lite/Dense return to full)",
-        ),
-        (
-            "d / z",
-            "DNS tab (8) + traffic: type servers / back to DHCP",
-        ),
-        (
-            "8 / j k / Enter",
-            "DNS tab: pick a preset and apply (then y)",
-        ),
-        ("9", "Signal tab: gauge dashboard"),
-        ("t", "network: ping a host from this machine"),
-        (
-            "s / c",
-            "clients: sort / copy MAC (bands tab: s saves a merge)",
-        ),
-        ("e / R", "SMS/Device: read inbox, SIM state, data switch"),
-        ("x / b", "device: dump JSON / restart router (type REBOOT)"),
-        ("S / ,", "settings overlay (appearance, w saves)"),
-        ("v / V", "cycle view: full → gauges → lite → dense"),
-        ("l / L", "toggle lite (returns to the view you came from)"),
-        ("g", "cycle graph: dots → bars → braille"),
-        ("r", "refresh now"),
-        ("p", "pause / resume polling"),
-        ("?", "this help"),
-        ("q / Ctrl+C", "quit (logs out)"),
-    ];
-    let h = rows.len() as u16 + 4;
-    let w = 52.min(area.width);
-    let rect = Rect {
-        x: area.x + (area.width.saturating_sub(w)) / 2,
-        y: area.y + (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h.min(area.height),
-    };
-    f.render_widget(Clear, rect);
-    let mut lines: Vec<Line> = rows
-        .iter()
-        .map(|(k, d)| {
-            Line::from(vec![
-                Span::styled(
-                    format!(" {k:<12}"),
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(*d, Style::default().fg(theme.fg)),
-            ])
-        })
-        .collect();
-    lines.push(Line::from(Span::styled(
-        " read-only build: no router writes are enabled",
-        Style::default().fg(theme.dim),
-    )));
-    f.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .title(Span::styled(
-                    " keys ",
-                    Style::default()
-                        .fg(theme.title)
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .border_style(Style::default().fg(theme.accent)),
-        ),
-        rect,
-    );
+fn draw_help(f: &mut Frame, area: Rect, theme: &Theme, allow_write: bool) {
+    help::draw(f, area, theme, allow_write);
 }
 
 /// Render one frame to text - the screenshot substitute for tests and for
@@ -1259,8 +1182,45 @@ mod tests {
             text.contains("[B1]"),
             "selected band must be bracketed\n{text}"
         );
-        assert!(text.contains("mask 0x15"), "mask preview missing\n{text}");
+        assert!(text.contains("→ 0x15"), "mask preview missing\n{text}");
         assert!(text.contains("4G only") || text.contains("Auto"));
+    }
+
+    #[test]
+    fn bands_grid_columns_line_up_across_classes() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_supported = vec![1, 3, 5, 8, 20, 28, 32, 34, 39, 41];
+        app.bands_selected = vec![1, 20];
+        let text = render_to_string(&app, 100, 24);
+        // Structural filter, never a word search: a grid row is the only line
+        // whose class column (chars 10..16) holds one of the four padded labels.
+        // A `warn` line mentions "high" too and must never enter this check.
+        let grid: Vec<String> = text
+            .lines()
+            .filter(|l| {
+                let chars: Vec<char> = l.chars().collect();
+                if chars.len() <= 16 {
+                    return false;
+                }
+                let cls: String = chars[10..16].iter().collect();
+                ["low   ", "mid   ", "high  ", "other "].contains(&cls.as_str())
+            })
+            .map(|l| l.to_string())
+            .collect();
+        assert!(grid.len() >= 3, "three classes, three rows\n{text}");
+        for line in &grid {
+            let chars: Vec<char> = line.chars().collect();
+            for (i, ch) in chars.iter().enumerate() {
+                let starts_cell = *ch == '[' || (*ch == 'B' && i > 0 && chars[i - 1] != '[');
+                if starts_cell {
+                    assert!(
+                        i >= 16 && (i - 16) % 6 == 0,
+                        "band token at char {i} is off the 6-column grid: {line}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1740,8 +1700,8 @@ mod tests {
         assert!(text.contains("presets"), "preset row missing\n{text}");
         assert!(text.contains("B1+B3"), "ready-made merge missing\n{text}");
         assert!(
-            text.contains("B1 + B3"),
-            "the ticked merge must be spelled out\n{text}"
+            text.contains("= device, nothing to apply"),
+            "the ticked row must spell the merge and its diff\n{text}"
         );
         assert!(
             text.contains("s save"),
@@ -1759,12 +1719,350 @@ mod tests {
     }
 
     #[test]
+    fn bands_tab_names_the_serving_band_and_the_nr_band() {
+        // fixtures/sample-snapshot.json reports band = "B1" and signal.nr = null.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("serving"), "no serving label\n{text}");
+        assert!(text.contains("B1 LTE"), "serving LTE band missing\n{text}");
+        assert!(
+            !text.contains("N41"),
+            "this firmware reports no NR band, so none may be invented\n{text}"
+        );
+
+        // fixtures/sample-snapshot-5g.json is the one that carries NR.
+        let snap: crate::model::Snapshot =
+            serde_json::from_str(include_str!("../../fixtures/sample-snapshot-5g.json"))
+                .expect("5g fixture");
+        let mut app5 = fixture_app();
+        app5.on_snapshot(snap, 0);
+        app5.select_tab(Tab::Bands);
+        let text5 = render_to_string(&app5, 100, 30);
+        assert!(
+            text5.contains("N41 NR"),
+            "the NR band the firmware reports must be named\n{text5}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_says_nothing_to_apply_when_the_tick_matches_the_device() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 100, 30);
+        assert!(
+            text.contains("nothing to apply"),
+            "an unchanged tick must say so\n{text}"
+        );
+        assert!(
+            text.contains("re-apply"),
+            "the re-attach case must stay reachable\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_names_the_dropped_band_in_the_tick_row() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected.retain(|b| *b != 5);
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("-B5"), "the drop is not named\n{text}");
+        assert!(
+            text.contains("1 change to apply"),
+            "the count is missing\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_warns_when_a_whole_class_is_dropped() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected = vec![1, 3, 32, 34, 39, 7, 38, 40, 41, 42, 43];
+        let text = render_to_string(&app, 100, 30);
+        assert!(
+            text.contains("no low band ticked"),
+            "silent class loss\n{text}"
+        );
+        assert!(
+            text.contains("B5"),
+            "the warning must name the bands\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_never_drops_a_band_it_cannot_classify() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        // B66 has a class (mid), B99 has none: both must be drawn, and the
+        // denominator must count every band the device listed.
+        app.bands_supported = vec![1, 3, 66, 99];
+        app.bands_selected = vec![1];
+        let text = render_to_string(&app, 100, 30);
+        assert!(
+            text.contains("B66") && text.contains("B99"),
+            "a band must never fall off the grid\n{text}"
+        );
+        assert!(
+            text.contains("other"),
+            "the unknown class needs a row\n{text}"
+        );
+        assert!(
+            text.contains("1 of 4"),
+            "the denominator must count every band\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_presets_are_numbered_and_keep_the_missing_mark() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.band_presets = vec![
+            crate::config::BandPreset::new(&[1, 3]),
+            crate::config::BandPreset::new(&[1, 3, 66]),
+        ];
+        app.bands_supported = vec![1, 3, 5, 20];
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("1:B1+B3"), "presets are not numbered\n{text}");
+        assert!(
+            text.contains("2:B1+B3+B66!"),
+            "the missing mark moved\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_panel_keeps_its_deciding_rows_at_sixty_columns() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 60, 20);
+        // The body is 17 rows here, 15 inside the border. The rows that decide
+        // must survive; the ones that explain may not.
+        for needle in [
+            "now",
+            "device now",
+            "ticked",
+            "low",
+            "mid",
+            "high",
+            "10-30 s offline",
+        ] {
+            assert!(text.contains(needle), "{needle:?} lost at 60x20\n{text}");
+        }
+        assert!(
+            !text.contains("! = band"),
+            "the legend cannot fit at 60x20; if this fails the layout grew\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_warns_when_the_tick_drops_the_serving_band() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let calm = render_to_string(&app, 100, 30);
+        assert!(
+            !calm.contains("not in the tick set"),
+            "no warning while B1 is ticked\n{calm}"
+        );
+        app.bands_selected.retain(|b| *b != 1);
+        let text = render_to_string(&app, 100, 30);
+        assert!(
+            text.contains("B1 carries the link"),
+            "the drop must be named before it costs the link\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_gap_warning_needs_a_real_selection_to_compare() {
+        // Before the first snapshot lands, the tick list is empty and the device
+        // mask is unknown. Warning there would fire on every start-up.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected.clear();
+        let empty = render_to_string(&app, 100, 30);
+        assert!(
+            !empty.contains("not in the tick set"),
+            "an empty tick list is not a decision\n{empty}"
+        );
+        if let Some(snap) = app.snap.as_mut() {
+            snap.net_mode.lte_band = None;
+        }
+        let unknown = render_to_string(&app, 100, 30);
+        assert!(
+            !unknown.contains("not in the tick set"),
+            "an unknown device mask cannot be compared\n{unknown}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_shows_the_undo_line_only_after_an_apply() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let before = render_to_string(&app, 100, 30);
+        assert!(
+            !before.contains("back to 0x"),
+            "nothing to undo yet\n{before}"
+        );
+
+        app.undo_mask = Some(vec![1, 3, 5, 8, 20, 28, 32]);
+        let after = render_to_string(&app, 100, 30);
+        assert!(after.contains("undo"), "{after}");
+        assert!(after.contains("· u"), "the key must be named\n{after}");
+    }
+
+    #[test]
+    fn bands_tab_names_the_link_details_from_the_snapshot() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("link"), "no link row\n{text}");
+        assert!(text.contains("2120 MHz"), "dl_mhz missing\n{text}");
+        assert!(text.contains("20MHz"), "bandwidth missing\n{text}");
+        assert!(text.contains("TM[4]"), "transmission mode missing\n{text}");
+        assert!(text.contains("PCI 481"), "pci missing\n{text}");
+        assert!(
+            text.contains("EARFCN"),
+            "earfcn missing on a wide panel\n{text}"
+        );
+
+        // Narrower panel: EARFCN is the first thing to go, and the row still fits.
+        let narrow = render_to_string(&app, 80, 24);
+        assert!(
+            narrow.contains("PCI 481"),
+            "the row must survive at 80\n{narrow}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_names_the_secondary_carrier() {
+        // fixtures/sample-snapshot.json carries dl_mcs_secondary = 9.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("secondary DL carrier"), "{text}");
+        assert!(text.contains("MCS 9"), "{text}");
+
+        // No second carrier reported: the row must not invent one.
+        let mut quiet = fixture_app();
+        if let Some(snap) = quiet.snap.as_mut() {
+            snap.signal.dl_mcs_secondary = None;
+        }
+        quiet.select_tab(Tab::Bands);
+        let quiet_text = render_to_string(&quiet, 100, 30);
+        assert!(!quiet_text.contains("secondary DL carrier"), "{quiet_text}");
+    }
+
+    #[test]
+    fn bands_tab_names_the_last_apply_and_the_nr_band() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.last_apply = Some(crate::app::LastApply {
+            bands: vec![1, 3, 20],
+            mode: "03".into(),
+            verdict: "verified · router 100006".into(),
+            at: std::time::Instant::now(),
+        });
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("last"), "{text}");
+        assert!(
+            text.contains("0x80005"),
+            "the applied mask must be named\n{text}"
+        );
+        assert!(
+            text.contains("4G only"),
+            "the mode is spelled, not a raw code\n{text}"
+        );
+        assert!(text.contains("router 100006"), "{text}");
+
+        // NR comes only from the 5g fixture.
+        let snap: crate::model::Snapshot =
+            serde_json::from_str(include_str!("../../fixtures/sample-snapshot-5g.json"))
+                .expect("5g");
+        let mut app5 = fixture_app();
+        app5.on_snapshot(snap, 0);
+        app5.select_tab(Tab::Bands);
+        let text5 = render_to_string(&app5, 100, 30);
+        assert!(text5.contains("N41 serving"), "{text5}");
+
+        // A firmware with no NR band: say so instead of inventing a list.
+        let mut plain = fixture_app();
+        plain.select_tab(Tab::Bands);
+        let quiet = render_to_string(&plain, 100, 30);
+        assert!(quiet.contains("no NR band reported"), "{quiet}");
+    }
+
+    #[test]
+    fn the_fill_rows_stay_off_a_short_panel() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.undo_mask = Some(vec![1, 3]);
+        app.last_apply = Some(crate::app::LastApply {
+            bands: vec![1, 3],
+            mode: "03".into(),
+            verdict: "verified".into(),
+            at: std::time::Instant::now(),
+        });
+        // 60x20: body 17 rows.
+        let tiny = render_to_string(&app, 60, 20);
+        for gone in [
+            "link  ",
+            "secondary DL carrier",
+            "no NR band reported",
+            "back to 0x",
+            "last  ",
+        ] {
+            assert!(
+                !tiny.contains(gone),
+                "{gone:?} must not crowd 60x20\n{tiny}"
+            );
+        }
+        // 80x24: body 21 rows, so `link` (20) shows and `ca` (22) does not.
+        let mid = render_to_string(&app, 80, 24);
+        assert!(mid.contains("link"), "link shows at 80x24\n{mid}");
+        assert!(
+            !mid.contains("secondary DL carrier"),
+            "ca needs 22 body rows\n{mid}"
+        );
+        assert!(
+            !mid.contains("no NR band reported"),
+            "nr needs 24 body rows\n{mid}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_panel_truncates_the_long_rows_instead_of_wrapping() {
+        // 60x30: narrow but tall, the only shape where the long rows survive and
+        // the width is the binding constraint.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected.retain(|b| *b != 1);
+        app.last_apply = Some(crate::app::LastApply {
+            bands: vec![1, 3, 20],
+            mode: "03".into(),
+            verdict: "verified · router 100006".into(),
+            at: std::time::Instant::now(),
+        });
+        let text = render_to_string(&app, 60, 30);
+        assert!(text.contains("B1 carries the link"), "{text}");
+        let last_line = text
+            .lines()
+            .find(|l| l.contains("last"))
+            .expect("the last row is on screen");
+        assert!(
+            last_line.contains('…'),
+            "a long row is cut, not wrapped: {last_line}"
+        );
+        assert!(
+            text.contains("10-30 s offline"),
+            "the action row survives\n{text}"
+        );
+    }
+
+    #[test]
     fn status_line_carries_the_current_tabs_own_keys() {
         let mut app = fixture_app();
         let cases = [
             (Tab::Bands, "s save"),
             (Tab::Traffic, "d edit DNS"),
-            (Tab::Network, "t ping host"),
+            (Tab::Network, "p ping host"),
             (Tab::Clients, "c copy mac"),
             (Tab::Dns, "Enter apply"),
             (Tab::Device, "x dump json"),
@@ -1801,14 +2099,81 @@ mod tests {
         );
     }
 
-    #[test]
-    fn help_documents_case_free_keys() {
+    fn help_frame(w: u16, h: u16, allow_write: bool) -> String {
         let mut app = fixture_app();
+        app.allow_write = allow_write;
         app.help = true;
-        let text = render_to_string(&app, 120, 34);
-        for needle in ["v / V", "l / L", "S / ,", "jump to a section from ANY view"] {
-            assert!(text.contains(needle), "help is missing {needle:?}\n{text}");
+        render_to_string(&app, w, h)
+    }
+
+    #[test]
+    fn help_uses_the_room_a_wide_terminal_has() {
+        // Before this, the panel was pinned at 52 columns and cut 12 of 21 rows
+        // mid-word even on a 120 column terminal.
+        let text = help_frame(120, 30, false);
+        for needle in [
+            "not through the router",
+            "back in the tick list",
+            "switch section from any view",
+            "v / V",
+            "S / ,",
+        ] {
+            assert!(text.contains(needle), "help lost {needle:?}\n{text}");
         }
+    }
+
+    #[test]
+    fn help_falls_back_to_the_short_rows_and_keeps_them_whole() {
+        // 60x20: the rows that survive the cut are the global ones, and the
+        // three keys the whole change is about must be among them.
+        let text = help_frame(60, 20, false);
+        for needle in [
+            "theme: next",
+            "ping a host",
+            "pause / resume polling",
+            "move the selection",
+        ] {
+            assert!(text.contains(needle), "short row cut: {needle:?}\n{text}");
+        }
+    }
+
+    #[test]
+    fn help_keeps_quit_and_the_help_key_on_a_short_screen() {
+        // 60x20 has room for 17 body rows; the last two rows are pinned on
+        // purpose, and the cut is announced instead of vanishing.
+        let text = help_frame(60, 20, false);
+        assert!(text.contains("quit"), "the q row must survive\n{text}");
+        assert!(text.contains("this help"), "the ? row must survive\n{text}");
+        assert!(
+            text.contains("more rows"),
+            "a cut must be announced\n{text}"
+        );
+    }
+
+    #[test]
+    fn help_never_draws_a_key_into_its_description() {
+        // `8 / j k / Enter` used to be 14 characters in a 12 column field and
+        // ran straight into its text.
+        let text = help_frame(120, 30, false);
+        let line = text
+            .lines()
+            .find(|l| l.contains("j k / ↑ ↓"))
+            .expect("the move row");
+        let at = line.find("j k / ↑ ↓").expect("keys") + "j k / ↑ ↓".len();
+        let after = line[at..].chars().next().expect("padding");
+        assert_eq!(after, ' ', "the key column collided: {line}");
+    }
+
+    #[test]
+    fn help_says_what_this_build_can_do() {
+        let read_only = help_frame(120, 30, false);
+        assert!(read_only.contains("read-only build"), "{read_only}");
+        let writable = help_frame(120, 30, true);
+        assert!(writable.contains("writes enabled"), "{writable}");
+        assert!(
+            !writable.contains("read-only build"),
+            "a writable build must not claim read-only\n{writable}"
+        );
     }
 
     #[test]

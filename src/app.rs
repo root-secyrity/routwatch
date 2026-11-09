@@ -73,12 +73,12 @@ impl Tab {
     /// tab says what it accepts without a help overlay.
     pub fn hints(&self) -> &'static str {
         match self {
-            Tab::Dashboard => "v view · g graph · r refresh · p pause · e report",
+            Tab::Dashboard => "v view · g graph · r refresh · P pause · e report",
             Tab::Bands => {
-                "space tick · j/k · n preset · s save · x del · m mode · o opt · a apply · e report"
+                "space tick · j/k · a apply · u undo · n preset · s save · x del · m mode · o nr · e report"
             }
             Tab::Traffic => "d edit DNS · D auto DNS · e report",
-            Tab::Network => "t ping host · e report",
+            Tab::Network => "p ping host · e report",
             Tab::Clients => "j/k select · s sort · c copy mac · e report",
             Tab::Sms => "R read inbox",
             Tab::Device => "x dump json · b restart · R extras",
@@ -308,6 +308,18 @@ pub struct Input {
     pub value: String,
 }
 
+/// What the last settled apply did, for the `last` row. Session only: a restart
+/// loses it, which is honest because the router keeps the change, not the story.
+#[derive(Debug, Clone)]
+pub struct LastApply {
+    pub bands: Vec<u8>,
+    pub mode: String,
+    /// Display text: `verified` or `verified · router 100006`. Derived once, at
+    /// settle time, so the render does not parse English.
+    pub verdict: String,
+    pub at: Instant,
+}
+
 pub struct App {
     pub tab: Tab,
     pub view: View,
@@ -348,6 +360,15 @@ pub struct App {
     pub preset_cursor: Option<usize>,
     pub write: WriteState,
     pub allow_write: bool,
+    /// The device mask the pending write will replace, captured at confirm time.
+    pending_undo: Option<Vec<u8>>,
+    /// True once the worker reported `Pending`: a no-op success never sets it,
+    /// and that is what separates "sent and verified" from "already active"
+    /// without reading the note's English.
+    write_sent: bool,
+    /// The mask `u` puts back in the tick list. None until an apply lands.
+    pub undo_mask: Option<Vec<u8>>,
+    pub last_apply: Option<LastApply>,
     bands_initialised: bool,
     // --- M4 ---
     pub input: Option<Input>,
@@ -458,6 +479,10 @@ impl App {
             preset_cursor: None,
             write: WriteState::Idle,
             allow_write: false,
+            pending_undo: None,
+            write_sent: false,
+            undo_mask: None,
+            last_apply: None,
             bands_initialised: false,
             input: None,
             ping: None,
@@ -633,11 +658,67 @@ impl App {
         Some(crate::preflight::for_intent(intent, self.snap.as_ref()))
     }
 
+    /// The order the grid draws: low, mid, high, other, ascending inside each
+    /// class. `band_cursor` indexes this, so `j`/`k` walk the picture the user
+    /// is looking at, not the firmware's list order.
+    pub fn bands_in_draw_order(&self) -> Vec<u32> {
+        let mut v = self.bands_supported.clone();
+        v.sort_by_key(|b| (bands::class_of(*b as u8), *b));
+        v
+    }
+
+    /// What the device runs right now, read from its own mask. Never from the
+    /// tick list: after a preset loads the two differ, and that is the point.
+    pub fn bands_on_device(&self) -> Vec<u8> {
+        crate::preflight::current_bands(self.snap.as_ref())
+    }
+
+    /// (added, dropped) between the device's mask and the tick list.
+    pub fn bands_diff(&self) -> (Vec<u8>, Vec<u8>) {
+        let now = self.bands_on_device();
+        let added = self
+            .bands_selected
+            .iter()
+            .copied()
+            .filter(|b| !now.contains(b))
+            .collect();
+        let dropped = now
+            .iter()
+            .copied()
+            .filter(|b| !self.bands_selected.contains(b))
+            .collect();
+        (added, dropped)
+    }
+
+    /// True when the tick list is exactly what the device already has.
+    pub fn bands_unchanged(&self) -> bool {
+        let (added, dropped) = self.bands_diff();
+        added.is_empty() && dropped.is_empty()
+    }
+
+    /// The device's own bands grouped for the grid, empty classes omitted.
+    pub fn bands_by_class(&self) -> Vec<(bands::BandClass, Vec<u32>)> {
+        let order = self.bands_in_draw_order();
+        bands::BandClass::ALL
+            .iter()
+            .map(|cls| {
+                let members = order
+                    .iter()
+                    .copied()
+                    .filter(|b| bands::class_of(*b as u8) == *cls)
+                    .collect::<Vec<u32>>();
+                (*cls, members)
+            })
+            .filter(|(_, members)| !members.is_empty())
+            .collect()
+    }
+
     pub fn band_toggle(&mut self) {
         if self.write.is_busy() || matches!(self.write, WriteState::Confirming(_)) {
             return;
         }
-        let Some(band) = self.bands_supported.get(self.band_cursor).copied() else {
+        let order = self.bands_in_draw_order();
+        let Some(band) = order.get(self.band_cursor).copied() else {
             return;
         };
         if let Some(pos) = self.bands_selected.iter().position(|b| *b as u32 == band) {
@@ -650,10 +731,11 @@ impl App {
     }
 
     pub fn band_cursor_move(&mut self, delta: isize) {
-        if self.bands_supported.is_empty() {
+        let len = self.bands_in_draw_order().len();
+        if len == 0 {
             return;
         }
-        let max = self.bands_supported.len() as isize - 1;
+        let max = len as isize - 1;
         let next = (self.band_cursor as isize + delta).clamp(0, max);
         self.band_cursor = next as usize;
     }
@@ -780,6 +862,8 @@ impl App {
         if self.bands_selected.is_empty() || self.write.is_busy() {
             return false;
         }
+        self.pending_undo = Some(self.bands_on_device());
+        self.write_sent = false;
         self.write = WriteState::Confirming(self.band_intent());
         true
     }
@@ -788,21 +872,78 @@ impl App {
         if matches!(self.write, WriteState::Confirming(_)) {
             self.write = WriteState::Idle;
         }
+        // A cancelled confirmation never wrote anything, so there is nothing to
+        // remember and nothing to put back.
+        self.pending_undo = None;
+        self.write_sent = false;
     }
 
     pub fn settle_write(&mut self, state: WriteState) {
         match &state {
-            WriteState::Success { intent, note } => self.log(
-                LogLevel::Info,
-                format!("write ok · {} · {note}", intent.label()),
-            ),
-            WriteState::Failed { intent, err } => self.log(
-                LogLevel::Error,
-                format!("write failed · {} · {err}", intent.label()),
-            ),
+            WriteState::Pending { .. } | WriteState::Verifying { .. } => {
+                // The write is on the wire. Nothing is decided, so nothing is
+                // cleared: clearing here would erase the undo point before the
+                // verdict that needs it.
+                self.write_sent = true;
+            }
+            WriteState::Success { intent, note } => {
+                self.log(
+                    LogLevel::Info,
+                    format!("write ok · {} · {note}", intent.label()),
+                );
+                if let WriteIntent::ApplyBands { mode, bands, .. } = intent {
+                    if self.write_sent {
+                        self.undo_mask = self.pending_undo.take();
+                        self.last_apply = Some(LastApply {
+                            bands: bands.clone(),
+                            mode: mode.clone(),
+                            verdict: if note.contains("100006") {
+                                "verified · router 100006".into()
+                            } else {
+                                "verified".into()
+                            },
+                            at: Instant::now(),
+                        });
+                    }
+                }
+                self.pending_undo = None;
+                self.write_sent = false;
+            }
+            WriteState::Failed { intent, err } => {
+                self.log(
+                    LogLevel::Error,
+                    format!("write failed · {} · {err}", intent.label()),
+                );
+                self.pending_undo = None;
+                self.write_sent = false;
+            }
             _ => {}
         }
         self.write = state;
+    }
+
+    /// Put the mask the device carried before the last apply back into the tick
+    /// list. Never writes: `a` still goes through the confirmation.
+    pub fn band_undo(&mut self) -> Option<String> {
+        if self.write.is_busy() || matches!(self.write, WriteState::Confirming(_)) {
+            return None;
+        }
+        let mask = self.undo_mask.clone()?;
+        let keep: Vec<u8> = mask
+            .into_iter()
+            .filter(|b| self.bands_supported.contains(&(*b as u32)))
+            .collect();
+        if keep.is_empty() {
+            return None;
+        }
+        self.bands_selected = keep;
+        // The highlighted preset no longer describes the tick list.
+        self.preset_cursor = None;
+        Some(format!(
+            "undo → 0x{} ({} bands)",
+            self.band_mask_hex(),
+            self.bands_selected.len()
+        ))
     }
 
     /// How old the displayed data is - the header turns this into `live`/`stale`.
@@ -1047,6 +1188,262 @@ fn ip_key(ip: &str) -> (u32, u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_snap() -> crate::model::Snapshot {
+        serde_json::from_str(include_str!("../fixtures/sample-snapshot.json")).expect("fixture")
+    }
+
+    #[test]
+    fn a_successful_apply_remembers_the_mask_it_replaced() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        let before = app.bands_on_device();
+        let intent = app.band_intent();
+        assert!(app.begin_confirm());
+        app.settle_write(WriteState::Pending {
+            intent: intent.clone(),
+            since: Instant::now(),
+        });
+        app.settle_write(WriteState::Success {
+            intent,
+            note: "verified, device mode 03 mask 0x800C5".into(),
+        });
+        assert_eq!(
+            app.undo_mask.as_deref(),
+            Some(&before[..]),
+            "undo must hold the old mask"
+        );
+        let last = app.last_apply.as_ref().expect("last apply");
+        assert_eq!(last.verdict, "verified");
+        assert!(last.bands.contains(&1));
+    }
+
+    #[test]
+    fn the_pending_states_do_not_erase_the_undo_point() {
+        // The worker sends Pending and Verifying before the verdict, so the
+        // real sequence is what this test replays, not a bare Success.
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        let intent = app.band_intent();
+        assert!(app.begin_confirm());
+        app.settle_write(WriteState::Pending {
+            intent: intent.clone(),
+            since: Instant::now(),
+        });
+        app.settle_write(WriteState::Verifying {
+            intent: intent.clone(),
+            since: Instant::now(),
+        });
+        assert!(app.undo_mask.is_none(), "nothing settled yet");
+        app.settle_write(WriteState::Success {
+            intent,
+            note: "verified".into(),
+        });
+        assert!(
+            app.undo_mask.is_some(),
+            "Pending and Verifying must not clear the point they precede"
+        );
+    }
+
+    #[test]
+    fn a_noop_apply_offers_no_undo() {
+        // "already active, nothing sent": there is no earlier mask to go back to.
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        let intent = app.band_intent();
+        assert!(app.begin_confirm());
+        app.settle_write(WriteState::Success {
+            intent,
+            note: "already active (mode + mask 0x88080095) - nothing sent".into(),
+        });
+        assert!(app.undo_mask.is_none());
+        assert!(app.last_apply.is_none(), "nothing was applied");
+    }
+
+    #[test]
+    fn a_failed_apply_leaves_the_undo_point_alone() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        app.undo_mask = Some(vec![1, 3]);
+        let intent = app.band_intent();
+        assert!(app.begin_confirm());
+        app.settle_write(WriteState::Failed {
+            intent,
+            err: "router refused".into(),
+        });
+        assert_eq!(app.undo_mask.as_deref(), Some(&[1u8, 3][..]));
+        assert!(app.last_apply.is_none(), "a failure is not an apply");
+    }
+
+    #[test]
+    fn undo_restores_the_mask_without_writing() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        app.undo_mask = Some(vec![1, 3, 5]);
+        app.preset_cursor = Some(2);
+        let label = app.band_undo().expect("undo applies");
+        assert_eq!(app.bands_selected, vec![1, 3, 5]);
+        assert!(matches!(app.write, WriteState::Idle), "undo never writes");
+        assert!(
+            app.preset_cursor.is_none(),
+            "the preset highlight is stale now"
+        );
+        assert!(label.contains("0x15"), "{label}");
+    }
+
+    #[test]
+    fn undo_is_refused_while_a_write_is_in_flight() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        app.undo_mask = Some(vec![1, 3]);
+        app.bands_selected = vec![1];
+        app.write = WriteState::Verifying {
+            intent: app.band_intent(),
+            since: Instant::now(),
+        };
+        assert!(
+            app.band_undo().is_none(),
+            "ticking while a write is in flight would lie about what is applied"
+        );
+        assert_eq!(app.bands_selected, vec![1]);
+    }
+
+    #[test]
+    fn undo_drops_bands_the_device_no_longer_lists() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        app.bands_supported = vec![1, 3];
+        app.undo_mask = Some(vec![1, 3, 66]);
+        app.band_undo().expect("undo applies");
+        assert_eq!(
+            app.bands_selected,
+            vec![1, 3],
+            "66 is not in this device's list"
+        );
+    }
+
+    #[test]
+    fn bands_draw_order_groups_by_class_and_keeps_every_band() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.bands_supported = vec![1, 3, 5, 7, 8, 20, 28, 32, 34, 38, 39, 40, 41, 42, 43];
+        let order = app.bands_in_draw_order();
+        assert_eq!(
+            order.len(),
+            app.bands_supported.len(),
+            "no band may be dropped"
+        );
+        assert_eq!(
+            &order[..4],
+            &[5, 8, 20, 28],
+            "low first, ascending inside the class"
+        );
+        let last_low = order.iter().position(|b| *b == 28).unwrap();
+        let first_mid = order.iter().position(|b| *b == 1).unwrap();
+        let first_high = order.iter().position(|b| *b == 7).unwrap();
+        assert!(last_low < first_mid && first_mid < first_high, "{order:?}");
+    }
+
+    #[test]
+    fn an_unknown_band_is_ordered_last_not_hidden() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.bands_supported = vec![99, 1];
+        assert_eq!(app.bands_in_draw_order(), vec![1, 99]);
+    }
+
+    #[test]
+    fn the_cursor_ticks_the_band_it_is_drawn_on() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.bands_supported = vec![1, 5];
+        app.band_cursor = 0;
+        app.band_toggle();
+        assert_eq!(
+            app.bands_selected,
+            vec![5],
+            "cursor 0 is the first drawn band, B5"
+        );
+    }
+
+    #[test]
+    fn bands_diff_names_the_change_in_both_directions() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        assert!(app.bands_unchanged(), "the tick starts equal to the device");
+        app.bands_selected.retain(|b| *b != 5);
+        let (added, dropped) = app.bands_diff();
+        assert!(added.is_empty());
+        assert_eq!(dropped, vec![5]);
+        app.bands_selected.push(34);
+        app.bands_selected.sort_unstable();
+        let (added, dropped) = app.bands_diff();
+        assert_eq!(added, vec![34]);
+        assert_eq!(dropped, vec![5]);
+    }
 
     #[test]
     fn chart_opts_follow_the_style_and_the_theme() {

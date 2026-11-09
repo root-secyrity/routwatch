@@ -153,6 +153,19 @@ pub fn validate(name: &str) -> Result<(), String> {
     }
 }
 
+/// The next palette, carrying the name that was asked for.
+///
+/// `auto` resolves the running desktop and falls back to `terminal` when there
+/// is nothing to read, so the resolved id can equal the one we came from and
+/// the cycle looks stuck. Forcing the requested name keeps the key honest: the
+/// settings store the choice, not the resolution.
+pub fn cycle(current: &str) -> Theme {
+    let next = next_name(current);
+    let mut theme = by_name(next);
+    theme.id = next.to_string();
+    theme
+}
+
 /// Next theme in the family cycle; unknown input starts the cycle over.
 pub fn next_name(current: &str) -> &'static str {
     let i = THEME_NAMES
@@ -651,6 +664,17 @@ mod tests {
         }
         assert_eq!(sky().bg, rgb(0x22, 0x4F, 0xBC));
         assert_eq!(paper().bg, rgb(0xF5, 0xF5, 0xF2));
+    }
+
+    #[test]
+    fn the_cycle_advances_even_when_auto_resolves_nothing() {
+        // `auto` with no desktop theme to read returns the terminal palette, so
+        // its resolved id used to equal the one we came from and `t` looked
+        // dead on exactly the machines that had nothing to follow.
+        let auto = cycle("terminal");
+        assert_eq!(auto.id, "auto", "the cycle must name what it asked for");
+        assert_eq!(cycle("auto").id, "ocean");
+        assert_eq!(cycle("paper").id, "dark", "the last one wraps home");
     }
 
     #[test]

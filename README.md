@@ -41,7 +41,7 @@ lists all eight files.
 
 | Route | Command |
 |---|---|
-| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.4.1/routwatch-0.4.1-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.4.1-1-x86_64.pkg.tar.zst` |
+| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.4.2/routwatch-0.4.2-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.4.2-1-x86_64.pkg.tar.zst` |
 | Static musl binary | [routwatch-x86_64-linux-musl](https://github.com/root-secyrity/routwatch/releases/latest/download/routwatch-x86_64-linux-musl) - a permanent link, links nothing, runs on Arch, Debian, Ubuntu, Fedora, Alpine, Raspberry Pi OS |
 | Any distro, from source | `git clone https://github.com/root-secyrity/routwatch.git && cd routwatch && sudo make install` (or `PREFIX=$HOME/.local`) |
 | Build the static binary | `./packaging/musl-build.sh` - needs docker, writes `dist/` |
@@ -168,7 +168,8 @@ The password ladder is `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-t
 | `Tab` / `Shift+Tab` | everywhere | next / previous section |
 | `v` `V` | everywhere | cycle view: full → gauges → lite → dense |
 | `l` `L` | everywhere | toggle lite, returning to the view you came from |
-| `g` `r` `p` | everywhere | graph style · refresh now · pause polling |
+| `g` `r` | everywhere | graph style · refresh now |
+| `P` | everywhere | pause / resume polling |
 | `,` or `s` | everywhere | settings overlay (theme, view, graph, refresh, budget); `w` saves |
 | `i` | everywhere | event feed: `j`/`k` select, `space` pause/resume, `Esc` or `i` closes |
 | `?` | everywhere | key help |
@@ -177,7 +178,8 @@ The password ladder is `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-t
 | `m` `o` `a` | Bands | network mode · NR option · apply (confirm with `y`) |
 | `d` `z` | Traffic/DNS | type DNS servers · back to DHCP |
 | `j` `k` `Enter` | DNS | choose a preset · apply (confirm with `y`) |
-| `t` | Network | ping a host from this machine |
+| `p` | everywhere | ping a host from this machine (the result shows on Network) |
+| `t` | everywhere | next colour theme (nine of them); `w` in settings saves it |
 | `s` `c` | Clients | sort (name/ip/band/time) · copy MAC |
 | `e` / `R` | SMS/Device | read extras (inbox, SIM, data switch) |
 | `x` `b` | Device | dump all endpoints to JSON · restart router (type `REBOOT`) |
@@ -199,7 +201,17 @@ is the last thing dropped.
 Select several bands (`space`), save the combination as a preset (`s`), and cycle
 the ready-made ones with `n`. Nothing is sent until `a` and `y`.
 
+The grid is grouped `low` / `mid` / `high` by frequency, so dropping every low
+band is visible before it costs you range; the band the radio is on is
+underlined, and the panel says when your tick already equals the device.
+
 ![routwatch bands](docs/screenshots/02-bands.png)
+
+A tall panel also names the link's own numbers (MHz, bandwidth, TM, PCI), the
+secondary DL carrier when one is up, the last apply with its verdict, and the NR
+band when the firmware reports one. When the tick set leaves out the band
+carrying the link, the panel says so before `a`, and `u` puts the previous mask
+back in the tick list without sending anything.
 
 Presets live in `~/.config/routwatch/config.toml` (`[[app.presets]]`). No
 `presets` key means the five built-ins; `presets = []` means you deleted them and
@@ -284,6 +296,11 @@ routwatch preview --tab bands --size 120x30 --ansi
   `Ascending` (it did not before). A firmware that still answers `100005` is
   reporting a format error; the tab says the request was rejected, not that SMS
   is blocked.
+- **Band writes can answer `100006` after they land**: on H122-373 the radio
+  accepts the payload and the POST still returns an undefined code. The verdict
+  comes from reading `net/net-mode` back, never from the code; routwatch waits
+  one grace period and then says what the device reports. A `100006` with no
+  change behind it is reported as a failure.
 - **5G per-field metrics** (`nrrsrp`, `nrsinr`, `nrdlmcs`) are empty on some
   firmware even with ENDC active. Only `SignalIconNr` (0–5 bars) and the ENDC flag
   are reliable there; the UI switches to a bars panel instead of faking dBm.
@@ -326,7 +343,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 255 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
+cargo test                 # 291 unit + 11 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```

@@ -209,6 +209,27 @@ fn write_cause(e: &ApiError) -> String {
     }
 }
 
+/// The one code this firmware answers next to a band write that did land.
+///
+/// Huawei's public WebAPI list defines 100002 (busy), 100003 (unsupported) and
+/// 100005 (format), and leaves 100006 undefined; on the H122-373 it arrives on
+/// `POST net/net-mode` after the radio accepted the payload. So it is a note,
+/// never a verdict: only the read-back decides. Three device runs in this repo's
+/// log agree, and every one of them applied.
+const SWITCH_WARNING: u32 = 100006;
+
+/// How long the radio gets, after a 100006, before the read-back is believed.
+/// A band write restarts the modem; the new mask is not always visible on the
+/// very next GET.
+const SWITCH_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+fn switch_warning(e: &ApiError) -> Option<u32> {
+    match e {
+        ApiError::Router(code) if *code == SWITCH_WARNING => Some(*code),
+        _ => None,
+    }
+}
+
 /// The no-op test: the device is only "already there" when the mode, the mask
 /// and the NR option all match. Comparing the mask alone once treated a
 /// 4G→auto switch as a no-op and silently sent nothing.
@@ -275,7 +296,21 @@ pub fn apply_bands(
 
     // Guard 2: the device is the truth. Never re-send: read back and compare
     // mode, both masks and the NR option with what was asked for.
-    let after = read_mode(client);
+    let mut after = read_mode(client);
+
+    // One extra read, and only for this case: the router said 100006 and the
+    // first read-back still shows the old state. The radio is mid-restart, so
+    // give it the grace period instead of calling a landing switch a failure.
+    // The write itself is never repeated.
+    let mismatched = matches!(&after, Ok(cur) if !matches_after(cur, payload));
+    if mismatched {
+        if let Err(e) = &sent {
+            if switch_warning(e).is_some() {
+                std::thread::sleep(SWITCH_GRACE);
+                after = read_mode(client);
+            }
+        }
+    }
 
     if let Ok(current) = &after {
         if matches_after(current, payload) {
@@ -294,7 +329,12 @@ pub fn apply_bands(
                             current.network_mode.clone().unwrap_or_else(|| "-".into()),
                             bands::to_hex(target)
                         ),
-                        Err(e) => format!("{}; read-back confirms the change", write_cause(e)),
+                        Err(e) => match switch_warning(e) {
+                            Some(code) => format!(
+                                "router answered {code} while switching; read-back confirms the change"
+                            ),
+                            None => format!("{}; read-back confirms the change", write_cause(e)),
+                        },
                     }
                 ),
             };
@@ -303,17 +343,25 @@ pub fn apply_bands(
 
     let err = match (&sent, &after) {
         (Err(e), Err(ve)) => format!("{}; read-back failed too: {ve}", write_cause(e)),
-        (Err(e), Ok(current)) => format!(
-            "{}; device still reports mode {} mask 0x{}",
-            write_cause(e),
-            current.network_mode.clone().unwrap_or_else(|| "-".into()),
-            current
-                .lte_band
-                .as_deref()
-                .and_then(bands::from_hex)
-                .map(bands::to_hex)
-                .unwrap_or_else(|| "-".into())
-        ),
+        (Err(e), Ok(current)) => {
+            let kept = format!(
+                "device still reports mode {} mask 0x{}",
+                current.network_mode.clone().unwrap_or_else(|| "-".into()),
+                current
+                    .lte_band
+                    .as_deref()
+                    .and_then(bands::from_hex)
+                    .map(bands::to_hex)
+                    .unwrap_or_else(|| "-".into())
+            );
+            match switch_warning(e) {
+                Some(code) => format!(
+                    "router answered {code} and the change did not land within {}s: {kept}",
+                    SWITCH_GRACE.as_secs_f32()
+                ),
+                None => format!("{}; {kept}", write_cause(e)),
+            }
+        }
         (Ok(_), Ok(current)) => format!(
             "mismatch after write: wanted mode {} mask 0x{}, device reports mode {} mask 0x{}",
             payload.network_mode,
@@ -654,6 +702,77 @@ mod tests {
             "{}",
             write_cause(&refused)
         );
+    }
+
+    /// The case from the log: `POST net/net-mode` answers 100006 and the radio
+    /// applied the payload anyway. The verdict is success and the message must
+    /// not read like an error, because nothing is wrong.
+    #[test]
+    fn a_switch_that_answers_100006_and_lands_is_a_success() {
+        for (mode, bands_sel, option) in [
+            ("08", vec![1, 3, 5, 8, 20, 28], Some("0")),
+            ("00", vec![1, 3, 5, 8, 20, 28], None),
+            ("03", vec![1, 3, 5, 8, 20, 28], None),
+        ] {
+            let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::SwitchWarns);
+            let mut c = HuaweiClient::new(mock.addr(), 2000);
+            c.login("admin", "demo").expect("mock login");
+            let payload = bands::resolve(mode, &bands_sel, None, Some("3FFFFFFF"), option);
+            let state = apply_bands(&mut c, &payload, intent(), false, &mut |_| {});
+            match state {
+                WriteState::Success { note, .. } => {
+                    assert!(note.contains("read-back confirms"), "mode {mode}: {note}");
+                    assert!(
+                        !note.contains("refused"),
+                        "mode {mode} reads as a refusal: {note}"
+                    );
+                    assert!(
+                        !note.contains("unknown router error"),
+                        "mode {mode} leaks the raw error: {note}"
+                    );
+                }
+                other => panic!("mode {mode} landed, so this is a success: {other:?}"),
+            }
+        }
+    }
+
+    /// Same code, but the new mask takes a moment to appear. The extra read
+    /// inside the grace period turns this from a false failure into a success,
+    /// and the write itself is still never repeated.
+    #[test]
+    fn a_late_switch_is_not_a_failure() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::SwitchWarnsLate);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let payload = bands::resolve("08", &[1, 3, 5, 8, 20, 28], None, None, Some("0"));
+        let state = apply_bands(&mut c, &payload, intent(), false, &mut |_| {});
+        match state {
+            WriteState::Success { note, .. } => {
+                assert!(note.contains("read-back confirms"), "{note}")
+            }
+            other => panic!("the device caught up, so this is a success: {other:?}"),
+        }
+    }
+
+    /// The same code with no change behind it is still a failure, and it has to
+    /// say what the device kept. Read-back is the truth in both directions.
+    #[test]
+    fn a_100006_that_never_lands_is_a_failure() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::SwitchRefuses);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let payload = bands::resolve("08", &[1, 3, 5, 8, 20, 28], None, None, Some("0"));
+        let state = apply_bands(&mut c, &payload, intent(), false, &mut |_| {});
+        match state {
+            WriteState::Failed { err, .. } => {
+                assert!(err.contains("100006"), "the code must be named: {err}");
+                assert!(
+                    err.contains("device still reports"),
+                    "the message must say what the device kept: {err}"
+                );
+            }
+            other => panic!("nothing landed, so this must fail: {other:?}"),
+        }
     }
 
     fn dns_intent() -> WriteIntent {
