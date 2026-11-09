@@ -646,6 +646,70 @@ fn connection_lines(app: &App) -> Vec<Line<'static>> {
 
 // ------------------------------------------------------------------- bands
 
+/// One Bands cell: six columns, so every row of the grid is a matrix whatever
+/// the band number's width. The brackets mean "ticked", exactly as before.
+fn band_cell(band: u32, app: &App, serving: &str) -> (String, Style) {
+    let t = &app.theme;
+    let ticked = app.bands_selected.contains(&(band as u8));
+    let label = if ticked {
+        format!("[B{band}]")
+    } else {
+        format!("B{band}")
+    };
+    // 6, not 5: `[B20]` fills five columns, so the sixth is the gap that keeps
+    // `[B20]B28` from happening. This is what the alignment test measures.
+    let text = format!("{label:<6}");
+    let mut style = if ticked {
+        Style::default().fg(t.ok).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(t.dim)
+    };
+    if format!("B{band}") == serving {
+        style = style.add_modifier(Modifier::UNDERLINED);
+        if !ticked {
+            style = style.fg(t.accent);
+        }
+    }
+    (text, style)
+}
+
+/// `B1+B3+B20`
+fn plus_list(bands: &[u8]) -> String {
+    bands
+        .iter()
+        .map(|b| format!("B{b}"))
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// A class the device runs today that this tick drops entirely, named with its
+/// bands. A class the device already had empty is not news, so it stays quiet.
+fn empty_class_warning(app: &App) -> Option<String> {
+    let on_device = app.bands_on_device();
+    for (cls, members) in app.bands_by_class() {
+        if cls == crate::router::bands::BandClass::Other {
+            continue;
+        }
+        let device_uses_it = members.iter().any(|b| on_device.contains(&(*b as u8)));
+        let tick_drops_it = members
+            .iter()
+            .all(|b| !app.bands_selected.contains(&(*b as u8)));
+        if device_uses_it && tick_drops_it {
+            let names = members
+                .iter()
+                .map(|b| format!("B{b}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Some(format!(
+                "no {} band ticked: none of {} is in the merge",
+                cls.label(),
+                names
+            ));
+        }
+    }
+    None
+}
+
 pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let Some(s) = &app.snap else {
@@ -656,138 +720,228 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
 
+    const LBL: usize = 9; // label column
+    const CLS: usize = 6; // class column, so `other` never touches the first cell
+    const IND: usize = LBL + CLS; // 15: where the band cells start
+    const CELL: usize = 6; // one cell, gap included
+
     let mode_label = match app.band_mode.as_str() {
         "00" => "Auto",
         "03" => "4G only",
         "08" => "5G NR",
         other => other,
     };
-    let option_label = match app.band_option.as_str() {
-        "0" => "NSA",
-        "1" => "SA",
-        _ => "SA+NSA",
+    let option_label = if app.band_mode == "08" {
+        match app.band_option.as_str() {
+            "0" => "NSA",
+            "1" => "SA",
+            _ => "SA+NSA",
+        }
+    } else {
+        "-"
     };
-    let current: Vec<String> = s
-        .net_mode
-        .lte_band
-        .as_deref()
-        .and_then(crate::router::bands::from_hex)
-        .map(crate::router::bands::bands_from_mask)
-        .unwrap_or_default()
+    let serving_lte = s.signal.band.clone().unwrap_or_else(|| "-".into());
+    let serving_text = match s.signal.nr.as_ref().and_then(|n| n.band.clone()) {
+        Some(nr) => format!("{serving_lte} LTE + {nr} NR"),
+        None => format!("{serving_lte} LTE"),
+    };
+    let width = area.width.saturating_sub(2) as usize;
+    let compact = width < 80; // `now` row: shrink the mode column
+    let narrow = width < 70; // action row: drop the explanation
+    let wide = width >= 95; // keys row: the full list of keys
+    let order = app.bands_in_draw_order();
+    let cursor_band = order.get(app.band_cursor).copied();
+    let all_bands = s.all_bands_mask.clone().unwrap_or_else(|| "unknown".into());
+
+    let mut lines = Vec::new();
+
+    // 1. what the link is doing right now.
+    // `pad` cuts at the width it is given; 28 is wider than the longest label
+    // ("Auto · nr SA+NSA" is 16), so a firmware code we do not know still shows.
+    // Below 80 columns the mode column shrinks, otherwise `serving` wraps and
+    // leaves "NR" alone on a line of its own.
+    lines.push(Line::from(vec![
+        Span::styled(pad("now", LBL), Style::default().fg(t.dim)),
+        Span::styled(
+            pad(
+                &format!("{mode_label} · nr {option_label}"),
+                if compact { 18 } else { 28 },
+            ),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(pad("serving", 8), Style::default().fg(t.dim)),
+        Span::styled(serving_text, Style::default().fg(t.fg)),
+    ]));
+    let on_device: Vec<String> = app
+        .bands_on_device()
         .iter()
         .map(|b| format!("B{b}"))
         .collect();
+    lines.push(Line::from(vec![
+        Span::styled(pad("on", LBL), Style::default().fg(t.dim)),
+        Span::styled(
+            if on_device.is_empty() {
+                "unknown".to_string()
+            } else {
+                on_device.join(" ")
+            },
+            Style::default().fg(t.fg),
+        ),
+        Span::styled("   device now", Style::default().fg(t.dim)),
+    ]));
+    // `all_bands_mask` is what the firmware advertises, not what it runs. Say
+    // exactly that, and drop the line on a short terminal where the tick row
+    // matters more than the mask (`snapshot --json` still carries it).
+    if area.height >= 18 {
+        lines.push(Line::from(vec![
+            Span::styled(pad("", LBL), Style::default().fg(t.dim)),
+            Span::styled(
+                format!("advertised {all_bands} · firmware value"),
+                Style::default().fg(t.dim),
+            ),
+        ]));
+    }
+    lines.push(Line::from(""));
 
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(pad("mode", 9), Style::default().fg(t.dim)),
-            Span::styled(
-                pad(mode_label, 12),
-                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("m cycles auto → 4g → 5g", Style::default().fg(t.dim)),
-        ]),
-        Line::from(vec![
-            Span::styled(pad("nr", 9), Style::default().fg(t.dim)),
-            Span::styled(
-                pad(
-                    if app.band_mode == "08" {
-                        option_label
-                    } else {
-                        "-"
-                    },
-                    12,
+    // 2. the grid, grouped so a class can be judged as a class.
+    let per_row = (width.saturating_sub(IND) / CELL).max(1);
+    for (cls, members) in app.bands_by_class() {
+        for (row_no, chunk) in members.chunks(per_row).enumerate() {
+            let mut spans = vec![
+                Span::styled(
+                    pad(if row_no == 0 { "bands" } else { "" }, LBL),
+                    Style::default().fg(t.dim),
                 ),
-                Style::default().fg(t.fg),
-            ),
-            Span::styled(
-                if app.band_mode == "08" {
-                    "o cycles NSA → SA → SA+NSA"
+                Span::styled(pad(cls.label(), IND - LBL), Style::default().fg(t.dim)),
+            ];
+            for band in chunk {
+                let (text, style) = if Some(*band) == cursor_band {
+                    (
+                        band_cell(*band, app, &serving_lte).0,
+                        Style::default()
+                            .fg(active_text_colour(t))
+                            .bg(t.accent)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else {
-                    "only used in 5G mode"
-                },
-                Style::default().fg(t.dim),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(pad("device", 9), Style::default().fg(t.dim)),
-            Span::styled(
-                format!(
-                    "0x{} → {}",
-                    s.net_mode.lte_band.clone().unwrap_or_else(|| "-".into()),
-                    current.join(", ")
-                ),
-                Style::default().fg(t.fg),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(pad("support", 9), Style::default().fg(t.dim)),
-            Span::styled(
-                format!(
-                    "{} bands · all-bands mask {}",
-                    s.supported_bands.len(),
-                    s.all_bands_mask.clone().unwrap_or_else(|| "unknown".into())
-                ),
-                Style::default().fg(t.dim),
-            ),
-        ]),
-        Line::from(""),
-    ];
-
-    // Band grid: cursor is reverse video, selection is bracketed + accent.
-    let width = area.width.saturating_sub(4) as usize;
-    let mut row: Vec<Span> = Vec::new();
-    let mut row_width = 0usize;
-    for (i, band) in s.supported_bands.iter().enumerate() {
-        let label = format!("B{band}");
-        let selected = app.bands_selected.contains(&(*band as u8));
-        let cursor = i == app.band_cursor;
-        let text = if selected {
-            format!("[{label}]")
-        } else {
-            format!(" {label} ")
-        };
-        let w = text.chars().count() + 1;
-        if row_width + w > width && !row.is_empty() {
-            lines.push(Line::from(std::mem::take(&mut row)));
-            row_width = 0;
+                    band_cell(*band, app, &serving_lte)
+                };
+                spans.push(Span::styled(text, style));
+            }
+            lines.push(Line::from(spans));
         }
-        let style = if cursor {
-            Style::default()
-                .fg(active_text_colour(t))
-                .bg(t.accent)
-                .add_modifier(Modifier::BOLD)
-        } else if selected {
-            Style::default().fg(t.ok).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(t.dim)
-        };
-        row.push(Span::styled(text, style));
-        row.push(Span::raw(" "));
-        row_width += w;
-    }
-    if !row.is_empty() {
-        lines.push(Line::from(row));
     }
 
-    // Merge presets: ready-made combos and whatever the user saved. The cursor
-    // is reverse video; a preset this device cannot do is marked, not hidden.
+    // 3. the tick versus the device: one row that reads the change. Three
+    // shapes, widest first, so the row never wraps: the band list and the mask
+    // drop before the sentence does, because the grid above already shows both
+    // and the sentence is the thing the user came for.
+    let (added, dropped) = app.bands_diff();
+    let counted = format!("{} of {}", app.bands_selected.len(), order.len());
+    let listed = format!("{counted} · {}", plus_list(&app.bands_selected));
+    let masked = format!("→ 0x{}", app.band_mask_hex());
+    let (note, note_style) = if added.is_empty() && dropped.is_empty() {
+        (
+            "= device, nothing to apply".to_string(),
+            Style::default().fg(t.dim),
+        )
+    } else {
+        let n = added.len() + dropped.len();
+        // Every dropped band carries its own minus: "-B5+B8" reads as an
+        // addition of B8, which is the opposite of what happened.
+        let mut parts = Vec::new();
+        if !added.is_empty() {
+            parts.push(format!("+{}", plus_list(&added)));
+        }
+        if !dropped.is_empty() {
+            parts.push(
+                dropped
+                    .iter()
+                    .map(|b| format!("-B{b}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        (
+            format!(
+                "{} · {n} {} to apply",
+                parts.join(" "),
+                if n == 1 { "change" } else { "changes" }
+            ),
+            Style::default().fg(t.warn),
+        )
+    };
+    let shape = |list: bool, mask: bool| -> String {
+        let mut s = if list {
+            listed.clone()
+        } else {
+            counted.clone()
+        };
+        if mask {
+            s.push_str("  ");
+            s.push_str(&masked);
+        }
+        s.push_str("  ");
+        s.push_str(&note);
+        s
+    };
+    let fits = |list: bool, mask: bool| LBL + shape(list, mask).chars().count() <= width;
+    let (list, mask) = if fits(true, true) {
+        (true, true)
+    } else if fits(true, false) {
+        (true, false)
+    } else {
+        (false, false)
+    };
+    let mut tick_spans = vec![Span::styled(pad("ticked", LBL), Style::default().fg(t.dim))];
+    tick_spans.push(Span::styled(
+        if list { listed } else { counted },
+        Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+    ));
+    if mask {
+        tick_spans.push(Span::styled(
+            format!("  {masked}"),
+            Style::default().fg(t.fg),
+        ));
+    }
+    // Last resort: the note itself is cut rather than wrapped, so the panel
+    // keeps its shape even on a list of forty bands.
+    let room = width.saturating_sub(LBL + if mask { masked.chars().count() + 2 } else { 0 } + 2);
+    tick_spans.push(Span::styled(
+        format!("  {}", truncate(&note, room)),
+        note_style,
+    ));
+    lines.push(Line::from(tick_spans));
+
+    // A whole class going dark is the mistake worth naming out loud.
+    if let Some(warning) = empty_class_warning(app) {
+        lines.push(Line::from(vec![
+            Span::styled(pad("warn", LBL), Style::default().fg(t.warn)),
+            Span::styled(warning, Style::default().fg(t.warn)),
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    // 4. presets, numbered so `n` says where it is.
     if !app.band_presets.is_empty() {
-        let mut preset_row: Vec<Span> =
-            vec![Span::styled(pad("presets", 9), Style::default().fg(t.dim))];
-        let mut preset_width = 8usize;
+        let mut spans = vec![Span::styled(
+            pad("presets", LBL),
+            Style::default().fg(t.dim),
+        )];
+        let mut used = LBL;
         for (i, preset) in app.band_presets.iter().enumerate() {
             let missing = app.preset_missing(i);
-            let text = if missing.is_empty() {
-                format!(" {} ", preset.name)
-            } else {
-                format!(" {}! ", preset.name)
-            };
-            let w = text.chars().count() + 1;
-            if preset_width + w > width && preset_row.len() > 1 {
-                lines.push(Line::from(std::mem::take(&mut preset_row)));
-                preset_row.push(Span::styled(pad("", 9), Style::default().fg(t.dim)));
-                preset_width = 8;
+            let text = format!(
+                "{}:{}{}",
+                i + 1,
+                preset.name,
+                if missing.is_empty() { "" } else { "!" }
+            );
+            let w = text.chars().count() + 2;
+            if used + w > width && spans.len() > 1 {
+                lines.push(Line::from(std::mem::take(&mut spans)));
+                spans.push(Span::styled(pad("", LBL), Style::default().fg(t.dim)));
+                used = LBL;
             }
             let style = if app.preset_cursor == Some(i) {
                 Style::default()
@@ -797,32 +951,18 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
             } else if missing.is_empty() {
                 Style::default().fg(t.accent)
             } else {
-                Style::default().fg(t.dim)
+                Style::default().fg(t.warn)
             };
-            preset_row.push(Span::styled(text, style));
-            preset_row.push(Span::raw(" "));
-            preset_width += w;
+            spans.push(Span::styled(text, style));
+            spans.push(Span::raw("  "));
+            used += w;
         }
-        lines.push(Line::from(preset_row));
+        lines.push(Line::from(spans));
     }
-
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(pad("selected", 9), Style::default().fg(t.dim)),
-        Span::styled(
-            format!(
-                "{} bands · {} → mask 0x{}",
-                app.bands_selected.len(),
-                app.band_merge_label(),
-                app.band_mask_hex()
-            ),
-            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    lines.push(Line::from(Span::styled(
-        "! = band this device does not list · applies drop the link 10-30s",
-        Style::default().fg(t.dim),
-    )));
+
+    // 5. the action, its cost and its outcome, on one always-visible row: the
+    // offline warning must survive 60x20, where the legend is dropped.
     let write_style = match &app.write {
         crate::write::WriteState::Failed { .. } => Style::default().fg(t.danger),
         crate::write::WriteState::Success { .. } => Style::default().fg(t.ok),
@@ -830,9 +970,44 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
         _ => Style::default().fg(t.warn),
     };
     lines.push(Line::from(vec![
-        Span::styled(pad("write", 9), Style::default().fg(t.dim)),
+        Span::styled(pad("action", LBL), Style::default().fg(t.dim)),
+        Span::styled(
+            if app.bands_unchanged() {
+                if narrow {
+                    "a re-apply"
+                } else {
+                    "a re-apply, forces a re-attach"
+                }
+            } else if narrow {
+                "a apply (y)"
+            } else {
+                "a apply (y confirms)"
+            },
+            Style::default().fg(t.fg),
+        ),
+        Span::styled(" · 10-30 s offline", Style::default().fg(t.warn)),
+        Span::styled("   write ", Style::default().fg(t.dim)),
         Span::styled(app.write.label(), write_style),
     ]));
+
+    // The panel carries its own keys, `a apply` included: the status bar clips
+    // them below 100 columns and shows nothing at all at 60.
+    if area.height >= 20 {
+        lines.push(Line::from(Span::styled(
+            if wide {
+                "keys  space tick · j/k move · a apply · n preset · s save · x delete · m mode · o nr · e report"
+            } else {
+                "keys  space tick · j/k · a apply · n preset · s save · x del · m mode · o nr"
+            },
+            Style::default().fg(t.dim),
+        )));
+    }
+    if area.height >= 22 {
+        lines.push(Line::from(Span::styled(
+            "! = band this device does not list, preset only",
+            Style::default().fg(t.dim),
+        )));
+    }
 
     f.render_widget(
         Paragraph::new(lines)

@@ -559,7 +559,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Fit a `·`-separated hint list into `room` columns, cutting between entries
-/// so it never ends mid-word (`… · o opt…` reads as a typo).
+/// so it never ends mid-word (`… · o nr…` reads as a typo).
 fn hint_fit(s: &str, room: usize) -> String {
     if s.chars().count() <= room {
         return s.to_string();
@@ -1259,8 +1259,45 @@ mod tests {
             text.contains("[B1]"),
             "selected band must be bracketed\n{text}"
         );
-        assert!(text.contains("mask 0x15"), "mask preview missing\n{text}");
+        assert!(text.contains("→ 0x15"), "mask preview missing\n{text}");
         assert!(text.contains("4G only") || text.contains("Auto"));
+    }
+
+    #[test]
+    fn bands_grid_columns_line_up_across_classes() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_supported = vec![1, 3, 5, 8, 20, 28, 32, 34, 39, 41];
+        app.bands_selected = vec![1, 20];
+        let text = render_to_string(&app, 100, 24);
+        // Structural filter, never a word search: a grid row is the only line
+        // whose class column (chars 10..16) holds one of the four padded labels.
+        // A `warn` line mentions "high" too and must never enter this check.
+        let grid: Vec<String> = text
+            .lines()
+            .filter(|l| {
+                let chars: Vec<char> = l.chars().collect();
+                if chars.len() <= 16 {
+                    return false;
+                }
+                let cls: String = chars[10..16].iter().collect();
+                ["low   ", "mid   ", "high  ", "other "].contains(&cls.as_str())
+            })
+            .map(|l| l.to_string())
+            .collect();
+        assert!(grid.len() >= 3, "three classes, three rows\n{text}");
+        for line in &grid {
+            let chars: Vec<char> = line.chars().collect();
+            for (i, ch) in chars.iter().enumerate() {
+                let starts_cell = *ch == '[' || (*ch == 'B' && i > 0 && chars[i - 1] != '[');
+                if starts_cell {
+                    assert!(
+                        i >= 16 && (i - 16) % 6 == 0,
+                        "band token at char {i} is off the 6-column grid: {line}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1740,8 +1777,8 @@ mod tests {
         assert!(text.contains("presets"), "preset row missing\n{text}");
         assert!(text.contains("B1+B3"), "ready-made merge missing\n{text}");
         assert!(
-            text.contains("B1 + B3"),
-            "the ticked merge must be spelled out\n{text}"
+            text.contains("= device, nothing to apply"),
+            "the ticked row must spell the merge and its diff\n{text}"
         );
         assert!(
             text.contains("s save"),
