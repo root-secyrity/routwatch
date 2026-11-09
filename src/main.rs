@@ -1971,6 +1971,39 @@ mod key_tests {
     }
 
     #[test]
+    fn the_undo_key_answers_over_a_settled_verdict() {
+        use routwatch::write::WriteState;
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.select_tab(Tab::Bands);
+        app.bands_supported = vec![1, 3, 5];
+        app.bands_selected = vec![1];
+        app.undo_mask = Some(vec![1, 3]);
+        app.settle_write(WriteState::Success {
+            intent: app.band_intent(),
+            note: "verified".into(),
+        });
+        assert!(matches!(app.write, WriteState::Success { .. }));
+
+        handle_key(&mut app, key(KeyCode::Char('u')), &tx);
+        assert_eq!(
+            app.bands_selected,
+            vec![1, 3],
+            "u must reach undo even while the verdict banner is up"
+        );
+        assert!(
+            matches!(app.write, WriteState::Idle),
+            "the banner yields after the undo key"
+        );
+    }
+
+    #[test]
     fn the_refresh_keys_work_without_the_settings_overlay() {
         use super::WorkerCmd;
         let (tx, rx) = std::sync::mpsc::channel();

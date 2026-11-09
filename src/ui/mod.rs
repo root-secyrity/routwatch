@@ -1931,6 +1931,209 @@ mod tests {
     }
 
     #[test]
+    fn bands_tab_warns_when_the_tick_drops_the_serving_band() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let calm = render_to_string(&app, 100, 30);
+        assert!(
+            !calm.contains("not in the tick set"),
+            "no warning while B1 is ticked\n{calm}"
+        );
+        app.bands_selected.retain(|b| *b != 1);
+        let text = render_to_string(&app, 100, 30);
+        assert!(
+            text.contains("B1 carries the link"),
+            "the drop must be named before it costs the link\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_gap_warning_needs_a_real_selection_to_compare() {
+        // Before the first snapshot lands, the tick list is empty and the device
+        // mask is unknown. Warning there would fire on every start-up.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected.clear();
+        let empty = render_to_string(&app, 100, 30);
+        assert!(
+            !empty.contains("not in the tick set"),
+            "an empty tick list is not a decision\n{empty}"
+        );
+        if let Some(snap) = app.snap.as_mut() {
+            snap.net_mode.lte_band = None;
+        }
+        let unknown = render_to_string(&app, 100, 30);
+        assert!(
+            !unknown.contains("not in the tick set"),
+            "an unknown device mask cannot be compared\n{unknown}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_shows_the_undo_line_only_after_an_apply() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let before = render_to_string(&app, 100, 30);
+        assert!(
+            !before.contains("back to 0x"),
+            "nothing to undo yet\n{before}"
+        );
+
+        app.undo_mask = Some(vec![1, 3, 5, 8, 20, 28, 32]);
+        let after = render_to_string(&app, 100, 30);
+        assert!(after.contains("undo"), "{after}");
+        assert!(after.contains("· u"), "the key must be named\n{after}");
+    }
+
+    #[test]
+    fn bands_tab_names_the_link_details_from_the_snapshot() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("link"), "no link row\n{text}");
+        assert!(text.contains("2120 MHz"), "dl_mhz missing\n{text}");
+        assert!(text.contains("20MHz"), "bandwidth missing\n{text}");
+        assert!(text.contains("TM[4]"), "transmission mode missing\n{text}");
+        assert!(text.contains("PCI 481"), "pci missing\n{text}");
+        assert!(
+            text.contains("EARFCN"),
+            "earfcn missing on a wide panel\n{text}"
+        );
+
+        // Narrower panel: EARFCN is the first thing to go, and the row still fits.
+        let narrow = render_to_string(&app, 80, 24);
+        assert!(
+            narrow.contains("PCI 481"),
+            "the row must survive at 80\n{narrow}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_names_the_secondary_carrier() {
+        // fixtures/sample-snapshot.json carries dl_mcs_secondary = 9.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("secondary DL carrier"), "{text}");
+        assert!(text.contains("MCS 9"), "{text}");
+
+        // No second carrier reported: the row must not invent one.
+        let mut quiet = fixture_app();
+        if let Some(snap) = quiet.snap.as_mut() {
+            snap.signal.dl_mcs_secondary = None;
+        }
+        quiet.select_tab(Tab::Bands);
+        let quiet_text = render_to_string(&quiet, 100, 30);
+        assert!(!quiet_text.contains("secondary DL carrier"), "{quiet_text}");
+    }
+
+    #[test]
+    fn bands_tab_names_the_last_apply_and_the_nr_band() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.last_apply = Some(crate::app::LastApply {
+            bands: vec![1, 3, 20],
+            mode: "03".into(),
+            verdict: "verified · router 100006".into(),
+            at: std::time::Instant::now(),
+        });
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("last"), "{text}");
+        assert!(
+            text.contains("0x80005"),
+            "the applied mask must be named\n{text}"
+        );
+        assert!(
+            text.contains("4G only"),
+            "the mode is spelled, not a raw code\n{text}"
+        );
+        assert!(text.contains("router 100006"), "{text}");
+
+        // NR comes only from the 5g fixture.
+        let snap: crate::model::Snapshot =
+            serde_json::from_str(include_str!("../../fixtures/sample-snapshot-5g.json"))
+                .expect("5g");
+        let mut app5 = fixture_app();
+        app5.on_snapshot(snap, 0);
+        app5.select_tab(Tab::Bands);
+        let text5 = render_to_string(&app5, 100, 30);
+        assert!(text5.contains("N41 serving"), "{text5}");
+
+        // A firmware with no NR band: say so instead of inventing a list.
+        let mut plain = fixture_app();
+        plain.select_tab(Tab::Bands);
+        let quiet = render_to_string(&plain, 100, 30);
+        assert!(quiet.contains("no NR band reported"), "{quiet}");
+    }
+
+    #[test]
+    fn the_fill_rows_stay_off_a_short_panel() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.undo_mask = Some(vec![1, 3]);
+        app.last_apply = Some(crate::app::LastApply {
+            bands: vec![1, 3],
+            mode: "03".into(),
+            verdict: "verified".into(),
+            at: std::time::Instant::now(),
+        });
+        // 60x20: body 17 rows.
+        let tiny = render_to_string(&app, 60, 20);
+        for gone in [
+            "link  ",
+            "secondary DL carrier",
+            "no NR band reported",
+            "back to 0x",
+            "last  ",
+        ] {
+            assert!(
+                !tiny.contains(gone),
+                "{gone:?} must not crowd 60x20\n{tiny}"
+            );
+        }
+        // 80x24: body 21 rows, so `link` (20) shows and `ca` (22) does not.
+        let mid = render_to_string(&app, 80, 24);
+        assert!(mid.contains("link"), "link shows at 80x24\n{mid}");
+        assert!(
+            !mid.contains("secondary DL carrier"),
+            "ca needs 22 body rows\n{mid}"
+        );
+        assert!(
+            !mid.contains("no NR band reported"),
+            "nr needs 24 body rows\n{mid}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_panel_truncates_the_long_rows_instead_of_wrapping() {
+        // 60x30: narrow but tall, the only shape where the long rows survive and
+        // the width is the binding constraint.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected.retain(|b| *b != 1);
+        app.last_apply = Some(crate::app::LastApply {
+            bands: vec![1, 3, 20],
+            mode: "03".into(),
+            verdict: "verified · router 100006".into(),
+            at: std::time::Instant::now(),
+        });
+        let text = render_to_string(&app, 60, 30);
+        assert!(text.contains("B1 carries the link"), "{text}");
+        let last_line = text
+            .lines()
+            .find(|l| l.contains("last"))
+            .expect("the last row is on screen");
+        assert!(
+            last_line.contains('…'),
+            "a long row is cut, not wrapped: {last_line}"
+        );
+        assert!(
+            text.contains("10-30 s offline"),
+            "the action row survives\n{text}"
+        );
+    }
+
+    #[test]
     fn status_line_carries_the_current_tabs_own_keys() {
         let mut app = fixture_app();
         let cases = [
