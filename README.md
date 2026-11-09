@@ -205,6 +205,12 @@ underlined, and the panel says when your tick already equals the device.
 
 ![routwatch bands](docs/screenshots/02-bands.png)
 
+A tall panel also names the link's own numbers (MHz, bandwidth, TM, PCI), the
+secondary DL carrier when one is up, the last apply with its verdict, and the NR
+band when the firmware reports one. When the tick set leaves out the band
+carrying the link, the panel says so before `a`, and `u` puts the previous mask
+back in the tick list without sending anything.
+
 Presets live in `~/.config/routwatch/config.toml` (`[[app.presets]]`). No
 `presets` key means the five built-ins; `presets = []` means you deleted them and
 mean it.
@@ -335,7 +341,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 271 unit + 7 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
+cargo test                 # 286 unit + 8 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```
