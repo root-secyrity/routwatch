@@ -710,6 +710,17 @@ fn empty_class_warning(app: &App) -> Option<String> {
     None
 }
 
+/// The firmware's mode code as the panel spells it, in one place so `now` and
+/// `last` cannot drift apart.
+fn mode_label(code: &str) -> &str {
+    match code {
+        "00" => "Auto",
+        "03" => "4G only",
+        "08" => "5G NR",
+        other => other,
+    }
+}
+
 pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let Some(s) = &app.snap else {
@@ -725,12 +736,7 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
     const IND: usize = LBL + CLS; // 15: where the band cells start
     const CELL: usize = 6; // one cell, gap included
 
-    let mode_label = match app.band_mode.as_str() {
-        "00" => "Auto",
-        "03" => "4G only",
-        "08" => "5G NR",
-        other => other,
-    };
+    let mode_text = mode_label(&app.band_mode);
     let option_label = if app.band_mode == "08" {
         match app.band_option.as_str() {
             "0" => "NSA",
@@ -748,7 +754,6 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
     let width = area.width.saturating_sub(2) as usize;
     let compact = width < 80; // `now` row: shrink the mode column
     let narrow = width < 70; // action row: drop the explanation
-    let wide = width >= 95; // keys row: the full list of keys
     let order = app.bands_in_draw_order();
     let cursor_band = order.get(app.band_cursor).copied();
     let all_bands = s.all_bands_mask.clone().unwrap_or_else(|| "unknown".into());
@@ -764,7 +769,7 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(pad("now", LBL), Style::default().fg(t.dim)),
         Span::styled(
             pad(
-                &format!("{mode_label} · nr {option_label}"),
+                &format!("{mode_text} · nr {option_label}"),
                 if compact { 18 } else { 28 },
             ),
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
@@ -913,6 +918,29 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
     ));
     lines.push(Line::from(tick_spans));
 
+    // A tick set that drops the band carrying the link is the fact worth naming,
+    // so it sits right under the verdict. The text claims no outcome: on 4G the
+    // radio may re-attach elsewhere, and saying "drops the link" would be a
+    // promise the firmware never made.
+    let device_mask_known = s.net_mode.lte_band.is_some();
+    if device_mask_known && !app.bands_selected.is_empty() && serving_lte != "-" {
+        if let Some(band) = serving_lte
+            .strip_prefix('B')
+            .and_then(|n| n.parse::<u8>().ok())
+        {
+            if !app.bands_selected.contains(&band) {
+                let msg = format!("B{band} carries the link and is not in the tick set");
+                lines.push(Line::from(vec![
+                    Span::styled(pad("gap", LBL), Style::default().fg(t.warn)),
+                    Span::styled(
+                        truncate(&msg, width.saturating_sub(LBL)),
+                        Style::default().fg(t.warn),
+                    ),
+                ]));
+            }
+        }
+    }
+
     // A whole class going dark is the mistake worth naming out loud.
     if let Some(warning) = empty_class_warning(app) {
         lines.push(Line::from(vec![
@@ -961,6 +989,26 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
 
+    // The way back from a bad apply, one key away and never a write by itself.
+    if area.height >= 18 {
+        if let Some(mask) = &app.undo_mask {
+            if !mask.is_empty() {
+                let msg = format!(
+                    "back to 0x{} ({} bands) · u",
+                    crate::router::bands::to_hex(crate::router::bands::mask_from_bands(mask)),
+                    mask.len()
+                );
+                lines.push(Line::from(vec![
+                    Span::styled(pad("undo", LBL), Style::default().fg(t.dim)),
+                    Span::styled(
+                        truncate(&msg, width.saturating_sub(LBL)),
+                        Style::default().fg(t.fg),
+                    ),
+                ]));
+            }
+        }
+    }
+
     // 5. the action, its cost and its outcome, on one always-visible row: the
     // offline warning must survive 60x20, where the legend is dropped.
     let write_style = match &app.write {
@@ -994,10 +1042,12 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
     // them below 100 columns and shows nothing at all at 60.
     if area.height >= 20 {
         lines.push(Line::from(Span::styled(
-            if wide {
-                "keys  space tick · j/k move · a apply · n preset · s save · x delete · m mode · o nr · e report"
+            // Measured, not guessed: 69 columns fits 80, 56 fits 60. The
+            // earlier pair drifted and the wide one wrapped at 100.
+            if width >= 75 {
+                "keys  space tick · j/k · a apply · u undo · n preset · s save · x del"
             } else {
-                "keys  space tick · j/k · a apply · n preset · s save · x del · m mode · o nr"
+                "keys  space · a apply · u undo · s save"
             },
             Style::default().fg(t.dim),
         )));

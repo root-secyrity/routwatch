@@ -1444,6 +1444,23 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         return;
     }
+    // `u` belongs to the verdict it undoes, so it is read before the banner that
+    // swallows every other key while a write is settled.
+    if app.tab == Tab::Bands && matches!(normalise_key(k.code), KeyCode::Char('u')) {
+        match app.band_undo() {
+            Some(label) => {
+                app.note(label);
+                if app.write.is_settled() {
+                    app.settle_write(WriteState::Idle);
+                }
+            }
+            // Two different facts: an old point with no usable band, versus no
+            // point at all.
+            None if app.undo_mask.is_some() => app.note("undo point has no band this device lists"),
+            None => app.note("nothing to undo: no apply yet this session"),
+        }
+        return;
+    }
     if app.write.is_settled() {
         if matches!(k.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ')) {
             app.settle_write(WriteState::Idle);
