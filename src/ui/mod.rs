@@ -1796,6 +1796,141 @@ mod tests {
     }
 
     #[test]
+    fn bands_tab_names_the_serving_band_and_the_nr_band() {
+        // fixtures/sample-snapshot.json reports band = "B1" and signal.nr = null.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("serving"), "no serving label\n{text}");
+        assert!(text.contains("B1 LTE"), "serving LTE band missing\n{text}");
+        assert!(
+            !text.contains("N41"),
+            "this firmware reports no NR band, so none may be invented\n{text}"
+        );
+
+        // fixtures/sample-snapshot-5g.json is the one that carries NR.
+        let snap: crate::model::Snapshot =
+            serde_json::from_str(include_str!("../../fixtures/sample-snapshot-5g.json"))
+                .expect("5g fixture");
+        let mut app5 = fixture_app();
+        app5.on_snapshot(snap, 0);
+        app5.select_tab(Tab::Bands);
+        let text5 = render_to_string(&app5, 100, 30);
+        assert!(
+            text5.contains("N41 NR"),
+            "the NR band the firmware reports must be named\n{text5}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_says_nothing_to_apply_when_the_tick_matches_the_device() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 100, 30);
+        assert!(
+            text.contains("nothing to apply"),
+            "an unchanged tick must say so\n{text}"
+        );
+        assert!(
+            text.contains("re-apply"),
+            "the re-attach case must stay reachable\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_names_the_dropped_band_in_the_tick_row() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected.retain(|b| *b != 5);
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("-B5"), "the drop is not named\n{text}");
+        assert!(
+            text.contains("1 change to apply"),
+            "the count is missing\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_warns_when_a_whole_class_is_dropped() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected = vec![1, 3, 32, 34, 39, 7, 38, 40, 41, 42, 43];
+        let text = render_to_string(&app, 100, 30);
+        assert!(
+            text.contains("no low band ticked"),
+            "silent class loss\n{text}"
+        );
+        assert!(
+            text.contains("B5"),
+            "the warning must name the bands\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_tab_never_drops_a_band_it_cannot_classify() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        // B66 has a class (mid), B99 has none: both must be drawn, and the
+        // denominator must count every band the device listed.
+        app.bands_supported = vec![1, 3, 66, 99];
+        app.bands_selected = vec![1];
+        let text = render_to_string(&app, 100, 30);
+        assert!(
+            text.contains("B66") && text.contains("B99"),
+            "a band must never fall off the grid\n{text}"
+        );
+        assert!(
+            text.contains("other"),
+            "the unknown class needs a row\n{text}"
+        );
+        assert!(
+            text.contains("1 of 4"),
+            "the denominator must count every band\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_presets_are_numbered_and_keep_the_missing_mark() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.band_presets = vec![
+            crate::config::BandPreset::new(&[1, 3]),
+            crate::config::BandPreset::new(&[1, 3, 66]),
+        ];
+        app.bands_supported = vec![1, 3, 5, 20];
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("1:B1+B3"), "presets are not numbered\n{text}");
+        assert!(
+            text.contains("2:B1+B3+B66!"),
+            "the missing mark moved\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_panel_keeps_its_deciding_rows_at_sixty_columns() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 60, 20);
+        // The body is 17 rows here, 15 inside the border. The rows that decide
+        // must survive; the ones that explain may not.
+        for needle in [
+            "now",
+            "device now",
+            "ticked",
+            "low",
+            "mid",
+            "high",
+            "10-30 s offline",
+        ] {
+            assert!(text.contains(needle), "{needle:?} lost at 60x20\n{text}");
+        }
+        assert!(
+            !text.contains("! = band"),
+            "the legend cannot fit at 60x20; if this fails the layout grew\n{text}"
+        );
+    }
+
+    #[test]
     fn status_line_carries_the_current_tabs_own_keys() {
         let mut app = fixture_app();
         let cases = [
