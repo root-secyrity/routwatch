@@ -288,6 +288,11 @@ routwatch preview --tab bands --size 120x30 --ansi
   `Ascending` (it did not before). A firmware that still answers `100005` is
   reporting a format error; the tab says the request was rejected, not that SMS
   is blocked.
+- **Band writes can answer `100006` after they land**: on H122-373 the radio
+  accepts the payload and the POST still returns an undefined code. The verdict
+  comes from reading `net/net-mode` back, never from the code; routwatch waits
+  one grace period and then says what the device reports. A `100006` with no
+  change behind it is reported as a failure.
 - **5G per-field metrics** (`nrrsrp`, `nrsinr`, `nrdlmcs`) are empty on some
   firmware even with ENDC active. Only `SignalIconNr` (0–5 bars) and the ENDC flag
   are reliable there; the UI switches to a bars panel instead of faking dBm.

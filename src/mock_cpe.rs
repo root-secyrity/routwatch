@@ -15,6 +15,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 
 /// What a firmware answers. A profile is the difference between two models, and
@@ -28,7 +29,20 @@ pub enum Profile {
     /// `dhcp/settings` answers the values a DNS test writes, so a refused POST
     /// can still be read back as applied: the exact shape of the false success.
     DnsEcho,
+    /// The H122-373 band write: `POST net/net-mode` applies the payload and then
+    /// answers `<code>100006</code>`. The device did what was asked; the code is
+    /// noise. A tool that trusts the code calls this a failure.
+    SwitchWarns,
+    /// Same code, same body, but the new mask only shows up after `LATE_MS`:
+    /// the radio is mid-restart when the first read-back lands.
+    SwitchWarnsLate,
+    /// The code without the change: a real refusal dressed as the same warning.
+    SwitchRefuses,
 }
+
+/// How long `SwitchWarnsLate` takes to publish the new mask. Shorter than the
+/// tool's own grace period, so a correct tool sees the change on its second read.
+const LATE_MS: u64 = 600;
 
 impl Profile {
     fn routes(self) -> Vec<(&'static str, &'static str)> {
@@ -51,6 +65,7 @@ impl Profile {
             // A 404 is what a firmware that does not implement the endpoint
             // actually returns; the tool must read it as "not exposed".
             Profile::NoHostList => {}
+            Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses => {}
         }
         if self == Profile::DnsEcho {
             for (path, body) in routes.iter_mut() {
@@ -108,6 +123,67 @@ const HOST_LIST: &str = r#"<response><Hosts>
 <Host><HostName>phone-1</HostName><IpAddress>192.168.8.102</IpAddress><MacAddress>02:00:00:00:00:02</MacAddress><WifiFrequency>5</WifiFrequency></Host>
 </Hosts></response>"#;
 
+/// The band state a switch profile keeps between requests. The real firmware is
+/// stateful in exactly this way, which is why a POST's answer and a later GET
+/// can tell different stories.
+#[derive(Debug, Clone)]
+struct SwitchState {
+    mode: String,
+    band: String,
+    lte: String,
+    option: Option<String>,
+    applied_at: Option<std::time::Instant>,
+}
+
+impl Default for SwitchState {
+    fn default() -> Self {
+        SwitchState {
+            mode: "00".into(),
+            band: "3FFFFFFF".into(),
+            lte: "800C5".into(),
+            option: None,
+            applied_at: None,
+        }
+    }
+}
+
+impl SwitchState {
+    fn body(&self) -> String {
+        let opt = self
+            .option
+            .as_ref()
+            .map(|o| format!("<NetworkOption>{o}</NetworkOption>"))
+            .unwrap_or_default();
+        format!(
+            "<response><NetworkMode>{}</NetworkMode><NetworkBand>{}</NetworkBand><LTEBand>{}</LTEBand>{opt}</response>",
+            self.mode, self.band, self.lte
+        )
+    }
+
+    /// Read the four fields out of a real payload. Deliberately dumb string
+    /// work: the point is to echo what the client sent, not to validate it.
+    fn apply(&mut self, body: &str) {
+        let tag = |name: &str| -> Option<String> {
+            let open = format!("<{name}>");
+            let close = format!("</{name}>");
+            let start = body.find(&open)? + open.len();
+            let end = body[start..].find(&close)? + start;
+            Some(body[start..end].trim().to_string())
+        };
+        if let Some(m) = tag("NetworkMode") {
+            self.mode = m;
+        }
+        if let Some(b) = tag("NetworkBand") {
+            self.band = b;
+        }
+        if let Some(l) = tag("LTEBand") {
+            self.lte = l;
+        }
+        self.option = tag("NetworkOption");
+        self.applied_at = Some(std::time::Instant::now());
+    }
+}
+
 /// A running fake router. Dropping it stops the listener.
 pub struct MockCpe {
     addr: String,
@@ -130,13 +206,15 @@ impl MockCpe {
         let signals = Arc::new(AtomicUsize::new(0));
         let (li, lo) = (Arc::clone(&logins), Arc::clone(&logouts));
         let sig = Arc::clone(&signals);
+        let state = Arc::new(Mutex::new(SwitchState::default()));
+        let st = Arc::clone(&state);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let _ = serve(stream, profile, &li, &lo, &sig);
+                let _ = serve(stream, profile, &li, &lo, &sig, &st);
             }
         });
         MockCpe {
@@ -189,6 +267,7 @@ fn serve(
     logins: &AtomicUsize,
     logouts: &AtomicUsize,
     signals: &AtomicUsize,
+    state: &Mutex<SwitchState>,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -216,30 +295,69 @@ fn serve(
             content_length = rest.trim().parse().unwrap_or(0);
         }
     }
+    let mut payload = String::new();
     if content_length > 0 {
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body)?;
+        payload = String::from_utf8_lossy(&body).to_string();
     }
+
+    // The three switch profiles keep their band state across requests: the POST
+    // answer and the later GET have to be able to disagree, which is the whole
+    // point of the case.
+    let is_switch = matches!(
+        profile,
+        Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses
+    );
 
     let (status, body) = match (method, path.as_str()) {
         ("POST", "/api/user/login") => {
             logins.fetch_add(1, Ordering::SeqCst);
-            (200, "<response>OK</response>")
+            (200, "<response>OK</response>".to_string())
         }
         ("POST", "/api/user/logout") => {
             logouts.fetch_add(1, Ordering::SeqCst);
-            (200, "<response>OK</response>")
+            (200, "<response>OK</response>".to_string())
+        }
+        ("POST", "/api/net/net-mode") if is_switch => {
+            // SwitchRefuses answers the same code and changes nothing.
+            if profile != Profile::SwitchRefuses {
+                if let Ok(mut s) = state.lock() {
+                    s.apply(&payload);
+                }
+            }
+            (
+                200,
+                "<error><code>100006</code><message>Unknown error</message></error>".to_string(),
+            )
+        }
+        ("GET", "/api/net/net-mode") if is_switch => {
+            let late_pending = profile == Profile::SwitchWarnsLate
+                && state
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.applied_at)
+                    .is_some_and(|t| t.elapsed().as_millis() < LATE_MS as u128);
+            let body = if late_pending {
+                NET_MODE.to_string()
+            } else {
+                state
+                    .lock()
+                    .map(|s| s.body())
+                    .unwrap_or_else(|_| NET_MODE.to_string())
+            };
+            (200, body)
         }
         ("GET", p) => match profile.routes().into_iter().find(|(route, _)| *route == p) {
-            Some((_, body)) => (200, body),
+            Some((_, body)) => (200, body.to_string()),
             None => (
                 404,
-                "<error><code>125002</code><message>not found</message></error>",
+                "<error><code>125002</code><message>not found</message></error>".to_string(),
             ),
         },
         _ => (
             404,
-            "<error><code>125002</code><message>not found</message></error>",
+            "<error><code>125002</code><message>not found</message></error>".to_string(),
         ),
     };
 
