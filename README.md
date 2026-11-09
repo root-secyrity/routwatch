@@ -168,7 +168,7 @@ The password ladder is `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-t
 | `Tab` / `Shift+Tab` | everywhere | next / previous section |
 | `v` `V` | everywhere | cycle view: full → gauges → lite → dense |
 | `l` `L` | everywhere | toggle lite, returning to the view you came from |
-| `g` `r` `p` | everywhere | graph style · refresh now · pause polling |
+| `g` `r` `p` | everywhere | graph style · refresh now · pause polling (`P` also pauses, and is the only one on Network) |
 | `,` or `s` | everywhere | settings overlay (theme, view, graph, refresh, budget); `w` saves |
 | `i` | everywhere | event feed: `j`/`k` select, `space` pause/resume, `Esc` or `i` closes |
 | `?` | everywhere | key help |
@@ -177,7 +177,8 @@ The password ladder is `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-t
 | `m` `o` `a` | Bands | network mode · NR option · apply (confirm with `y`) |
 | `d` `z` | Traffic/DNS | type DNS servers · back to DHCP |
 | `j` `k` `Enter` | DNS | choose a preset · apply (confirm with `y`) |
-| `t` | Network | ping a host from this machine |
+| `p` | Network | ping a host from this machine |
+| `t` | everywhere | next colour theme (nine of them); `w` in settings saves it |
 | `s` `c` | Clients | sort (name/ip/band/time) · copy MAC |
 | `e` / `R` | SMS/Device | read extras (inbox, SIM, data switch) |
 | `x` `b` | Device | dump all endpoints to JSON · restart router (type `REBOOT`) |
@@ -341,7 +342,7 @@ routwatch preview --tab bands --size 120x30 --ansi
 ## Development
 
 ```sh
-cargo test                 # 286 unit + 8 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
+cargo test                 # 290 unit + 11 binary + 9 CLI tests (the CLI file is local, not published; the unit tests read fixtures/)
 cargo clippy --all-targets # zero warnings
 cargo fmt --check
 ```

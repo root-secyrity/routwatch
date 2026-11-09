@@ -1,6 +1,7 @@
 //! Frame composition: header, tab bar, body, status line, help overlay.
 
 pub mod chart;
+pub mod help;
 pub mod tabs;
 pub mod tiles;
 pub mod widgets;
@@ -122,7 +123,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     if app.help {
-        draw_help(f, area, &app.theme);
+        draw_help(f, area, &app.theme, app.allow_write);
     }
     if app.events_open {
         draw_events(f, area, app);
@@ -681,86 +682,8 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_help(f: &mut Frame, area: Rect, theme: &Theme) {
-    let rows = [
-        ("1..9 / Tab", "switch tab"),
-        ("j k / ↑ ↓", "move selection"),
-        ("i", "event feed: j/k reads back, space pauses, Esc closes"),
-        ("space / a", "bands: toggle / apply (confirm with y)"),
-        ("m / o", "bands: network mode / NR option"),
-        (
-            "n / s / x",
-            "bands: next merge preset / save the ticked merge / delete it",
-        ),
-        (
-            "1-9 / Tab",
-            "jump to a section from ANY view (Lite/Dense return to full)",
-        ),
-        (
-            "d / z",
-            "DNS tab (8) + traffic: type servers / back to DHCP",
-        ),
-        (
-            "8 / j k / Enter",
-            "DNS tab: pick a preset and apply (then y)",
-        ),
-        ("9", "Signal tab: gauge dashboard"),
-        ("t", "network: ping a host from this machine"),
-        (
-            "s / c",
-            "clients: sort / copy MAC (bands tab: s saves a merge)",
-        ),
-        ("e / R", "SMS/Device: read inbox, SIM state, data switch"),
-        ("x / b", "device: dump JSON / restart router (type REBOOT)"),
-        ("S / ,", "settings overlay (appearance, w saves)"),
-        ("v / V", "cycle view: full → gauges → lite → dense"),
-        ("l / L", "toggle lite (returns to the view you came from)"),
-        ("g", "cycle graph: dots → bars → braille"),
-        ("r", "refresh now"),
-        ("p", "pause / resume polling"),
-        ("?", "this help"),
-        ("q / Ctrl+C", "quit (logs out)"),
-    ];
-    let h = rows.len() as u16 + 4;
-    let w = 52.min(area.width);
-    let rect = Rect {
-        x: area.x + (area.width.saturating_sub(w)) / 2,
-        y: area.y + (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h.min(area.height),
-    };
-    f.render_widget(Clear, rect);
-    let mut lines: Vec<Line> = rows
-        .iter()
-        .map(|(k, d)| {
-            Line::from(vec![
-                Span::styled(
-                    format!(" {k:<12}"),
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(*d, Style::default().fg(theme.fg)),
-            ])
-        })
-        .collect();
-    lines.push(Line::from(Span::styled(
-        " read-only build: no router writes are enabled",
-        Style::default().fg(theme.dim),
-    )));
-    f.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .title(Span::styled(
-                    " keys ",
-                    Style::default()
-                        .fg(theme.title)
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .border_style(Style::default().fg(theme.accent)),
-        ),
-        rect,
-    );
+fn draw_help(f: &mut Frame, area: Rect, theme: &Theme, allow_write: bool) {
+    help::draw(f, area, theme, allow_write);
 }
 
 /// Render one frame to text - the screenshot substitute for tests and for
@@ -2139,7 +2062,7 @@ mod tests {
         let cases = [
             (Tab::Bands, "s save"),
             (Tab::Traffic, "d edit DNS"),
-            (Tab::Network, "t ping host"),
+            (Tab::Network, "p ping host"),
             (Tab::Clients, "c copy mac"),
             (Tab::Dns, "Enter apply"),
             (Tab::Device, "x dump json"),
@@ -2176,14 +2099,78 @@ mod tests {
         );
     }
 
-    #[test]
-    fn help_documents_case_free_keys() {
+    fn help_frame(w: u16, h: u16, allow_write: bool) -> String {
         let mut app = fixture_app();
+        app.allow_write = allow_write;
         app.help = true;
-        let text = render_to_string(&app, 120, 34);
-        for needle in ["v / V", "l / L", "S / ,", "jump to a section from ANY view"] {
-            assert!(text.contains(needle), "help is missing {needle:?}\n{text}");
+        render_to_string(&app, w, h)
+    }
+
+    #[test]
+    fn help_uses_the_room_a_wide_terminal_has() {
+        // Before this, the panel was pinned at 52 columns and cut 12 of 21 rows
+        // mid-word even on a 120 column terminal.
+        let text = help_frame(120, 30, false);
+        for needle in [
+            "not through the router",
+            "back in the tick list",
+            "switch section from any view",
+            "v / V",
+            "S / ,",
+        ] {
+            assert!(text.contains(needle), "help lost {needle:?}\n{text}");
         }
+    }
+
+    #[test]
+    fn help_falls_back_to_the_short_rows_and_keeps_them_whole() {
+        let text = help_frame(60, 20, false);
+        for needle in [
+            "bands: preset next/save/del",
+            "network: ping a host",
+            "move the selection",
+        ] {
+            assert!(text.contains(needle), "short row cut: {needle:?}\n{text}");
+        }
+    }
+
+    #[test]
+    fn help_keeps_quit_and_the_help_key_on_a_short_screen() {
+        // 60x20 has room for 17 body rows; the last two rows are pinned on
+        // purpose, and the cut is announced instead of vanishing.
+        let text = help_frame(60, 20, false);
+        assert!(text.contains("quit"), "the q row must survive\n{text}");
+        assert!(text.contains("this help"), "the ? row must survive\n{text}");
+        assert!(
+            text.contains("more rows"),
+            "a cut must be announced\n{text}"
+        );
+    }
+
+    #[test]
+    fn help_never_draws_a_key_into_its_description() {
+        // `8 / j k / Enter` used to be 14 characters in a 12 column field and
+        // ran straight into its text.
+        let text = help_frame(120, 30, false);
+        let line = text
+            .lines()
+            .find(|l| l.contains("j k / ↑ ↓"))
+            .expect("the move row");
+        let at = line.find("j k / ↑ ↓").expect("keys") + "j k / ↑ ↓".len();
+        let after = line[at..].chars().next().expect("padding");
+        assert_eq!(after, ' ', "the key column collided: {line}");
+    }
+
+    #[test]
+    fn help_says_what_this_build_can_do() {
+        let read_only = help_frame(120, 30, false);
+        assert!(read_only.contains("read-only build"), "{read_only}");
+        let writable = help_frame(120, 30, true);
+        assert!(writable.contains("writes enabled"), "{writable}");
+        assert!(
+            !writable.contains("read-only build"),
+            "a writable build must not claim read-only\n{writable}"
+        );
     }
 
     #[test]

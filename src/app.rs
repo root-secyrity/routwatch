@@ -78,7 +78,7 @@ impl Tab {
                 "space tick · j/k · a apply · u undo · n preset · s save · x del · m mode · o nr · e report"
             }
             Tab::Traffic => "d edit DNS · D auto DNS · e report",
-            Tab::Network => "t ping host · e report",
+            Tab::Network => "p ping host · e report",
             Tab::Clients => "j/k select · s sort · c copy mac · e report",
             Tab::Sms => "R read inbox",
             Tab::Device => "x dump json · b restart · R extras",

@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-fn truncate(s: &str, n: usize) -> String {
+pub(crate) fn truncate(s: &str, n: usize) -> String {
     if UnicodeWidthStr::width(s) <= n {
         return s.to_string();
     }
@@ -1385,7 +1385,7 @@ pub fn network_tab(f: &mut Frame, area: Rect, app: &App) {
         ))),
     }
     ping_lines.push(Line::from(Span::styled(
-        "t ping a host from THIS machine (not through the router)",
+        "p ping a host from THIS machine (not through the router)",
         Style::default().fg(t.dim),
     )));
     f.render_widget(

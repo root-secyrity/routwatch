@@ -1358,7 +1358,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         match k.code {
             KeyCode::Esc | KeyCode::Char('S') => app.settings_open = false,
             KeyCode::Char('t') => {
-                app.theme = Theme::get(routwatch::theme::next_name(&app.theme.id));
+                let next = routwatch::theme::next_name(&app.theme.id);
+                app.theme = Theme::get(next);
+                app.note(format!("theme {next} · w saves"));
             }
             KeyCode::Char('v') => app.view = app.view.next(),
             KeyCode::Char('g') => app.graph = app.graph.next(),
@@ -1510,6 +1512,16 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             app.events_paused = false;
             app.events_back = 0;
         }
+        // The theme is an appearance key: it answers from any section, and the
+        // settings overlay keeps its own `t` so the row there still works.
+        KeyCode::Char('t') => {
+            let next = routwatch::theme::next_name(&app.theme.id);
+            app.theme = Theme::get(next);
+            app.note(format!(
+                "theme {next}{}",
+                if app.settings_open { " · w saves" } else { "" }
+            ));
+        }
         KeyCode::Char('?') => app.help = !app.help,
         KeyCode::Esc => app.help = false,
         KeyCode::Char('v') => app.cycle_view(),
@@ -1530,6 +1542,10 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         // Must stay AFTER the SMS/Device arm above: those two sections own `e`.
         KeyCode::Char('e') => export_report(app),
+        // --- Network tab: local ping. `p` is ping here, so pause moves to Shift+P ---
+        KeyCode::Char('p') if app.tab == Tab::Network && !shift => {
+            app.open_input(InputKind::PingHost);
+        }
         KeyCode::Char('p') => {
             app.paused = !app.paused;
             let _ = tx.send(WorkerCmd::Pause(app.paused));
@@ -1550,10 +1566,6 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             } else {
                 app.begin_dns_preset();
             }
-        }
-        // --- Network tab: local ping ---
-        KeyCode::Char('t') if app.tab == Tab::Network => {
-            app.open_input(InputKind::PingHost);
         }
         // --- Clients tab: sort / copy ---
         KeyCode::Char('s') if app.tab == Tab::Clients && !shift => {
@@ -1985,6 +1997,96 @@ mod key_tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn shift_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c.to_ascii_uppercase()), KeyModifiers::SHIFT)
+    }
+
+    fn bare_app() -> App {
+        App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        )
+    }
+
+    #[test]
+    fn t_cycles_the_theme_from_any_section_without_opening_a_prompt() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        let before = app.theme.id.clone();
+        handle_key(&mut app, key(KeyCode::Char('t')), &tx);
+        assert_ne!(app.theme.id, before, "t must cycle the theme");
+        assert!(
+            app.input.is_none(),
+            "t must not open the ping prompt any more"
+        );
+        assert!(
+            app.live_notice().unwrap_or("").contains("theme "),
+            "the change must be announced, got {:?}",
+            app.live_notice()
+        );
+
+        // The handler is case-free, so Shift+T does the same from another tab.
+        app.select_tab(Tab::Bands);
+        let before = app.theme.id.clone();
+        handle_key(&mut app, key(KeyCode::Char('T')), &tx);
+        assert_ne!(app.theme.id, before, "T must cycle too");
+    }
+
+    #[test]
+    fn a_typing_prompt_keeps_t_for_itself() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        handle_key(&mut app, key(KeyCode::Char('p')), &tx);
+        assert!(
+            app.input.is_some(),
+            "p must open the ping prompt on Network"
+        );
+
+        let before = app.theme.id.clone();
+        handle_key(&mut app, key(KeyCode::Char('t')), &tx);
+        assert_eq!(app.theme.id, before, "typing must not cycle the theme");
+        let typed = app
+            .input
+            .as_ref()
+            .map(|i| i.value.clone())
+            .unwrap_or_default();
+        assert!(
+            typed.ends_with('t'),
+            "the letter belongs to the prompt, got {typed:?}"
+        );
+    }
+
+    #[test]
+    fn p_pings_on_network_and_pauses_everywhere_else() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        // Network: p is ping, and it does not pause by accident.
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        handle_key(&mut app, key(KeyCode::Char('p')), &tx);
+        assert!(app.input.is_some(), "p is ping on Network");
+        assert!(!app.paused, "p must not pause while it pings");
+
+        // Shift+P still pauses there, so the polling key is never lost.
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        handle_key(&mut app, shift_key('p'), &tx);
+        assert!(app.paused, "Shift+P pauses on Network");
+        assert!(app.input.is_none(), "Shift+P must not open a prompt");
+
+        // Everywhere else p keeps its old job.
+        let mut app = bare_app();
+        app.select_tab(Tab::Dashboard);
+        handle_key(&mut app, key(KeyCode::Char('p')), &tx);
+        assert!(app.paused, "p still pauses outside Network");
+        assert!(app.input.is_none());
     }
 
     #[test]
