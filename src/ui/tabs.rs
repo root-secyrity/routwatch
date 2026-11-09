@@ -806,6 +806,60 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]));
     }
+
+    // What the link actually is, from fields the snapshot already carries. Two
+    // shapes (with and without EARFCN) and a cut as the last resort: this panel
+    // wraps, and a wrapped row costs the row below it.
+    if area.height >= 20 {
+        let mut parts: Vec<String> = Vec::new();
+        if serving_lte != "-" {
+            parts.push(serving_lte.clone());
+        }
+        if let Some(mhz) = s.signal.dl_mhz {
+            parts.push(format!("{mhz} MHz"));
+        }
+        if let Some(bw) = s.signal.dl_bw.clone() {
+            parts.push(bw);
+        }
+        if let Some(tm) = s.signal.tm.clone() {
+            parts.push(tm);
+        }
+        if let Some(pci) = s.signal.pci {
+            parts.push(format!("PCI {pci}"));
+        }
+        let core = parts.join(" · ");
+        let earfcn = s
+            .signal
+            .earfcn
+            .clone()
+            .map(|e| format!("   EARFCN {e}"))
+            .unwrap_or_default();
+        let with_earfcn = format!("{core}{earfcn}");
+        let text = if LBL + with_earfcn.chars().count() <= width {
+            with_earfcn
+        } else {
+            core
+        };
+        lines.push(Line::from(vec![
+            Span::styled(pad("link", LBL), Style::default().fg(t.dim)),
+            Span::styled(
+                truncate(&text, width.saturating_sub(LBL)),
+                Style::default().fg(t.fg),
+            ),
+        ]));
+    }
+    if area.height >= 22 {
+        if let Some(mcs) = s.signal.dl_mcs_secondary {
+            let msg = format!("secondary DL carrier · MCS {mcs}");
+            lines.push(Line::from(vec![
+                Span::styled(pad("ca", LBL), Style::default().fg(t.dim)),
+                Span::styled(
+                    truncate(&msg, width.saturating_sub(LBL)),
+                    Style::default().fg(t.fg),
+                ),
+            ]));
+        }
+    }
     lines.push(Line::from(""));
 
     // 2. the grid, grouped so a class can be judged as a class.
@@ -1009,6 +1063,43 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // The last apply and the NR side of the link: history and the other radio,
+    // both only on a tall enough panel.
+    if area.height >= 24 {
+        if let Some(last) = &app.last_apply {
+            let msg = format!(
+                "applied {} ago · mode {} · 0x{} · {}",
+                dur(last.at.elapsed().as_secs().max(1)),
+                mode_label(&last.mode),
+                crate::router::bands::to_hex(crate::router::bands::mask_from_bands(&last.bands)),
+                last.verdict
+            );
+            lines.push(Line::from(vec![
+                Span::styled(pad("last", LBL), Style::default().fg(t.dim)),
+                Span::styled(
+                    truncate(&msg, width.saturating_sub(LBL)),
+                    Style::default().fg(t.fg),
+                ),
+            ]));
+        }
+        let text = match s.signal.nr.as_ref() {
+            Some(n) => format!(
+                "{} serving · bars {}/5 · ENDC {}",
+                n.band.clone().unwrap_or_else(|| "-".into()),
+                s.connection.nr_bars,
+                if s.connection.endc { "on" } else { "off" }
+            ),
+            None => "no NR band reported by this firmware".to_string(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(pad("nr", LBL), Style::default().fg(t.dim)),
+            Span::styled(
+                truncate(&text, width.saturating_sub(LBL)),
+                Style::default().fg(t.fg),
+            ),
+        ]));
+    }
+
     // 5. the action, its cost and its outcome, on one always-visible row: the
     // offline warning must survive 60x20, where the legend is dropped.
     let write_style = match &app.write {
@@ -1017,25 +1108,30 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
         crate::write::WriteState::Idle => Style::default().fg(t.dim),
         _ => Style::default().fg(t.warn),
     };
+    let action_text = if app.bands_unchanged() {
+        if narrow {
+            "a re-apply"
+        } else {
+            "a re-apply, forces a re-attach"
+        }
+    } else if narrow {
+        "a apply (y)"
+    } else {
+        "a apply (y confirms)"
+    };
+    let offline = " · 10-30 s offline";
+    let write_prefix = "   write ";
+    // The verdict can be long ("applied · router answered 100006 …"), and this
+    // row must stay one line: it is the row the panel promises to keep.
+    let room = width.saturating_sub(
+        LBL + action_text.chars().count() + offline.chars().count() + write_prefix.chars().count(),
+    );
     lines.push(Line::from(vec![
         Span::styled(pad("action", LBL), Style::default().fg(t.dim)),
-        Span::styled(
-            if app.bands_unchanged() {
-                if narrow {
-                    "a re-apply"
-                } else {
-                    "a re-apply, forces a re-attach"
-                }
-            } else if narrow {
-                "a apply (y)"
-            } else {
-                "a apply (y confirms)"
-            },
-            Style::default().fg(t.fg),
-        ),
-        Span::styled(" · 10-30 s offline", Style::default().fg(t.warn)),
-        Span::styled("   write ", Style::default().fg(t.dim)),
-        Span::styled(app.write.label(), write_style),
+        Span::styled(action_text, Style::default().fg(t.fg)),
+        Span::styled(offline, Style::default().fg(t.warn)),
+        Span::styled(write_prefix, Style::default().fg(t.dim)),
+        Span::styled(truncate(&app.write.label(), room.max(4)), write_style),
     ]));
 
     // The panel carries its own keys, `a apply` included: the status bar clips
