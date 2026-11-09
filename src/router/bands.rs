@@ -12,6 +12,45 @@ pub struct BandDef {
     pub value: u64,
 }
 
+/// Frequency class, used only to group the grid on the Bands tab. The order of
+/// the variants is the order the screen draws: long range first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BandClass {
+    Low,
+    Mid,
+    High,
+    Other,
+}
+
+impl BandClass {
+    pub const ALL: [BandClass; 4] = [
+        BandClass::Low,
+        BandClass::Mid,
+        BandClass::High,
+        BandClass::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BandClass::Low => "low",
+            BandClass::Mid => "mid",
+            BandClass::High => "high",
+            BandClass::Other => "other",
+        }
+    }
+}
+
+/// LTE band -> class. Display only: no mask arithmetic happens here, and a band
+/// this table has never heard of is `Other`, so the grid can still draw it.
+pub fn class_of(band: u8) -> BandClass {
+    match band {
+        5 | 8 | 12 | 13 | 14 | 17 | 18 | 19 | 20 | 26 | 27 | 28 | 29 | 67 | 71 => BandClass::Low,
+        1 | 2 | 3 | 4 | 9 | 10 | 25 | 32 | 34 | 39 | 65 | 66 => BandClass::Mid,
+        7 | 38 | 40 | 41 | 42 | 43 | 48 => BandClass::High,
+        _ => BandClass::Other,
+    }
+}
+
 /// The exact XML payload `net/net-mode` expects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BandPayload {
@@ -351,5 +390,27 @@ mod tests {
             "B7 is supported by the router"
         );
         assert_eq!(catalog.lte_all, from_hex("7fffffffffffffff"));
+    }
+
+    #[test]
+    fn class_of_covers_the_bands_this_firmware_lists() {
+        for b in [1u8, 3, 5, 8, 20, 28, 32, 34, 38, 39, 40, 41, 42, 43] {
+            assert_ne!(class_of(b), BandClass::Other, "B{b} has no class");
+        }
+        assert_eq!(class_of(20), BandClass::Low);
+        assert_eq!(class_of(8), BandClass::Low);
+        assert_eq!(class_of(1), BandClass::Mid);
+        assert_eq!(class_of(3), BandClass::Mid);
+        assert_eq!(class_of(41), BandClass::High);
+        assert_eq!(
+            class_of(66),
+            BandClass::Mid,
+            "a band this firmware never lists still has a class"
+        );
+        assert_eq!(
+            class_of(99),
+            BandClass::Other,
+            "unknown is a class, not an error"
+        );
     }
 }
