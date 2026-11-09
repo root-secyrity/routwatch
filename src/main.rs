@@ -1358,9 +1358,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         match k.code {
             KeyCode::Esc | KeyCode::Char('S') => app.settings_open = false,
             KeyCode::Char('t') => {
-                let next = routwatch::theme::next_name(&app.theme.id);
-                app.theme = Theme::get(next);
-                app.note(format!("theme {next} · w saves"));
+                app.theme = routwatch::theme::cycle(&app.theme.id);
+                app.note(format!("theme {} · w saves", app.theme.id));
             }
             KeyCode::Char('v') => app.view = app.view.next(),
             KeyCode::Char('g') => app.graph = app.graph.next(),
@@ -1515,10 +1514,10 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         // The theme is an appearance key: it answers from any section, and the
         // settings overlay keeps its own `t` so the row there still works.
         KeyCode::Char('t') => {
-            let next = routwatch::theme::next_name(&app.theme.id);
-            app.theme = Theme::get(next);
+            app.theme = routwatch::theme::cycle(&app.theme.id);
             app.note(format!(
-                "theme {next}{}",
+                "theme {}{}",
+                app.theme.id,
                 if app.settings_open { " · w saves" } else { "" }
             ));
         }
@@ -2037,6 +2036,10 @@ mod key_tests {
         let before = app.theme.id.clone();
         handle_key(&mut app, key(KeyCode::Char('T')), &tx);
         assert_ne!(app.theme.id, before, "T must cycle too");
+        assert_eq!(
+            app.theme.id, "auto",
+            "the requested name is what the cycle reports"
+        );
     }
 
     #[test]
