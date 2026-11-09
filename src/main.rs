@@ -1542,13 +1542,14 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         // Must stay AFTER the SMS/Device arm above: those two sections own `e`.
         KeyCode::Char('e') => export_report(app),
-        // --- Network tab: local ping. `p` is ping here, so pause moves to Shift+P ---
-        KeyCode::Char('p') if app.tab == Tab::Network && !shift => {
-            app.open_input(InputKind::PingHost);
-        }
-        KeyCode::Char('p') => {
+        // Two keys, one job each: `p` pings, `P` pauses, from any section.
+        // Shift represents `P` here because letters are matched case-free.
+        KeyCode::Char('p') if shift => {
             app.paused = !app.paused;
             let _ = tx.send(WorkerCmd::Pause(app.paused));
+        }
+        KeyCode::Char('p') => {
+            app.open_input(InputKind::PingHost);
         }
         // --- Traffic / DNS tab ---
         KeyCode::Char('d') if matches!(app.tab, Tab::Traffic | Tab::Dns) => {
@@ -2064,29 +2065,29 @@ mod key_tests {
     }
 
     #[test]
-    fn p_pings_on_network_and_pauses_everywhere_else() {
+    fn p_pings_and_shift_p_pauses_from_any_section() {
         let (tx, _rx) = std::sync::mpsc::channel();
 
-        // Network: p is ping, and it does not pause by accident.
-        let mut app = bare_app();
-        app.select_tab(Tab::Network);
-        handle_key(&mut app, key(KeyCode::Char('p')), &tx);
-        assert!(app.input.is_some(), "p is ping on Network");
-        assert!(!app.paused, "p must not pause while it pings");
+        // `p` pings from Network and from anywhere else; one job only.
+        for tab in [Tab::Network, Tab::Dashboard, Tab::Bands] {
+            let mut app = bare_app();
+            app.select_tab(tab);
+            handle_key(&mut app, key(KeyCode::Char('p')), &tx);
+            assert!(
+                app.input.is_some(),
+                "p must open the ping prompt on {tab:?}"
+            );
+            assert!(!app.paused, "p must not pause on {tab:?}");
+        }
 
-        // Shift+P still pauses there, so the polling key is never lost.
-        let mut app = bare_app();
-        app.select_tab(Tab::Network);
-        handle_key(&mut app, shift_key('p'), &tx);
-        assert!(app.paused, "Shift+P pauses on Network");
-        assert!(app.input.is_none(), "Shift+P must not open a prompt");
-
-        // Everywhere else p keeps its old job.
-        let mut app = bare_app();
-        app.select_tab(Tab::Dashboard);
-        handle_key(&mut app, key(KeyCode::Char('p')), &tx);
-        assert!(app.paused, "p still pauses outside Network");
-        assert!(app.input.is_none());
+        // `P` pauses everywhere, including Network.
+        for tab in [Tab::Network, Tab::Dashboard] {
+            let mut app = bare_app();
+            app.select_tab(tab);
+            handle_key(&mut app, shift_key('p'), &tx);
+            assert!(app.paused, "P must pause on {tab:?}");
+            assert!(app.input.is_none(), "P must not open a prompt on {tab:?}");
+        }
     }
 
     #[test]

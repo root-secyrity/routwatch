@@ -73,7 +73,7 @@ impl Tab {
     /// tab says what it accepts without a help overlay.
     pub fn hints(&self) -> &'static str {
         match self {
-            Tab::Dashboard => "v view · g graph · r refresh · p pause · e report",
+            Tab::Dashboard => "v view · g graph · r refresh · P pause · e report",
             Tab::Bands => {
                 "space tick · j/k · a apply · u undo · n preset · s save · x del · m mode · o nr · e report"
             }

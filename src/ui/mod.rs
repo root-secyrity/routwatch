@@ -2124,10 +2124,13 @@ mod tests {
 
     #[test]
     fn help_falls_back_to_the_short_rows_and_keeps_them_whole() {
+        // 60x20: the rows that survive the cut are the global ones, and the
+        // three keys the whole change is about must be among them.
         let text = help_frame(60, 20, false);
         for needle in [
-            "bands: preset next/save/del",
-            "network: ping a host",
+            "theme: next",
+            "ping a host",
+            "pause / resume polling",
             "move the selection",
         ] {
             assert!(text.contains(needle), "short row cut: {needle:?}\n{text}");

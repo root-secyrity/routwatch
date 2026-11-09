@@ -168,7 +168,8 @@ The password ladder is `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-t
 | `Tab` / `Shift+Tab` | everywhere | next / previous section |
 | `v` `V` | everywhere | cycle view: full → gauges → lite → dense |
 | `l` `L` | everywhere | toggle lite, returning to the view you came from |
-| `g` `r` `p` | everywhere | graph style · refresh now · pause polling (`P` also pauses, and is the only one on Network) |
+| `g` `r` | everywhere | graph style · refresh now |
+| `P` | everywhere | pause / resume polling |
 | `,` or `s` | everywhere | settings overlay (theme, view, graph, refresh, budget); `w` saves |
 | `i` | everywhere | event feed: `j`/`k` select, `space` pause/resume, `Esc` or `i` closes |
 | `?` | everywhere | key help |
@@ -177,7 +178,7 @@ The password ladder is `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-t
 | `m` `o` `a` | Bands | network mode · NR option · apply (confirm with `y`) |
 | `d` `z` | Traffic/DNS | type DNS servers · back to DHCP |
 | `j` `k` `Enter` | DNS | choose a preset · apply (confirm with `y`) |
-| `p` | Network | ping a host from this machine |
+| `p` | everywhere | ping a host from this machine (the result shows on Network) |
 | `t` | everywhere | next colour theme (nine of them); `w` in settings saves it |
 | `s` `c` | Clients | sort (name/ip/band/time) · copy MAC |
 | `e` / `R` | SMS/Device | read extras (inbox, SIM, data switch) |

@@ -30,6 +30,8 @@ pub struct KeyRow {
 /// The whole key list, in the order it is shown. The last two rows (`?` and
 /// `q`) are pinned by the renderer: on a short terminal they always survive.
 pub fn rows() -> Vec<KeyRow> {
+    // Global keys first: on a 16 row terminal only the first ten rows survive
+    // the cut, and the keys a user needs when lost are `t`, `p`, `P` and `?`.
     vec![
         KeyRow {
             keys: "1..9 / Tab",
@@ -42,64 +44,19 @@ pub fn rows() -> Vec<KeyRow> {
             full: "move the selection",
         },
         KeyRow {
-            keys: "space",
-            short: "bands: tick a band",
-            full: "bands: tick a band; in the event feed it pauses",
-        },
-        KeyRow {
-            keys: "a / y",
-            short: "bands: apply, then y",
-            full: "bands: apply the ticked merge; y confirms, n or Esc cancels",
-        },
-        KeyRow {
-            keys: "u",
-            short: "bands: undo the apply",
-            full: "bands: put the mask the last apply replaced back in the tick list",
-        },
-        KeyRow {
-            keys: "n / s / x",
-            short: "bands: preset next/save/del",
-            full: "bands: next merge preset / save the ticked merge / delete it",
-        },
-        KeyRow {
-            keys: "m / o",
-            short: "bands: mode / NR option",
-            full: "bands: network mode / NR option",
-        },
-        KeyRow {
-            keys: "d / z",
-            short: "DNS: type servers / DHCP",
-            full: "DNS (8) and traffic: type servers / back to DHCP",
-        },
-        KeyRow {
-            keys: "Enter",
-            short: "DNS: apply the preset",
-            full: "DNS: apply the chosen preset (then y)",
-        },
-        KeyRow {
-            keys: "s / c",
-            short: "clients: sort / copy MAC",
-            full: "clients: sort by name/ip/band/time / copy the MAC",
-        },
-        KeyRow {
-            keys: "p",
-            short: "network: ping a host",
-            full: "network (4): ping a host from this machine, not through the router",
-        },
-        KeyRow {
-            keys: "e",
-            short: "report · SMS/Device: extras",
-            full: "write a Markdown report; on SMS/Device e reads the extras instead",
-        },
-        KeyRow {
-            keys: "x / b",
-            short: "device: dump / restart",
-            full: "device: dump the endpoints to JSON / restart (type REBOOT)",
-        },
-        KeyRow {
             keys: "t",
             short: "theme: next",
             full: "theme: next of the nine; t in settings does the same",
+        },
+        KeyRow {
+            keys: "p",
+            short: "ping a host",
+            full: "ping a host from this machine, not through the router",
+        },
+        KeyRow {
+            keys: "P",
+            short: "pause / resume polling",
+            full: "pause / resume polling (capital P, from any section)",
         },
         KeyRow {
             keys: "S / ,",
@@ -142,9 +99,54 @@ pub fn rows() -> Vec<KeyRow> {
             full: "refresh now; Shift+r reads the extras on SMS/Device",
         },
         KeyRow {
-            keys: "P",
-            short: "pause / resume polling",
-            full: "pause / resume polling (p does this too, except on Network)",
+            keys: "space",
+            short: "bands: tick a band",
+            full: "bands: tick a band; in the event feed it pauses",
+        },
+        KeyRow {
+            keys: "a / y",
+            short: "bands: apply, then y",
+            full: "bands: apply the ticked merge; y confirms, n or Esc cancels",
+        },
+        KeyRow {
+            keys: "u",
+            short: "bands: undo the apply",
+            full: "bands: put the mask the last apply replaced back in the tick list",
+        },
+        KeyRow {
+            keys: "n / s / x",
+            short: "bands: preset next/save/del",
+            full: "bands: next merge preset / save the ticked merge / delete it",
+        },
+        KeyRow {
+            keys: "m / o",
+            short: "bands: mode / NR option",
+            full: "bands: network mode / NR option",
+        },
+        KeyRow {
+            keys: "d / z",
+            short: "DNS: type servers / DHCP",
+            full: "DNS (8) and traffic: type servers / back to DHCP",
+        },
+        KeyRow {
+            keys: "Enter",
+            short: "DNS: apply the preset",
+            full: "DNS: apply the chosen preset (then y)",
+        },
+        KeyRow {
+            keys: "s / c",
+            short: "clients: sort / copy MAC",
+            full: "clients: sort by name/ip/band/time / copy the MAC",
+        },
+        KeyRow {
+            keys: "e",
+            short: "report · SMS/Device: extras",
+            full: "write a Markdown report; on SMS/Device e reads the extras instead",
+        },
+        KeyRow {
+            keys: "x / b",
+            short: "device: dump / restart",
+            full: "device: dump the endpoints to JSON / restart (type REBOOT)",
         },
         KeyRow {
             keys: "?",
