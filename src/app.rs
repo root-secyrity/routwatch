@@ -75,7 +75,7 @@ impl Tab {
         match self {
             Tab::Dashboard => "v view · g graph · r refresh · p pause · e report",
             Tab::Bands => {
-                "space tick · j/k · n preset · s save · x del · m mode · o opt · a apply · e report"
+                "space tick · j/k · a apply · n preset · s save · x del · m mode · o nr · e report"
             }
             Tab::Traffic => "d edit DNS · D auto DNS · e report",
             Tab::Network => "t ping host · e report",
@@ -633,11 +633,67 @@ impl App {
         Some(crate::preflight::for_intent(intent, self.snap.as_ref()))
     }
 
+    /// The order the grid draws: low, mid, high, other, ascending inside each
+    /// class. `band_cursor` indexes this, so `j`/`k` walk the picture the user
+    /// is looking at, not the firmware's list order.
+    pub fn bands_in_draw_order(&self) -> Vec<u32> {
+        let mut v = self.bands_supported.clone();
+        v.sort_by_key(|b| (bands::class_of(*b as u8), *b));
+        v
+    }
+
+    /// What the device runs right now, read from its own mask. Never from the
+    /// tick list: after a preset loads the two differ, and that is the point.
+    pub fn bands_on_device(&self) -> Vec<u8> {
+        crate::preflight::current_bands(self.snap.as_ref())
+    }
+
+    /// (added, dropped) between the device's mask and the tick list.
+    pub fn bands_diff(&self) -> (Vec<u8>, Vec<u8>) {
+        let now = self.bands_on_device();
+        let added = self
+            .bands_selected
+            .iter()
+            .copied()
+            .filter(|b| !now.contains(b))
+            .collect();
+        let dropped = now
+            .iter()
+            .copied()
+            .filter(|b| !self.bands_selected.contains(b))
+            .collect();
+        (added, dropped)
+    }
+
+    /// True when the tick list is exactly what the device already has.
+    pub fn bands_unchanged(&self) -> bool {
+        let (added, dropped) = self.bands_diff();
+        added.is_empty() && dropped.is_empty()
+    }
+
+    /// The device's own bands grouped for the grid, empty classes omitted.
+    pub fn bands_by_class(&self) -> Vec<(bands::BandClass, Vec<u32>)> {
+        let order = self.bands_in_draw_order();
+        bands::BandClass::ALL
+            .iter()
+            .map(|cls| {
+                let members = order
+                    .iter()
+                    .copied()
+                    .filter(|b| bands::class_of(*b as u8) == *cls)
+                    .collect::<Vec<u32>>();
+                (*cls, members)
+            })
+            .filter(|(_, members)| !members.is_empty())
+            .collect()
+    }
+
     pub fn band_toggle(&mut self) {
         if self.write.is_busy() || matches!(self.write, WriteState::Confirming(_)) {
             return;
         }
-        let Some(band) = self.bands_supported.get(self.band_cursor).copied() else {
+        let order = self.bands_in_draw_order();
+        let Some(band) = order.get(self.band_cursor).copied() else {
             return;
         };
         if let Some(pos) = self.bands_selected.iter().position(|b| *b as u32 == band) {
@@ -650,10 +706,11 @@ impl App {
     }
 
     pub fn band_cursor_move(&mut self, delta: isize) {
-        if self.bands_supported.is_empty() {
+        let len = self.bands_in_draw_order().len();
+        if len == 0 {
             return;
         }
-        let max = self.bands_supported.len() as isize - 1;
+        let max = len as isize - 1;
         let next = (self.band_cursor as isize + delta).clamp(0, max);
         self.band_cursor = next as usize;
     }
@@ -1047,6 +1104,91 @@ fn ip_key(ip: &str) -> (u32, u32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_snap() -> crate::model::Snapshot {
+        serde_json::from_str(include_str!("../fixtures/sample-snapshot.json")).expect("fixture")
+    }
+
+    #[test]
+    fn bands_draw_order_groups_by_class_and_keeps_every_band() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.bands_supported = vec![1, 3, 5, 7, 8, 20, 28, 32, 34, 38, 39, 40, 41, 42, 43];
+        let order = app.bands_in_draw_order();
+        assert_eq!(
+            order.len(),
+            app.bands_supported.len(),
+            "no band may be dropped"
+        );
+        assert_eq!(
+            &order[..4],
+            &[5, 8, 20, 28],
+            "low first, ascending inside the class"
+        );
+        let last_low = order.iter().position(|b| *b == 28).unwrap();
+        let first_mid = order.iter().position(|b| *b == 1).unwrap();
+        let first_high = order.iter().position(|b| *b == 7).unwrap();
+        assert!(last_low < first_mid && first_mid < first_high, "{order:?}");
+    }
+
+    #[test]
+    fn an_unknown_band_is_ordered_last_not_hidden() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.bands_supported = vec![99, 1];
+        assert_eq!(app.bands_in_draw_order(), vec![1, 99]);
+    }
+
+    #[test]
+    fn the_cursor_ticks_the_band_it_is_drawn_on() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.bands_supported = vec![1, 5];
+        app.band_cursor = 0;
+        app.band_toggle();
+        assert_eq!(
+            app.bands_selected,
+            vec![5],
+            "cursor 0 is the first drawn band, B5"
+        );
+    }
+
+    #[test]
+    fn bands_diff_names_the_change_in_both_directions() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        assert!(app.bands_unchanged(), "the tick starts equal to the device");
+        app.bands_selected.retain(|b| *b != 5);
+        let (added, dropped) = app.bands_diff();
+        assert!(added.is_empty());
+        assert_eq!(dropped, vec![5]);
+        app.bands_selected.push(34);
+        app.bands_selected.sort_unstable();
+        let (added, dropped) = app.bands_diff();
+        assert_eq!(added, vec![34]);
+        assert_eq!(dropped, vec![5]);
+    }
 
     #[test]
     fn chart_opts_follow_the_style_and_the_theme() {
