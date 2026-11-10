@@ -2144,10 +2144,16 @@ pub(crate) fn nr_aux_lines(nr: &crate::model::Nr, width: usize) -> Vec<String> {
 /// Same, with a lead-in word kept on the first line when it fits.
 pub(crate) fn nr_aux_lines_head(nr: &crate::model::Nr, width: usize, head: &str) -> Vec<String> {
     let width = width.max(12);
+    let parts = nr_aux_parts(nr);
+    // A lead-in word with nothing after it is noise: return empty so callers
+    // draw no line at all.
+    if parts.is_empty() {
+        return Vec::new();
+    }
     let mut out: Vec<String> = Vec::new();
     let mut cur = head.to_string();
     let mut fresh_head = !head.is_empty();
-    for part in nr_aux_parts(nr) {
+    for part in parts {
         let candidate = if cur.is_empty() {
             part.clone()
         } else if fresh_head {
