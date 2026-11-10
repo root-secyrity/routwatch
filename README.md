@@ -301,9 +301,12 @@ routwatch preview --tab bands --size 120x30 --ansi
   comes from reading `net/net-mode` back, never from the code; routwatch waits
   one grace period and then says what the device reports. A `100006` with no
   change behind it is reported as a failure.
-- **5G per-field metrics** (`nrrsrp`, `nrsinr`, `nrdlmcs`) are empty on some
-  firmware even with ENDC active. Only `SignalIconNr` (0–5 bars) and the ENDC flag
-  are reliable there; the UI switches to a bars panel instead of faking dBm.
+- **5G per-field metrics can be empty**: on some firmware the `nrrsrp`, `nrrsrq`
+  and `nrsinr` readings stay blank even with ENDC active, while `SignalIconNr`
+  (0–5 bars) and the ENDC flag keep arriving. The signal panel then shows the bars
+  and says which `nr` fields did arrive (`nrearfcn`, bandwidths, rank, BLER, CQI,
+  TX power) rather than inventing dBm; it switches to the full gauges the moment
+  any one of `nrrsrp`, `nrrsrq` or `nrsinr` carries a value.
 - **The budget is local**: the firmware answers `monitoring/month_statistics`,
   but routwatch does not read the monthly counters; the bar compares your own
   `budget_gb` against the traffic it samples.
