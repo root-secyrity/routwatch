@@ -56,6 +56,10 @@ build that must stay under 10 MiB, plus the same source in five containers
 (debian 12, ubuntu 22.04, ubuntu 24.04, fedora 41, alpine 3.20) to catch a libc
 or toolchain surprise early.
 
+`make test` currently runs 291 unit + 11 binary + 9 CLI tests (the CLI file is
+local, not published; the unit tests read `fixtures/`). That number is a promise:
+change it here, in the same PR that changes the count.
+
 ## What CI cannot check
 
 - **No real device data in any tracked file** - no SSID, MAC, IMEI, serial or WAN
@@ -64,8 +68,8 @@ or toolchain surprise early.
 - **`DOCK/` and `tests/` are local-only** and not tracked. If your change needs a
   capture from your own router, keep it there and describe in the PR what it
   showed.
-- **The test count in `README.md` is a promise** - if you add or remove a test,
-  update the number in the same PR.
+- **The test count in `CONTRIBUTING.md` is a promise** - if you add or remove a
+  test, update the number in the same PR.
 - **`docs/contracts.md` is machine-checked.** Adding a contract means adding the
   guard test that names it; renaming one breaks the build by design.
 

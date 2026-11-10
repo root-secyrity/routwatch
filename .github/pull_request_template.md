@@ -15,7 +15,7 @@ reviewer would ask about anyway.
 
 - [ ] `make fmt` clean
 - [ ] `make lint` clean (clippy, `-D warnings`)
-- [ ] `make test` passes, and the test count in `README.md` still matches
+- [ ] `make test` passes, and the test count in `CONTRIBUTING.md` still matches
 - [ ] release build still under 10 MiB (`make build`)
 - [ ] no real device data in any tracked file or commit message (no SSID, MAC, IMEI, serial, WAN IP)
 - [ ] if a promise in `docs/contracts.md` changed, the guard test that names it changed too

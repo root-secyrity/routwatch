@@ -138,7 +138,8 @@ pub fn parse_ping(host: &str, output: &str) -> PingOutcome {
 /// `-c N` + `-W <seconds>` is the spelling shared by iputils (Arch, Fedora,
 /// Debian, Ubuntu) and BusyBox (Alpine): busybox has no millisecond timer, and
 /// `-W 2` means two seconds on every Linux distribution routwatch targets.
-/// (BSD/macOS `-W` is milliseconds - out of scope, see README.)
+/// (BSD/macOS `-W` is milliseconds - out of scope, `docs/platforms.md` lists the
+/// platforms this is built and tested on.)
 pub fn ping_args(count: u32, host: &str) -> Vec<String> {
     vec![
         "-c".to_string(),
