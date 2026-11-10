@@ -408,7 +408,7 @@ impl App {
     ///
     /// `bg` is `Reset` on six themes, where the real background belongs to the
     /// terminal and cannot be read. The ramp then anchors on a documented dark
-    /// assumption (`ASSUMED_DARK_BG`), which is why README's Limits says so.
+    /// assumption (`ASSUMED_DARK_BG`), which is why `docs/limits.md` says so.
     pub fn chart_opts(&self) -> crate::ui::chart::ChartOpts {
         crate::ui::chart::ChartOpts {
             fade: self.graph != GraphStyle::Braille,
