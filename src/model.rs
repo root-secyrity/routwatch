@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Nr {
     pub rsrp_dbm: Option<f32>,
     pub rsrq_db: Option<f32>,
@@ -10,6 +11,19 @@ pub struct Nr {
     pub ul_mhz: Option<u32>,
     pub dl_mcs: Option<u8>,
     pub ul_mcs: Option<u8>,
+    /// `nrearfcn`, kept as the firmware writes it: `DL:528980 UL:528980`.
+    pub earfcn: Option<String>,
+    /// `nrdlbandwidth` / `nrulbandwidth`, kept as text: `100MHz`.
+    pub dl_bw: Option<String>,
+    pub ul_bw: Option<String>,
+    /// `nrrank`: MIMO layers, 1..=8. Anything else is not a reading.
+    pub rank: Option<u8>,
+    /// `nrbler` as a percentage, 0..=100.
+    pub bler_pct: Option<f32>,
+    /// `nrcqi0`/`nrcqi1`, 0..=15; 127 is the firmware's padding, not a reading.
+    pub cqi: Option<u8>,
+    /// `nrtxpower` in dBm when the firmware sends a bare number.
+    pub txpower_dbm: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

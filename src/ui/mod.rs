@@ -1675,9 +1675,61 @@ mod tests {
             s.connection.nr_bars = 4;
         }
         let text = render_to_string(&app, 120, 34);
-        assert!(text.contains("5G (bars only)"), "\n{text}");
-        assert!(text.contains("no NR RSRP/SINR values"));
+        assert!(text.contains("5G NR (bars)"), "\n{text}");
+        assert!(text.contains("the firmware sends the nr fields empty"));
         assert!(text.contains("4/5"));
+    }
+
+    /// The aux line must wrap to the panel width instead of being clipped by
+    /// the non-wrapping paragraph.
+    #[test]
+    fn nr_aux_lines_wrap_to_width() {
+        let nr = crate::model::Nr {
+            earfcn: Some("DL:528980 UL:528980".into()),
+            dl_bw: Some("90MHz".into()),
+            ul_bw: Some("90MHz".into()),
+            rank: Some(4),
+            bler_pct: Some(0.0),
+            cqi: Some(10),
+            txpower_dbm: Some(-25.0),
+            ..Default::default()
+        };
+        let wide = crate::ui::tabs::nr_aux_lines(&nr, 200);
+        assert_eq!(wide.len(), 1, "one line when it fits");
+        let narrow = crate::ui::tabs::nr_aux_lines(&nr, 40);
+        assert!(narrow.len() > 1, "wraps when it does not fit");
+        assert!(
+            narrow.iter().all(|l| l.chars().count() <= 40),
+            "no line exceeds the width: {narrow:?}"
+        );
+        assert_eq!(
+            crate::ui::tabs::nr_aux_lines(&crate::model::Nr::default(), 80).len(),
+            0,
+            "nothing to show when the firmware sent no aux field"
+        );
+    }
+
+    /// The bars panel names the NR fields this firmware does send instead of
+    /// dropping them: a unit can report an ARFCN while leaving RSRP empty.
+    #[test]
+    fn bars_panel_names_the_nr_fields_it_did_get() {
+        let mut app = fixture_app();
+        app.view = View::Gauges;
+        if let Some(s) = app.snap.as_mut() {
+            s.connection.endc = true;
+            s.connection.nr_bars = 4;
+            s.signal.nr = Some(crate::model::Nr {
+                earfcn: Some("DL:528980 UL:528980".into()),
+                dl_bw: Some("100MHz".into()),
+                rank: Some(4),
+                ..Default::default()
+            });
+        }
+        let text = render_to_string(&app, 140, 34);
+        assert!(text.contains("still reports"), "\n{text}");
+        assert!(text.contains("ARFCN DL:528980 UL:528980"), "\n{text}");
+        assert!(text.contains("DL 100MHz"), "\n{text}");
+        assert!(text.contains("rank 4"), "\n{text}");
     }
 
     #[test]

@@ -1864,7 +1864,7 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
     let title = match kind {
         crate::app::SignalPanel::LteGauges => "SIGNAL · 4G",
         crate::app::SignalPanel::NrGauges => "SIGNAL · 5G NR",
-        crate::app::SignalPanel::NrBars => "SIGNAL · 5G (bars only)",
+        crate::app::SignalPanel::NrBars => "SIGNAL · 5G NR (bars)",
     };
     let block = panel(title.to_string(), t);
     let inner = block.inner(area);
@@ -1888,13 +1888,25 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
         ])];
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "this firmware publishes 5G as bars only - no NR RSRP/SINR values",
+            "NR is attached: the firmware sends the nr fields empty here",
             Style::default().fg(t.warn),
         )));
-        lines.push(Line::from(Span::styled(
-            "the panel switches to full 5G gauges automatically if a firmware ever sends them",
-            Style::default().fg(t.dim),
-        )));
+        // Fields this firmware did send are shown, not dropped: an empty RSRP
+        // does not make N-ARFCN or the bandwidth a lie. The lead-in rides on
+        // the first line to keep the panel short in a compact layout.
+        if let Some(nr) = s.signal.nr.as_ref() {
+            for l in nr_aux_lines_head(nr, inner.width.saturating_sub(3) as usize, "still reports")
+            {
+                lines.push(Line::from(Span::styled(l, Style::default().fg(t.dim))));
+            }
+        }
+        // The upgrade hint is the least important line: compact layouts drop it.
+        if wide {
+            lines.push(Line::from(Span::styled(
+                "full gauges appear once nrrsrp, nrrsrq or nrsinr carry a value",
+                Style::default().fg(t.dim),
+            )));
+        }
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
         return;
     }
@@ -2062,6 +2074,13 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
     };
     facts.push(Span::styled(detail, Style::default().fg(t.dim)));
     lines.push(Line::from(facts));
+    // Secondary NR facts on their own line: they do not fit the primary one
+    // and, on this firmware, they are often all that arrives.
+    if fiveg {
+        for l in nr_aux_lines(&nr, inner.width as usize) {
+            lines.push(Line::from(Span::styled(l, Style::default().fg(t.dim))));
+        }
+    }
 
     if wide && inner.height as usize > lines.len() + 1 {
         lines.push(Line::from(""));
@@ -2087,6 +2106,68 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
         ]));
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The NR fields that are not main gauge metrics, as separate parts.
+fn nr_aux_parts(nr: &crate::model::Nr) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(a) = nr.earfcn.as_deref() {
+        parts.push(format!("ARFCN {a}"));
+    }
+    if let Some(bw) = nr.dl_bw.as_deref() {
+        parts.push(format!("DL {bw}"));
+    }
+    if let Some(bw) = nr.ul_bw.as_deref() {
+        parts.push(format!("UL {bw}"));
+    }
+    if let Some(r) = nr.rank {
+        parts.push(format!("rank {r}"));
+    }
+    if let Some(b) = nr.bler_pct {
+        parts.push(format!("BLER {b:.1}%"));
+    }
+    if let Some(c) = nr.cqi {
+        parts.push(format!("CQI {c}"));
+    }
+    if let Some(tx) = nr.txpower_dbm {
+        parts.push(format!("TX {tx:.0} dBm"));
+    }
+    parts
+}
+
+/// Packs the parts into lines that fit `width` columns, so nothing is clipped
+/// by a non-wrapping paragraph. Empty when the firmware sent none of them.
+pub(crate) fn nr_aux_lines(nr: &crate::model::Nr, width: usize) -> Vec<String> {
+    nr_aux_lines_head(nr, width, "")
+}
+
+/// Same, with a lead-in word kept on the first line when it fits.
+pub(crate) fn nr_aux_lines_head(nr: &crate::model::Nr, width: usize, head: &str) -> Vec<String> {
+    let width = width.max(12);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = head.to_string();
+    let mut fresh_head = !head.is_empty();
+    for part in nr_aux_parts(nr) {
+        let candidate = if cur.is_empty() {
+            part.clone()
+        } else if fresh_head {
+            fresh_head = false;
+            format!("{cur} {part}")
+        } else {
+            format!("{cur} · {part}")
+        };
+        if !cur.is_empty() && candidate.chars().count() > width {
+            out.push(std::mem::take(&mut cur));
+            cur = part;
+            fresh_head = false;
+        } else {
+            cur = candidate;
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 fn quality_label(metric: &str, value: Option<f32>) -> &'static str {
