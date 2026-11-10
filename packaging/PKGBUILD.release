@@ -9,9 +9,8 @@
 # When a new tag is cut, bump pkgver and refresh the checksum:
 #   updpkgsums
 #
-# 0.4.4: pkgver is bumped, the checksum still belongs to the 0.4.3 tarball on
-# purpose. A wrong sha256 fails loudly, so a build before `updpkgsums` cannot
-# ship silently.
+# 0.4.4: the checksum is pinned to the v0.4.4 tag archive, confirmed from two
+# endpoints (github.com archive and codeload) before the package was built.
 #
 # 0.4.3: the same rule held then, with the digest of the 0.4.2 tarball.
 #
@@ -31,7 +30,7 @@ provides=('routwatch')
 conflicts=('routwatch-git')
 options=('!lto' '!strip')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('1e3bdd0b429611150802b083ff43f8e20949a01a7f238944bd3047cf490f6b0f')
+sha256sums=('fda6af4e6958c5510073e0f6429b7945c485b20d67894513de371172b8c3ecc3')
 
 build() {
 	cd "$pkgname-$pkgver"
