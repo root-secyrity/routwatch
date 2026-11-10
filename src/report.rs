@@ -170,6 +170,35 @@ pub fn markdown(snap: &Snapshot, when: u64, red: Redaction) -> String {
     if let Some(nr) = &snap.signal.nr {
         row(&mut out, "NR bars", snap.connection.nr_bars.to_string());
         row(&mut out, "NR band", opt(nr.band.as_deref()));
+        // Secondary NR fields: on a firmware that blanks RSRP these are the
+        // only NR evidence, so a support report must carry them.
+        row(&mut out, "NR ARFCN", opt(nr.earfcn.as_deref()));
+        row(&mut out, "NR DL bandwidth", opt(nr.dl_bw.as_deref()));
+        row(&mut out, "NR UL bandwidth", opt(nr.ul_bw.as_deref()));
+        row(
+            &mut out,
+            "NR rank",
+            nr.rank.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+        );
+        row(
+            &mut out,
+            "NR BLER",
+            nr.bler_pct
+                .map(|v| format!("{v:.1}%"))
+                .unwrap_or_else(|| "-".into()),
+        );
+        row(
+            &mut out,
+            "NR CQI",
+            nr.cqi.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+        );
+        row(
+            &mut out,
+            "NR TX power",
+            nr.txpower_dbm
+                .map(|v| format!("{v:.0} dBm"))
+                .unwrap_or_else(|| "-".into()),
+        );
     }
 
     out.push_str("\n## Device\n\n| field | value |\n|---|---|\n");

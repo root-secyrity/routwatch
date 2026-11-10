@@ -229,11 +229,21 @@ pub enum SignalPanel {
 }
 
 /// Pure rule, unit-tested: never invent 5G values the firmware did not send.
+///
+/// One real NR reading is enough for the gauge panel. A firmware that fills
+/// only `nrearfcn` or the bandwidths keeps the bars panel, which now names the
+/// fields it did get instead of dropping them.
 pub fn resolve_signal_panel(snap: Option<&Snapshot>) -> SignalPanel {
     let Some(s) = snap else {
         return SignalPanel::LteGauges;
     };
-    if s.signal.nr.as_ref().and_then(|n| n.rsrp_dbm).is_some() {
+    let has_nr_reading = s
+        .signal
+        .nr
+        .as_ref()
+        .map(|n| n.rsrp_dbm.is_some() || n.rsrq_db.is_some() || n.sinr_db.is_some())
+        .unwrap_or(false);
+    if has_nr_reading {
         return SignalPanel::NrGauges;
     }
     if s.connection.endc || s.connection.nr_bars > 0 {
@@ -1832,12 +1842,26 @@ mod tests {
         snap.connection.nr_bars = 3;
         assert_eq!(resolve_signal_panel(Some(&snap)), SignalPanel::NrBars);
 
-        // Only real NR metrics promote the panel to full 5G gauges.
+        // Any one NR metric promotes the panel, not RSRP alone.
         snap.signal.nr = Some(crate::model::Nr {
             rsrp_dbm: Some(-88.0),
             ..Default::default()
         });
         assert_eq!(resolve_signal_panel(Some(&snap)), SignalPanel::NrGauges);
+
+        snap.signal.nr = Some(crate::model::Nr {
+            sinr_db: Some(12.0),
+            ..Default::default()
+        });
+        assert_eq!(resolve_signal_panel(Some(&snap)), SignalPanel::NrGauges);
+
+        // Secondary fields alone are not a level: bars stay, with their names.
+        snap.signal.nr = Some(crate::model::Nr {
+            earfcn: Some("DL:528980 UL:528980".into()),
+            dl_bw: Some("100MHz".into()),
+            ..Default::default()
+        });
+        assert_eq!(resolve_signal_panel(Some(&snap)), SignalPanel::NrBars);
 
         assert_eq!(resolve_signal_panel(None), SignalPanel::LteGauges);
     }

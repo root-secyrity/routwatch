@@ -30,7 +30,14 @@
       "dl_mhz": 2644,
       "ul_mhz": 2644,
       "dl_mcs": 28,
-      "ul_mcs": 12
+      "ul_mcs": 12,
+      "earfcn": "DL:528980 UL:528980",
+      "dl_bw": "90MHz",
+      "ul_bw": "90MHz",
+      "rank": 4,
+      "bler_pct": 0.0,
+      "cqi": 10,
+      "txpower_dbm": -25.0
     }
   },
   "traffic": {

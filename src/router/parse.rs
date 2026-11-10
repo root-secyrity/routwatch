@@ -117,6 +117,25 @@ pub fn parse_signal(n: &Node) -> Signal {
     let nr_ul = freq_mhz(n, "nrulfreq").or_else(|| freq_mhz(n, "NRULFREQ"));
     let nr_dl_mcs = mcs_primary(&mcs_values(n, &["nrdlmcs", "NR_DL_MCS", "nr_dl_mcs"]));
     let nr_ul_mcs = mcs_primary(&mcs_values(n, &["nrulmcs", "NR_UL_MCS", "nr_ul_mcs"]));
+    let nr_earfcn = s_of(n, "nrearfcn").filter(|v| !v.is_empty());
+    let nr_dl_bw = s_of(n, "nrdlbandwidth").filter(|v| !v.is_empty());
+    let nr_ul_bw = s_of(n, "nrulbandwidth").filter(|v| !v.is_empty());
+    // Rank is the number of MIMO layers: 1..=8 or nothing.
+    let nr_rank = u32_of(n, "nrrank")
+        .filter(|v| (1..=8).contains(v))
+        .map(|v| v as u8);
+    // BLER arrives as a percentage; 0 is a real reading, so keep it.
+    let nr_bler =
+        nr_value(n, &["nrbler", "NRBLER", "nr_bler"]).filter(|v| (0.0..=100.0).contains(v));
+    // CQI is 0..=15 for NR too; 127 is the padding of an unused carrier.
+    let nr_cqi = ["nrcqi0", "nrcqi1"]
+        .iter()
+        .filter_map(|k| u32_of(n, k))
+        .find(|v| *v <= 15)
+        .map(|v| v as u8);
+    // nrtxpower is a bare dBm number on the firmwares seen so far; the
+    // "PPusch:" form belongs to the LTE tag and is not parsed here.
+    let nr_txpower = nr_value(n, &["nrtxpower", "NRTXPOWER", "nr_txpower"]);
     let nr_band = nr_dl.map(|mhz| match mhz {
         2496..=2690 => "N41".to_string(),
         3300..=3800 => "N78/N77".to_string(),
@@ -129,6 +148,9 @@ pub fn parse_signal(n: &Node) -> Signal {
         || nr_sinr.is_some()
         || nr_dl.is_some()
         || nr_band.is_some()
+        || nr_earfcn.is_some()
+        || nr_dl_bw.is_some()
+        || nr_rank.is_some()
     {
         Some(Nr {
             rsrp_dbm: nr_rsrp,
@@ -139,6 +161,13 @@ pub fn parse_signal(n: &Node) -> Signal {
             ul_mhz: nr_ul,
             dl_mcs: nr_dl_mcs,
             ul_mcs: nr_ul_mcs,
+            earfcn: nr_earfcn,
+            dl_bw: nr_dl_bw,
+            ul_bw: nr_ul_bw,
+            rank: nr_rank,
+            bler_pct: nr_bler,
+            cqi: nr_cqi,
+            txpower_dbm: nr_txpower,
         })
     } else {
         None
@@ -503,6 +532,51 @@ mod tests {
         );
         assert_eq!(nr.dl_mcs, Some(28), "Code0 is the primary NR carrier");
         assert_eq!(nr.ul_mcs, Some(12));
+        assert_eq!(nr.earfcn.as_deref(), Some("DL:528980 UL:528980"));
+        assert_eq!(nr.dl_bw.as_deref(), Some("90MHz"));
+        assert_eq!(nr.ul_bw, None, "capture carries no nrulbandwidth");
+        assert_eq!(nr.rank, None);
+    }
+
+    /// A firmware can fill only the secondary NR fields: no RSRP, but a real
+    /// ARFCN and bandwidth. Those must survive, and they are what promotes the
+    /// signal block from "no NR" to "NR present".
+    #[test]
+    fn parses_nr_secondary_fields_alone() {
+        let doc = parse(
+            "<response><nrearfcn>DL:528980 UL:528980</nrearfcn>\
+             <nrdlbandwidth>100MHz</nrdlbandwidth><nrulbandwidth>20MHz</nrulbandwidth>\
+             <nrrank>4</nrrank><nrbler>0</nrbler><nrcqi0>127</nrcqi0>\
+             <nrcqi1>9</nrcqi1><nrtxpower>-25</nrtxpower></response>",
+        )
+        .unwrap();
+        let s = parse_signal(&doc);
+        let nr =
+            s.nr.expect("secondary NR fields alone must create the block");
+        assert_eq!(nr.rsrp_dbm, None);
+        assert_eq!(nr.earfcn.as_deref(), Some("DL:528980 UL:528980"));
+        assert_eq!(nr.dl_bw.as_deref(), Some("100MHz"));
+        assert_eq!(nr.ul_bw.as_deref(), Some("20MHz"));
+        assert_eq!(nr.rank, Some(4));
+        assert_eq!(nr.bler_pct, Some(0.0), "zero BLER is a real reading");
+        assert_eq!(nr.cqi, Some(9), "127 is padding, the second carrier wins");
+        assert_eq!(nr.txpower_dbm, Some(-25.0));
+    }
+
+    /// Out-of-range values are rejected rather than shown: a rank of 0 or a
+    /// BLER of 250 is firmware padding, not a measurement.
+    #[test]
+    fn rejects_out_of_range_nr_aux_values() {
+        let doc = parse(
+            "<response><nrrsrp>-100dBm</nrrsrp><nrrank>0</nrrank>\
+             <nrbler>250</nrbler><nrcqi0>127</nrcqi0></response>",
+        )
+        .unwrap();
+        let s = parse_signal(&doc);
+        let nr = s.nr.expect("rsrp keeps the block present");
+        assert_eq!(nr.rank, None);
+        assert_eq!(nr.bler_pct, None);
+        assert_eq!(nr.cqi, None);
     }
 
     #[test]
