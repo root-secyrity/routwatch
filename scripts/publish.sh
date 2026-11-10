@@ -31,13 +31,20 @@ fail() {
 # every release file the README names is compared with what the release actually
 # carries. Two accepted values, because a release PR names the next version
 # before its tag exists: the newest tag, or the version in Cargo.toml.
+# docs/install.md repeats the install row, so it is checked the same way.
 # Set README_FILE to point the check at a fixture.
 check_readme_versions() {
 	local readme="${README_FILE:-README.md}"
-	local pkg recipe slug tag newest assets v name installed bad=0
+	local pkg recipe slug tag newest assets v name f installed bad=0
+	local files=("$readme")
 
 	pkg="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
 	[[ -f "$readme" ]] || fail "$readme not found"
+	# A fixture stands in for the README alone; the real run also reads the
+	# page the README links to, which cannot be forgotten without a red check.
+	if [[ -z "${README_FILE:-}" && -f docs/install.md ]]; then
+		files+=(docs/install.md)
+	fi
 
 	# One number, four witnesses. The recipe, the README, the tag and the
 	# installed package all have to name what Cargo.toml carries: a tree at
@@ -49,13 +56,15 @@ check_readme_versions() {
 		bad=1
 	fi
 
-	while read -r v; do
-		[[ -n "$v" ]] || continue
-		if [[ "$v" != "$pkg" ]]; then
-			echo "✗ $readme installs v$v; the tree carries $pkg" >&2
-			bad=1
-		fi
-	done < <(grep -oE '/releases/download/v[0-9]+\.[0-9]+\.[0-9]+' "$readme" | sed 's#.*/v##' | sort -u)
+	for f in "${files[@]}"; do
+		while read -r v; do
+			[[ -n "$v" ]] || continue
+			if [[ "$v" != "$pkg" ]]; then
+				echo "✗ $f installs v$v; the tree carries $pkg" >&2
+				bad=1
+			fi
+		done < <(grep -oE '/releases/download/v[0-9]+\.[0-9]+\.[0-9]+' "$f" | sed 's#.*/v##' | sort -u)
+	done
 
 	# A version nobody tagged cannot be reproduced, whatever the files say.
 	if ! git rev-parse -q --verify "refs/tags/v$pkg" >/dev/null; then
@@ -84,17 +93,19 @@ check_readme_versions() {
 	fi
 	assets="$(gh release view "$tag" --repo "$slug" --json assets --jq '.assets[].name' 2>/dev/null || true)"
 
-	while read -r name; do
-		[[ -n "$name" ]] || continue
-		if grep -qxF "$name" <<<"$assets"; then
-			continue
-		fi
-		echo "✗ $readme names $name, which $tag does not publish" >&2
-		bad=1
-	done < <(grep -oE 'routwatch-[0-9][0-9A-Za-z._-]*\.pkg\.tar\.zst(\.sha256)?|routwatch-x86_64-linux-musl(\.sha256)?' "$readme" | sort -u)
+	for f in "${files[@]}"; do
+		while read -r name; do
+			[[ -n "$name" ]] || continue
+			if grep -qxF "$name" <<<"$assets"; then
+				continue
+			fi
+			echo "✗ $f names $name, which $tag does not publish" >&2
+			bad=1
+		done < <(grep -oE 'routwatch-[0-9][0-9A-Za-z._-]*\.pkg\.tar\.zst(\.sha256)?|routwatch-x86_64-linux-musl(\.sha256)?' "$f" | sort -u)
+	done
 
-	[[ "$bad" -eq 0 ]] || fail "$readme, the release assets and the tree disagree"
-	echo "✓ version $pkg is one number in Cargo.toml, the recipe, the README, $tag and pacman"
+	[[ "$bad" -eq 0 ]] || fail "the docs, the release assets and the tree disagree"
+	echo "✓ version $pkg is one number in Cargo.toml, the recipe, the docs, $tag and pacman"
 }
 check_readme_versions
 
