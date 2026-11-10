@@ -21,3 +21,15 @@ config.toml
 
 # `routwatch dump` writes here by default
 routwatch-dump*.json
+# prowl-agent: derived state
+.prowl/index.db*
+.prowl/cache/
+.prowl/logs/
+.prowl/editor/
+.prowl/setup-applies.json
+.prowl-setup.lock
+# /prowl-agent: derived state
+
+# prowl: the hand-edited project config is tracked, everything else in .prowl is derived
+.prowl/*
+!.prowl/config.toml
