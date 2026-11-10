@@ -1707,6 +1707,12 @@ mod tests {
             0,
             "nothing to show when the firmware sent no aux field"
         );
+        assert_eq!(
+            crate::ui::tabs::nr_aux_lines_head(&crate::model::Nr::default(), 80, "still reports")
+                .len(),
+            0,
+            "a lead-in with nothing after it must not draw a bare word"
+        );
     }
 
     /// The bars panel names the NR fields this firmware does send instead of
