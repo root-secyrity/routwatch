@@ -352,6 +352,24 @@ pub fn parse_dns(n: &Node) -> DnsInfo {
         status: s_of(n, "DnsStatus"),
         primary: s_of(n, "PrimaryDns"),
         secondary: s_of(n, "SecondaryDns"),
+        lan_ip: s_of(n, "DhcpIPAddress"),
+    }
+}
+
+pub fn parse_dhcp(n: &Node) -> DhcpSettings {
+    DhcpSettings {
+        dhcp_ip: s_of(n, "DhcpIPAddress"),
+        netmask: s_of(n, "DhcpLanNetmask"),
+        dhcp_status: s_of(n, "DhcpStatus"),
+        start_ip: s_of(n, "DhcpStartIPAddress"),
+        end_ip: s_of(n, "DhcpEndIPAddress"),
+        lease_time: s_of(n, "DhcpLeaseTime"),
+        dns_status: s_of(n, "DnsStatus"),
+        primary: s_of(n, "PrimaryDns"),
+        secondary: s_of(n, "SecondaryDns"),
+        homeurl: s_of(n, "homeurl"),
+        access_ip: s_of(n, "accessipaddress"),
+        raw_inner: String::new(),
     }
 }
 

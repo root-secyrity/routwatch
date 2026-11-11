@@ -57,6 +57,15 @@ impl Node {
     }
 }
 
+/// Escape text for an element body or attribute. One copy, used by every writer.
+pub fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// A router document nests a handful of levels; anything deeper is hostile
 /// input that would blow the stack while the tree is dropped.
 const MAX_DEPTH: usize = 256;
@@ -173,9 +182,24 @@ fn unescape(s: &str) -> String {
     out
 }
 
+/// The text between the root element's tags, as received: what a whole-document
+/// write echoes back. Empty when the text has no closing tag.
+pub fn inner_of_document(text: &str) -> String {
+    match (text.find('>'), text.rfind("</")) {
+        (Some(open), Some(close)) if close > open => text[open + 1..close].to_string(),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escaping_is_reversible_for_hostile_text() {
+        assert_eq!(esc("a&b<c>\"d\""), "a&amp;b&lt;c&gt;&quot;d&quot;");
+        assert_eq!(esc("192.168.8.1"), "192.168.8.1");
+    }
 
     #[test]
     fn parses_flat_response() {

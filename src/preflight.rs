@@ -130,6 +130,7 @@ mod tests {
                 status: Some("1".into()),
                 primary: None,
                 secondary: None,
+                lan_ip: None,
             }),
             ..Snapshot::default()
         };

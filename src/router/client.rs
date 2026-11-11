@@ -7,6 +7,7 @@
 
 use crate::error::{classify, ApiError};
 use crate::router::bands::BandPayload;
+use crate::router::parse;
 use crate::xml::{self, Node};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
@@ -263,9 +264,8 @@ impl HuaweiClient {
         let encoded = encode_password(user, pass, ptype, &token);
         let xml_body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><Username>{}</Username><Password>{}</Password><password_type>{}</password_type></request>",
-            esc(user),
-            encoded,
-            ptype
+            xml::esc(user),
+            encoded,            ptype
         );
 
         let resp = self.raw_post("/api/user/login", &xml_body)?;
@@ -302,6 +302,13 @@ impl HuaweiClient {
     pub fn get(&mut self, endpoint: &str) -> Result<Node, ApiError> {
         let raw = self.raw_get(&format!("/api/{endpoint}"))?;
         unwrap_document(&raw)
+    }
+
+    /// The DHCP document with its exact source text, for the whole-document write.
+    pub fn get_dhcp(&mut self) -> Result<crate::model::DhcpSettings, ApiError> {
+        let raw = self.raw("dhcp/settings")?;
+        let node = unwrap_document(&raw)?;
+        Ok(parse::parse_dhcp(&node).with_raw(&xml::inner_of_document(&raw)))
     }
 
     /// Write the band/network-mode configuration. The caller must verify the
@@ -407,12 +414,9 @@ fn extract_csrf(html: &str) -> Option<String> {
     }
 }
 
+/// Kept only until Task 3.2 deletes `set_dns`, its last caller.
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    crate::xml::esc(s)
 }
 
 fn truncate(s: &str, n: usize) -> String {
