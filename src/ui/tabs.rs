@@ -1247,6 +1247,14 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(t.fg),
                 t.dim,
             ));
+            if d.editable == Some(false) {
+                dns_lines.push(kv(
+                    "editable",
+                    "no: this firmware has no LAN DHCP DNS setting".to_string(),
+                    Style::default().fg(t.warn),
+                    t.dim,
+                ));
+            }
         }
         None => dns_lines.push(Line::from(Span::styled(
             "dhcp/settings unavailable",
@@ -1639,6 +1647,15 @@ pub fn dns_tab(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(t.fg),
                 ),
             ]));
+            if d.editable == Some(false) {
+                lines.push(Line::from(vec![
+                    Span::styled(pad("editable", 10), Style::default().fg(t.dim)),
+                    Span::styled(
+                        "no: this firmware has no LAN DHCP DNS setting",
+                        Style::default().fg(t.warn),
+                    ),
+                ]));
+            }
         }
         None => lines.push(Line::from(Span::styled(
             "dhcp/settings unavailable on this firmware",

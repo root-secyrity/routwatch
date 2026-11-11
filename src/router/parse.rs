@@ -353,6 +353,7 @@ pub fn parse_dns(n: &Node) -> DnsInfo {
         primary: s_of(n, "PrimaryDns"),
         secondary: s_of(n, "SecondaryDns"),
         lan_ip: s_of(n, "DhcpIPAddress"),
+        editable: None,
     }
 }
 

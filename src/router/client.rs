@@ -311,6 +311,19 @@ impl HuaweiClient {
         Ok(parse::parse_dhcp(&node).with_raw(&xml::inner_of_document(&raw)))
     }
 
+    /// Whether this firmware exposes the LAN DHCP DNS setting at all.
+    ///
+    /// `dhcp/feature-switch` carries `dhcpsdns_display`, the exact flag the web UI's
+    /// `isDnsDisplay()` checks before it draws the DNS checkbox and the two server
+    /// fields. When it is not `1` the page is hidden and `POST dhcp/settings` applies
+    /// the DHCP range and lease while silently dropping `DnsStatus`, `PrimaryDns` and
+    /// `SecondaryDns`. `None` means the endpoint or the flag is missing, which is an
+    /// older firmware: the write is attempted as before.
+    pub fn dhcp_dns_editable(&mut self) -> Option<bool> {
+        let node = self.get("dhcp/feature-switch").ok()?;
+        node.value("dhcpsdns_display").map(|v| v.trim() == "1")
+    }
+
     /// Write the band/network-mode configuration. The caller must verify the
     /// result by reading `net/net-mode` back (see `write::apply_bands`).
     pub fn post(&mut self, endpoint: &str, body: &str) -> Result<Node, ApiError> {

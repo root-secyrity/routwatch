@@ -435,6 +435,17 @@ pub fn apply_dns(
 ) -> WriteState {
     let reset = matches!(intent, WriteIntent::ResetDns);
 
+    // Ask the firmware whether it exposes LAN DHCP DNS before anything else. The
+    // document POST is accepted either way: it applies the DHCP range and lease and
+    // silently drops the DNS trio, which then reads back as a mismatch the user has
+    // to decode. This check turns an impossible write into a plain answer.
+    if client.dhcp_dns_editable() == Some(false) {
+        return WriteState::Failed {
+            intent,
+            err: "this firmware has no LAN DHCP DNS setting (dhcpsdns_display=0), so the router would ignore it: nothing was sent".into(),
+        };
+    }
+
     // The POST is a whole-document write, so the document is read first, with its own
     // bytes. Without it there is nothing safe to send and we say so instead of sending
     // three fields.
@@ -979,5 +990,58 @@ mod tests {
         assert_eq!(plan.primary, "1.1.1.1");
         assert_eq!(plan.secondary, "1.0.0.1");
         assert!(plan_dns(&doc, false, "nonsense", "").is_err());
+    }
+
+    /// The live H122-373 hides the DNS row: `dhcpsdns_display=0` means the firmware
+    /// accepts the document and drops the three DNS fields, which the tool used to
+    /// report as a mismatch after a write that could never land. The refusal comes
+    /// before the POST, so the device is not touched at all.
+    #[test]
+    fn a_firmware_without_the_dns_row_is_refused_before_the_post() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpNoDns);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let state = apply_dns(
+            &mut c,
+            "1.1.1.1",
+            "1.0.0.1",
+            dns_intent(),
+            false,
+            &mut |_| {},
+        );
+        match state {
+            WriteState::Failed { err, .. } => {
+                assert!(err.contains("dhcpsdns_display=0"), "{err}");
+                assert!(err.contains("nothing was sent"), "{err}");
+            }
+            other => panic!("a firmware with no DNS row must be refused: {other:?}"),
+        }
+        assert_eq!(
+            mock.dhcp_posts(),
+            0,
+            "the refusal must not touch the device"
+        );
+    }
+
+    /// The refusal is about the firmware, not about the write: the same intent on a
+    /// router that does expose the page still lands and is still verified.
+    #[test]
+    fn the_same_write_lands_on_a_firmware_that_has_the_dns_row() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpWithDns);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let state = apply_dns(
+            &mut c,
+            "1.1.1.1",
+            "1.0.0.1",
+            dns_intent(),
+            false,
+            &mut |_| {},
+        );
+        match state {
+            WriteState::Success { note, .. } => assert!(note.contains("1.1.1.1"), "{note}"),
+            other => panic!("a firmware with the DNS row must accept the write: {other:?}"),
+        }
+        assert_eq!(mock.dhcp_posts(), 1);
     }
 }

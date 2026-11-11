@@ -156,14 +156,19 @@ pub struct DeviceExtras {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DnsInfo {
-    /// `DnsStatus` exactly as the device reports it. It is an enable flag, not a
-    /// manual/automatic switch: the firmware answers `1` while serving custom servers.
+    /// `DnsStatus` exactly as the device reports it. The DHCP page uses `0` for two
+    /// typed servers and `1` when the router answers itself (`js/dhcp.js`), but it is
+    /// not trustworthy across firmwares, so `is_manual()` decides from the addresses.
     pub status: Option<String>,
     pub primary: Option<String>,
     pub secondary: Option<String>,
     /// The router's own LAN address (`DhcpIPAddress`). Advertising it for both
     /// servers is what the DHCP panel calls automatic: the router resolves.
     pub lan_ip: Option<String>,
+    /// Whether this firmware exposes the LAN DHCP DNS setting at all, read from
+    /// `dhcp/feature-switch`. `None` means the device did not say (no such endpoint),
+    /// which is an older firmware and is treated as writable, as before.
+    pub editable: Option<bool>,
 }
 
 impl DnsInfo {
@@ -395,6 +400,7 @@ mod tests {
             primary: Some("192.168.8.1".into()),
             secondary: Some("192.168.8.1".into()),
             lan_ip: Some("192.168.8.1".into()),
+            editable: None,
         };
         assert!(!router_itself.is_manual());
         let custom = DnsInfo {
@@ -408,6 +414,7 @@ mod tests {
             status: Some("0".into()),
             primary: Some("1.1.1.1".into()),
             secondary: Some("1.0.0.1".into()),
+            editable: None,
         };
         assert!(
             unknown_lan.is_manual(),

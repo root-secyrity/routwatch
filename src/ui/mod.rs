@@ -2408,4 +2408,27 @@ mod tests {
         assert_eq!(tab_from_key('9'), Some(Tab::Signal));
         assert_eq!(tab_from_key('0'), None);
     }
+
+    /// A DNS panel that draws a writable setting a firmware does not have is the
+    /// bug that produced the mismatch popup: the row must say so, in the same words
+    /// the refusal uses, and must not appear on a router that has the setting.
+    #[test]
+    fn the_dns_tab_names_a_firmware_without_the_dns_row() {
+        let mut app = fixture_app();
+        app.tab = Tab::Dns;
+        let before = render_to_string(&app, 110, 40);
+        assert!(
+            !before.contains("no LAN DHCP DNS setting"),
+            "an unknown capability must not be reported as missing: {before}"
+        );
+        match app.snap.as_mut().and_then(|s| s.dns.as_mut()) {
+            Some(d) => d.editable = Some(false),
+            None => panic!("the fixture snapshot must carry dns"),
+        }
+        let frame = render_to_string(&app, 110, 40);
+        assert!(
+            frame.contains("no: this firmware has no LAN DHCP DNS setting"),
+            "{frame}"
+        );
+    }
 }

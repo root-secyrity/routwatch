@@ -65,15 +65,21 @@ pub fn for_intent(intent: &WriteIntent, snap: Option<&Snapshot>) -> Preflight {
                 warning: Some("applying bands restarts the radio: 10–30 s offline".to_string()),
             }
         }
-        WriteIntent::SetDns { primary, secondary } => Preflight {
-            rows: vec![
+        WriteIntent::SetDns { primary, secondary } => {
+            let mut rows = vec![
                 ("DNS now".to_string(), dns_now(snap)),
                 ("DNS after".to_string(), format!("{primary} / {secondary}")),
-            ],
-            warning: Some("DNS does not restart the radio; the next poll verifies it".to_string()),
-        },
-        WriteIntent::ResetDns => Preflight {
-            rows: vec![
+            ];
+            push_dns_support(&mut rows, snap);
+            Preflight {
+                rows,
+                warning: Some(
+                    "DNS does not restart the radio; the next poll verifies it".to_string(),
+                ),
+            }
+        }
+        WriteIntent::ResetDns => {
+            let mut rows = vec![
                 ("DNS now".to_string(), dns_now(snap)),
                 (
                     "DNS after".to_string(),
@@ -82,9 +88,25 @@ pub fn for_intent(intent: &WriteIntent, snap: Option<&Snapshot>) -> Preflight {
                         .map(|lan| format!("router as resolver ({lan})"))
                         .unwrap_or_else(|| "router as resolver".to_string()),
                 ),
-            ],
-            warning: Some("DNS does not restart the radio".to_string()),
-        },
+            ];
+            push_dns_support(&mut rows, snap);
+            Preflight {
+                rows,
+                warning: Some("DNS does not restart the radio".to_string()),
+            }
+        }
+    }
+}
+
+/// The confirm modal must not look like a write that can work when the firmware
+/// says it has no such setting: the router would answer OK and drop the DNS fields.
+fn push_dns_support(rows: &mut Vec<(String, String)>, snap: Option<&Snapshot>) {
+    let hidden = snap.and_then(|s| s.dns.as_ref()).and_then(|d| d.editable) == Some(false);
+    if hidden {
+        rows.push((
+            "support".to_string(),
+            "not on this firmware (dhcpsdns_display=0)".to_string(),
+        ));
     }
 }
 
@@ -140,6 +162,7 @@ mod tests {
                 primary: Some("192.168.8.1".into()),
                 secondary: Some("192.168.8.1".into()),
                 lan_ip: Some("192.168.8.1".into()),
+                editable: Some(false),
             }),
             ..Snapshot::default()
         };
@@ -165,5 +188,50 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "DNS after" && v == "router as resolver (192.168.8.1)"));
         assert!(!reset.rows.iter().any(|(_, v)| v.contains("automatic")));
+    }
+
+    /// A confirm modal that lists the change without saying the firmware has no such
+    /// setting asks the user to approve a write the router will silently drop.
+    #[test]
+    fn the_confirm_names_a_firmware_without_the_dns_row() {
+        let dns = |editable: Option<bool>| Snapshot {
+            dns: Some(crate::model::DnsInfo {
+                status: Some("1".into()),
+                primary: Some("192.168.8.1".into()),
+                secondary: Some("192.168.8.1".into()),
+                lan_ip: Some("192.168.8.1".into()),
+                editable,
+            }),
+            ..Snapshot::default()
+        };
+        let set = WriteIntent::SetDns {
+            primary: "1.1.1.1".into(),
+            secondary: "1.0.0.1".into(),
+        };
+        let hidden = dns(Some(false));
+        for intent in [set.clone(), WriteIntent::ResetDns] {
+            let p = for_intent(&intent, Some(&hidden));
+            assert!(
+                p.rows
+                    .iter()
+                    .any(|(k, v)| k == "support" && v.contains("dhcpsdns_display=0")),
+                "the hidden row must be named: {intent:?} {:?}",
+                p.rows
+            );
+        }
+        let shown = dns(Some(true));
+        assert!(!for_intent(&set, Some(&shown))
+            .rows
+            .iter()
+            .any(|(k, _)| k == "support"));
+        let unknown = dns(None);
+        assert!(!for_intent(&set, Some(&unknown))
+            .rows
+            .iter()
+            .any(|(k, _)| k == "support"));
+        assert!(!for_intent(&set, None)
+            .rows
+            .iter()
+            .any(|(k, _)| k == "support"));
     }
 }

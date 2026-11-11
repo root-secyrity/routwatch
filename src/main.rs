@@ -29,6 +29,11 @@ use ratatui::Terminal;
 const TAB_HELP: &str =
     "Start on a tab: dashboard, bands, traffic, network, clients, sms, device, dns, signal";
 
+/// Printed whenever the firmware's own `dhcpsdns_display` flag says the LAN DHCP
+/// DNS page does not exist: a write there is ignored, so the CLI says so up front.
+const DNS_NOT_EDITABLE: &str =
+    "support: LAN DHCP DNS is not configurable on this firmware (dhcpsdns_display=0)";
+
 #[derive(Parser)]
 #[command(
     name = "routwatch",
@@ -677,11 +682,13 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             }
             let mut client = connect(&cfg, cli.password_stdin)?;
             let doc = client.get_dhcp();
+            let editable = client.dhcp_dns_editable();
             let current = doc.as_ref().ok().map(|d| DnsInfo {
                 status: d.dns_status.clone(),
                 primary: d.primary.clone(),
                 secondary: d.secondary.clone(),
                 lan_ip: d.dhcp_ip.clone(),
+                editable,
             });
             if json {
                 println!("{}", serde_json::to_string_pretty(&current).unwrap());
@@ -700,6 +707,9 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                         d.primary.clone().unwrap_or_else(|| "-".into()),
                         d.secondary.clone().unwrap_or_else(|| "-".into())
                     );
+                }
+                if editable == Some(false) {
+                    println!("{}", DNS_NOT_EDITABLE);
                 }
                 println!("use --set PRIMARY,SECONDARY or --reset");
                 client.logout();
@@ -729,6 +739,9 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     d.secondary.clone().unwrap_or_else(|| "-".into()),
                     d.lan_ip.clone().unwrap_or_else(|| "-".into())
                 );
+            }
+            if editable == Some(false) {
+                println!("{}", DNS_NOT_EDITABLE);
             }
             println!(
                 "target:  primary={} secondary={}",
