@@ -3,7 +3,7 @@ use routwatch::app::{App, InputKind, PresetSaved, Tab, View};
 use routwatch::config;
 use routwatch::error::ApiError;
 use routwatch::headless;
-use routwatch::model::Snapshot;
+use routwatch::model::{DnsInfo, Snapshot};
 use routwatch::router::{bands, parse, HuaweiClient};
 use routwatch::theme::{GraphStyle, Theme};
 use routwatch::ui;
@@ -676,10 +676,13 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 ));
             }
             let mut client = connect(&cfg, cli.password_stdin)?;
-            let current = client
-                .get("dhcp/settings")
-                .ok()
-                .map(|n| parse::parse_dns(&n));
+            let doc = client.get_dhcp();
+            let current = doc.as_ref().ok().map(|d| DnsInfo {
+                status: d.dns_status.clone(),
+                primary: d.primary.clone(),
+                secondary: d.secondary.clone(),
+                lan_ip: d.dhcp_ip.clone(),
+            });
             if json {
                 println!("{}", serde_json::to_string_pretty(&current).unwrap());
                 client.logout();
@@ -702,34 +705,36 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 client.logout();
                 return Ok(());
             }
-            let (status, p, sec) = if reset {
-                ("1", "", "")
-            } else {
-                ("0", primary.as_str(), secondary.as_str())
+            let doc = match doc {
+                Ok(d) => d,
+                Err(e) => {
+                    client.logout();
+                    return Err(ApiError::Config(format!(
+                        "cannot read dhcp/settings: the DNS write needs the whole document ({e})"
+                    )));
+                }
             };
+            let plan = match write::plan_dns(&doc, reset, &primary, &secondary) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    client.logout();
+                    return Err(ApiError::Usage(e));
+                }
+            };
+            if let Some(d) = &current {
+                println!(
+                    "current: status={} primary={} secondary={} lan={}",
+                    d.status.clone().unwrap_or_else(|| "-".into()),
+                    d.primary.clone().unwrap_or_else(|| "-".into()),
+                    d.secondary.clone().unwrap_or_else(|| "-".into()),
+                    d.lan_ip.clone().unwrap_or_else(|| "-".into())
+                );
+            }
             println!(
-                "current: status={} primary={} secondary={}",
-                current
-                    .as_ref()
-                    .and_then(|d| d.status.clone())
-                    .unwrap_or_else(|| "-".into()),
-                current
-                    .as_ref()
-                    .and_then(|d| d.primary.clone())
-                    .unwrap_or_else(|| "-".into()),
-                current
-                    .as_ref()
-                    .and_then(|d| d.secondary.clone())
-                    .unwrap_or_else(|| "-".into())
+                "target:  primary={} secondary={}",
+                plan.primary, plan.secondary
             );
-            println!(
-                "target:  status={status} primary={} secondary={}",
-                if p.is_empty() { "-" } else { p },
-                if sec.is_empty() { "-" } else { sec }
-            );
-            println!(
-                "payload: <?xml version=\"1.0\" encoding=\"UTF-8\"?><request><DnsStatus>{status}</DnsStatus><PrimaryDns>{p}</PrimaryDns><SecondaryDns>{sec}</SecondaryDns></request>"
-            );
+            println!("payload: {}", plan.body);
             if dry_run {
                 println!("dry-run: nothing was sent");
                 client.logout();
