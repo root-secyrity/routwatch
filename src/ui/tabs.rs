@@ -1702,9 +1702,20 @@ pub fn dns_tab(f: &mut Frame, area: Rect, app: &App) {
         crate::write::WriteState::Idle => Style::default().fg(t.dim),
         _ => Style::default().fg(t.warn),
     };
+    // The box, not the terminal, decides this row: the refusal reason is longer
+    // than the panel at 80 columns and ratatui cut it dead at the border, mid
+    // word, with no sign that anything was missing. Cut it ourselves, one column
+    // short of the frame, so the ellipsis lands inside the box.
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let room = inner_w.saturating_sub(10);
+    let verdict = if room == 0 {
+        String::new()
+    } else {
+        truncate(&app.write.label(), room)
+    };
     lines.push(Line::from(vec![
         Span::styled(pad("write", 10), Style::default().fg(t.dim)),
-        Span::styled(app.write.label(), write_style),
+        Span::styled(verdict, write_style),
     ]));
     lines.push(Line::from(Span::styled(
         "every write is verified by reading dhcp/settings back",
