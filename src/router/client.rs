@@ -323,21 +323,6 @@ impl HuaweiClient {
         self.post("net/net-mode", &payload.xml())
     }
 
-    /// Write DNS settings. `status` is "0" (manual servers) or "1" (automatic).
-    pub fn set_dns(
-        &mut self,
-        status: &str,
-        primary: &str,
-        secondary: &str,
-    ) -> Result<Node, ApiError> {
-        let body = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><DnsStatus>{status}</DnsStatus><PrimaryDns>{}</PrimaryDns><SecondaryDns>{}</SecondaryDns></request>",
-            esc(primary),
-            esc(secondary)
-        );
-        self.post("dhcp/settings", &body)
-    }
-
     /// SMS inbox. The firmware wants POST here; GET answers 125002.
     pub fn sms_list(&mut self, page: u32) -> Result<Node, ApiError> {
         self.post("sms/sms-list", &sms_list_body(page))
@@ -412,11 +397,6 @@ fn extract_csrf(html: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
-}
-
-/// Kept only until Task 3.2 deletes `set_dns`, its last caller.
-fn esc(s: &str) -> String {
-    crate::xml::esc(s)
 }
 
 fn truncate(s: &str, n: usize) -> String {
