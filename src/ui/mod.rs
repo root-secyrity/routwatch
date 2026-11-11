@@ -2431,4 +2431,49 @@ mod tests {
             "{frame}"
         );
     }
+
+    /// The refusal reason is longer than the DNS panel below 140 columns. It used
+    /// to run into the right border and lose its tail silently, so the box must
+    /// cut the row itself and show the cut. Measured, not guessed: the row is
+    /// shorter than the panel interior at 60, 80 and 100, and whole at 140.
+    #[test]
+    fn the_dns_write_row_is_cut_inside_the_panel() {
+        const REASON: &str = "this firmware has no LAN DHCP DNS setting \
+            (dhcpsdns_display=0), so the router would ignore it: nothing was sent";
+        let mut app = fixture_app();
+        app.tab = Tab::Dns;
+        app.write = crate::write::WriteState::Failed {
+            intent: crate::write::WriteIntent::SetDns {
+                primary: "1.1.1.1".into(),
+                secondary: "1.0.0.1".into(),
+            },
+            err: REASON.into(),
+        };
+        for width in [60u16, 80, 100] {
+            let frame = render_to_string(&app, width, 30);
+            let row = frame
+                .lines()
+                .find(|l| l.contains("failed ·"))
+                .unwrap_or_else(|| panic!("no write row at {width}\n{frame}"));
+            assert!(
+                row.contains('…'),
+                "at {width} the row must end in a cut mark, not at the border: {row:?}"
+            );
+            assert!(
+                !row.contains("nothing was sent"),
+                "the whole reason cannot fit at {width}: {row:?}"
+            );
+            assert!(
+                row.trim_end().ends_with('│'),
+                "the row must stay inside its own frame at {width}: {row:?}"
+            );
+        }
+        let wide = render_to_string(&app, 140, 30);
+        let row = wide
+            .lines()
+            .find(|l| l.contains("failed ·"))
+            .expect("wide write row");
+        assert!(row.contains("nothing was sent"), "{row}");
+        assert!(!row.contains('…'), "nothing to cut at 140: {row}");
+    }
 }
