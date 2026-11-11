@@ -7,7 +7,7 @@ This file answers: how do I get routwatch onto this machine, and what goes in
 
 | Route | Command |
 |---|---|
-| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.4.5/routwatch-0.4.5-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.4.5-1-x86_64.pkg.tar.zst` |
+| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.4.6/routwatch-0.4.6-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.4.5-1-x86_64.pkg.tar.zst` |
 | Static musl binary | [routwatch-x86_64-linux-musl](https://github.com/root-secyrity/routwatch/releases/latest/download/routwatch-x86_64-linux-musl) - a permanent link, links nothing, runs on Arch, Debian, Ubuntu, Fedora, Alpine, Raspberry Pi OS |
 | Any distro, from source | `git clone https://github.com/root-secyrity/routwatch.git && cd routwatch && sudo make install` (or `PREFIX=$HOME/.local`) |
 | Build the static binary | `./packaging/musl-build.sh` - needs docker, writes `dist/` |
