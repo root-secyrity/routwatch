@@ -21,7 +21,7 @@ thiserror = "2"
 dirs = "6"
 sha2 = "0.10"
 base64 = "0.22"
-ratatui = "0.29"
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 unicode-width = "0.2"
 libc = "0.2"
 
