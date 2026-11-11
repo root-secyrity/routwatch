@@ -346,6 +346,8 @@ mod tests {
             status: Some("1".into()),
             primary: None,
             secondary: None,
+            editable: None,
+            lan_ip: None,
         });
         s
     }

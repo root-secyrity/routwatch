@@ -53,6 +53,22 @@ why each one is stated instead of hidden.
   one row whatever the caller asked for, so a three-row slot in the speed panel
   left two rows empty. It now stacks eighths over the whole slot; `dots` and
   `braille` are still the braille plots, and `braille` stays a flat colour.
+- **The DNS write rewrites the whole DHCP document**: `/api/dhcp/settings` is a
+  whole-document endpoint, so routwatch reads it immediately before writing and
+  echoes every field back, changing only `PrimaryDns` and `SecondaryDns`. A
+  setting changed from the web UI in the same second is overwritten. `dns --reset`
+  writes the router's own LAN address into both slots, which is how the box
+  reports itself at rest; the panel calls that state `router as resolver`, not
+  "automatic", because the router answering DNS is what `DnsStatus` means here.
+
+- **A firmware without the DHCP DNS row is refused, never attempted**: the live
+  H122-373 answers `dhcpsdns_display=0` on `/api/dhcp/feature-switch` and silently
+  drops `DnsStatus`, `PrimaryDns` and `SecondaryDns` from an otherwise accepted
+  document, so a write there can only ever end as a mismatch. routwatch reads that
+  flag before writing and stops with "nothing was sent"; the snapshot carries
+  `editable: false`, so the DNS tab, the dashboard panel and the confirm modal say
+  the setting is absent instead of offering it. A router that does not answer the
+  endpoint at all is still attempted: a missing flag is not a no.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the

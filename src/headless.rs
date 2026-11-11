@@ -130,6 +130,12 @@ pub fn collect_traced(
     let sms =
         step(trace, Phase::Sms, || c.get("sms/sms-count").ok()).map(|n| parse::parse_sms_count(&n));
     let dns = step(trace, Phase::Dns, || c.get("dhcp/settings").ok()).map(|n| parse::parse_dns(&n));
+    // The same flag the web UI checks before drawing the DNS fields: without it the
+    // panel must say the router has no such setting instead of showing a writable one.
+    let dns = dns.map(|mut d| {
+        d.editable = c.dhcp_dns_editable();
+        d
+    });
 
     let (supported_bands, all_bands_mask, network_bands_mask) =
         match step(trace, Phase::Bands, || c.get("net/net-mode-list")) {
@@ -926,6 +932,36 @@ mod doctor_tests {
                 .filter(|c| c.state == "failed")
                 .map(|c| (&c.id, &c.detail))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// The flag the web UI checks before drawing the DNS fields has to reach the
+    /// snapshot, because the panels and the confirm modal both read it from there.
+    #[test]
+    fn a_firmware_without_the_dns_row_reaches_the_snapshot() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpNoDns);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let snap = collect_traced(&mut c, "127.0.0.1", &mut |_, _| {}).expect("collect");
+        assert_eq!(
+            snap.dns.as_ref().and_then(|d| d.editable),
+            Some(false),
+            "a hidden DNS row must be visible in the snapshot"
+        );
+    }
+
+    /// And a firmware that does expose the row must not be reported as blocked: a
+    /// refusal that fires on every device would be the same bug facing the other way.
+    #[test]
+    fn a_firmware_with_the_dns_row_is_not_marked_uneditable() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpWithDns);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let snap = collect_traced(&mut c, "127.0.0.1", &mut |_, _| {}).expect("collect");
+        assert_eq!(
+            snap.dns.as_ref().and_then(|d| d.editable),
+            Some(true),
+            "a router with the DNS row must stay writable"
         );
     }
 }

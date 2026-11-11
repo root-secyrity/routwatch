@@ -44,7 +44,7 @@ impl WriteIntent {
             WriteIntent::SetDns { primary, secondary } => {
                 format!("DNS {primary} / {secondary}")
             }
-            WriteIntent::ResetDns => "DNS: back to automatic".to_string(),
+            WriteIntent::ResetDns => "DNS: router answers DNS itself".to_string(),
         }
     }
 }
@@ -374,7 +374,57 @@ pub fn apply_bands(
     WriteState::Failed { intent, err }
 }
 
-/// DNS write: verify by reading `dhcp/settings` back.
+/// What the write will send, decided in one place so `--dry-run` and the write
+/// itself cannot drift apart.
+pub struct DnsPlan {
+    pub primary: String,
+    pub secondary: String,
+    pub body: String,
+}
+
+/// The two servers a DNS write will advertise, and the exact body it will POST.
+///
+/// "Automatic" on this firmware is not a mode bit: it is the router answering DNS
+/// itself, which the DHCP panel advertises as `DhcpIPAddress` twice.
+pub fn plan_dns(
+    doc: &crate::model::DhcpSettings,
+    reset: bool,
+    primary: &str,
+    secondary: &str,
+) -> Result<DnsPlan, String> {
+    let (p, s) = if reset {
+        let lan = doc
+            .dhcp_ip
+            .clone()
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| {
+                "the device did not report DhcpIPAddress, so automatic DNS has no target"
+                    .to_string()
+            })?;
+        (lan.clone(), lan)
+    } else {
+        parse_dns_pair(&format!("{primary},{secondary}"))?;
+        (primary.to_string(), secondary.to_string())
+    };
+    let body = doc.body_with_dns(&p, &s);
+    Ok(DnsPlan {
+        primary: p,
+        secondary: s,
+        body,
+    })
+}
+
+/// What the device kept, in plain words. Never `{:?}` on an Option: the debug
+/// quotes are what made the modal message longer than the modal.
+fn dns_detail(d: &crate::model::DhcpSettings) -> String {
+    format!(
+        "device keeps {} / {}",
+        d.primary.clone().unwrap_or_else(|| "nothing".into()),
+        d.secondary.clone().unwrap_or_else(|| "nothing".into())
+    )
+}
+
+/// DNS write: send the whole `dhcp/settings` document, verify the two addresses.
 pub fn apply_dns(
     client: &mut HuaweiClient,
     primary: &str,
@@ -383,92 +433,102 @@ pub fn apply_dns(
     force: bool,
     progress: &mut dyn FnMut(WriteState),
 ) -> WriteState {
-    let target_manual = !matches!(intent, WriteIntent::ResetDns);
-    if target_manual {
-        if let Err(e) = parse_dns_pair(&format!("{primary},{secondary}")) {
-            return WriteState::Failed { intent, err: e };
-        }
+    let reset = matches!(intent, WriteIntent::ResetDns);
+
+    // Ask the firmware whether it exposes LAN DHCP DNS before anything else. The
+    // document POST is accepted either way: it applies the DHCP range and lease and
+    // silently drops the DNS trio, which then reads back as a mismatch the user has
+    // to decode. This check turns an impossible write into a plain answer.
+    if client.dhcp_dns_editable() == Some(false) {
+        return WriteState::Failed {
+            intent,
+            err: "this firmware has no LAN DHCP DNS setting (dhcpsdns_display=0), so the router would ignore it: nothing was sent".into(),
+        };
     }
 
-    let read = |c: &mut HuaweiClient| -> Option<crate::model::DnsInfo> {
-        c.get("dhcp/settings")
-            .ok()
-            .map(|n| crate::router::parse::parse_dns(&n))
+    // The POST is a whole-document write, so the document is read first, with its own
+    // bytes. Without it there is nothing safe to send and we say so instead of sending
+    // three fields.
+    let before = match client.get_dhcp() {
+        Ok(d) => d,
+        Err(e) => {
+            return WriteState::Failed {
+                intent,
+                err: format!("cannot read dhcp/settings before writing: {e}"),
+            }
+        }
+    };
+    let DnsPlan {
+        primary: target_primary,
+        secondary: target_secondary,
+        body,
+    } = match plan_dns(&before, reset, primary, secondary) {
+        Ok(plan) => plan,
+        Err(e) => {
+            return WriteState::Failed { intent, err: e };
+        }
     };
 
-    if let Some(cur) = read(client) {
-        let matches_target = if target_manual {
-            cur.is_manual()
-                && cur.primary.as_deref() == Some(primary)
-                && cur.secondary.as_deref() == Some(secondary)
-        } else {
-            !cur.is_manual()
+    let landed = |d: &crate::model::DhcpSettings| {
+        d.primary.as_deref() == Some(target_primary.as_str())
+            && d.secondary.as_deref() == Some(target_secondary.as_str())
+    };
+
+    if landed(&before) && !force {
+        return WriteState::Success {
+            intent,
+            note: "already active - nothing sent".into(),
         };
-        if matches_target && !force {
-            return WriteState::Success {
-                intent,
-                note: "already active - nothing sent".into(),
-            };
-        }
     }
 
     progress(WriteState::Pending {
         intent: intent.clone(),
         since: Instant::now(),
     });
-    let (status, p, s2) = if target_manual {
-        ("0", primary, secondary)
-    } else {
-        ("1", "", "")
-    };
-    let sent = client.set_dns(status, p, s2);
+    let sent = client.post("dhcp/settings", &body);
     progress(WriteState::Verifying {
         intent: intent.clone(),
         since: Instant::now(),
     });
 
-    let after = read(client);
-    let verified = after.as_ref().map(|d| {
-        if target_manual {
-            d.is_manual()
-                && d.primary.as_deref() == Some(primary)
-                && d.secondary.as_deref() == Some(secondary)
-        } else {
-            !d.is_manual()
-        }
-    });
+    let after = client
+        .get("dhcp/settings")
+        .ok()
+        .map(|n| parse::parse_dhcp(&n));
+    let verified = after.as_ref().map(landed);
 
     match (&sent, verified) {
-        // The value is right and the POST failed: the response was lost, not
-        // the setting. Say which, and never claim the write itself worked.
+        // The value is right and the POST failed: the response was lost, not the
+        // setting. Say which, and never claim the write itself worked.
         (Err(e), Some(true)) => WriteState::Success {
             intent,
             note: format!("{}; read-back confirms the change", write_cause(e)),
         },
         (_, Some(true)) => WriteState::Success {
             intent,
-            note: if target_manual {
-                format!("verified, device reports {primary} / {secondary}")
+            note: if reset {
+                format!("verified, router answers DNS itself ({target_primary})")
             } else {
-                "verified, device is back to automatic DNS".to_string()
+                format!("verified, device reports {target_primary} / {target_secondary}")
             },
         },
         (Err(e), _) => WriteState::Failed {
             intent,
             err: format!("{}; read-back did not confirm", write_cause(e)),
         },
-        (Ok(_), Some(false)) => {
-            let detail = after
-                .map(|d| format!("device reports {:?} / {:?}", d.primary, d.secondary))
-                .unwrap_or_else(|| "read-back empty".into());
-            WriteState::Failed {
-                intent,
-                err: format!("mismatch after write: {detail}"),
-            }
-        }
+        (Ok(_), Some(false)) => WriteState::Failed {
+            intent,
+            err: match &after {
+                Some(d) => format!(
+                    "mismatch after write: wanted {target_primary} / {target_secondary}, {}",
+                    dns_detail(d)
+                ),
+                None => "mismatch after write: the read-back came back unreadable".into(),
+            },
+        },
         (Ok(_), None) => WriteState::Failed {
             intent,
-            err: "write sent, but dhcp/settings could not be read back".into(),
+            err: "write sent, but reading dhcp/settings back failed".into(),
         },
     }
 }
@@ -548,7 +608,10 @@ mod tests {
             secondary: "1.0.0.1".into(),
         };
         assert_eq!(i.label(), "DNS 1.1.1.1 / 1.0.0.1");
-        assert_eq!(WriteIntent::ResetDns.label(), "DNS: back to automatic");
+        assert_eq!(
+            WriteIntent::ResetDns.label(),
+            "DNS: router answers DNS itself"
+        );
     }
 
     #[test]
@@ -782,12 +845,11 @@ mod tests {
         }
     }
 
-    /// A POST that fails while the device already reports the target used to be
-    /// printed as "applied · verified". Now the note names the refusal and says
-    /// that only the read-back proves the state.
+    /// A firmware that refuses only short bodies has to accept this one: the write
+    /// carries the whole document, so nothing is refused and the read-back proves it.
     #[test]
-    fn a_refused_dns_post_is_never_called_verified() {
-        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DnsEcho);
+    fn a_full_document_is_not_refused_by_a_short_body_only_firmware() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpIgnoresShort);
         let mut c = HuaweiClient::new(mock.addr(), 2000);
         c.login("admin", "demo").expect("mock login");
         let state = apply_dns(
@@ -800,12 +862,12 @@ mod tests {
         );
         match state {
             WriteState::Success { note, .. } => {
-                assert!(note.contains("router refused"), "{note}");
-                assert!(note.contains("read-back confirms"), "{note}");
-                assert!(!note.contains("verified, device reports"), "{note}");
+                assert!(note.contains("9.9.9.9"), "{note}");
+                assert!(!note.contains("refused"), "{note}");
             }
-            other => panic!("read-back matched, so this is a success: {other:?}"),
+            other => panic!("the full document must land: {other:?}"),
         }
+        assert_eq!(mock.dhcp_posts(), 1);
     }
 
     /// And when the read-back does not match, a refused POST is a failure with
@@ -830,5 +892,156 @@ mod tests {
             }
             other => panic!("a stale device after a refused POST must fail: {other:?}"),
         }
+    }
+
+    /// The whole point of the fix: the POST carries the DHCP document, so a firmware
+    /// that validates field names accepts it and the read-back proves the change.
+    #[test]
+    fn a_dns_write_sends_the_whole_document_and_verifies() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpStrict);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let state = apply_dns(
+            &mut c,
+            "1.1.1.1",
+            "1.0.0.1",
+            dns_intent(),
+            false,
+            &mut |_| {},
+        );
+        match state {
+            WriteState::Success { note, .. } => {
+                assert!(note.contains("1.1.1.1"), "{note}");
+                assert!(!note.contains("refused"), "{note}");
+            }
+            other => panic!("the full document must land: {other:?}"),
+        }
+        assert_eq!(mock.dhcp_posts(), 1);
+    }
+
+    /// A firmware that answers OK and stores nothing is a mismatch, and the message
+    /// names both sides in plain text so a 66-column modal can show all of it.
+    #[test]
+    fn an_ignored_write_reports_both_sides_in_plain_words() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpIgnoresAll);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let state = apply_dns(
+            &mut c,
+            "1.1.1.1",
+            "1.0.0.1",
+            dns_intent(),
+            false,
+            &mut |_| {},
+        );
+        match state {
+            WriteState::Failed { err, .. } => {
+                assert!(err.contains("wanted 1.1.1.1 / 1.0.0.1"), "{err}");
+                assert!(
+                    err.contains("device keeps 192.168.8.1 / 192.168.8.1"),
+                    "{err}"
+                );
+                assert!(
+                    !err.contains("Some("),
+                    "no debug quotes in a user message: {err}"
+                );
+            }
+            other => panic!("an ignored write must fail: {other:?}"),
+        }
+    }
+
+    /// Reset is not a mode bit either: it puts the router's own address in both
+    /// slots, and it is idempotent, so a second reset sends nothing.
+    #[test]
+    fn reset_writes_the_lan_address_and_is_idempotent() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpStrict);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let set = apply_dns(
+            &mut c,
+            "1.1.1.1",
+            "1.0.0.1",
+            dns_intent(),
+            false,
+            &mut |_| {},
+        );
+        assert!(matches!(set, WriteState::Success { .. }), "{set:?}");
+        let back = apply_dns(&mut c, "", "", WriteIntent::ResetDns, false, &mut |_| {});
+        match back {
+            WriteState::Success { note, .. } => {
+                assert!(note.contains("192.168.8.1"), "{note}");
+            }
+            other => panic!("reset must land: {other:?}"),
+        }
+        let again = apply_dns(&mut c, "", "", WriteIntent::ResetDns, false, &mut |_| {});
+        match again {
+            WriteState::Success { note, .. } => assert!(note.contains("already active"), "{note}"),
+            other => panic!("a second reset is a no-op: {other:?}"),
+        }
+        assert_eq!(mock.dhcp_posts(), 2);
+    }
+
+    /// No document means no write: sending a guess is how the bug happened.
+    #[test]
+    fn an_unreadable_document_stops_the_write_before_it_is_sent() {
+        let doc = crate::model::DhcpSettings::default();
+        assert!(plan_dns(&doc, true, "", "").is_err());
+        let plan = plan_dns(&doc, false, "1.1.1.1", "1.0.0.1").expect("valid pair");
+        assert_eq!(plan.primary, "1.1.1.1");
+        assert_eq!(plan.secondary, "1.0.0.1");
+        assert!(plan_dns(&doc, false, "nonsense", "").is_err());
+    }
+
+    /// The live H122-373 hides the DNS row: `dhcpsdns_display=0` means the firmware
+    /// accepts the document and drops the three DNS fields, which the tool used to
+    /// report as a mismatch after a write that could never land. The refusal comes
+    /// before the POST, so the device is not touched at all.
+    #[test]
+    fn a_firmware_without_the_dns_row_is_refused_before_the_post() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpNoDns);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let state = apply_dns(
+            &mut c,
+            "1.1.1.1",
+            "1.0.0.1",
+            dns_intent(),
+            false,
+            &mut |_| {},
+        );
+        match state {
+            WriteState::Failed { err, .. } => {
+                assert!(err.contains("dhcpsdns_display=0"), "{err}");
+                assert!(err.contains("nothing was sent"), "{err}");
+            }
+            other => panic!("a firmware with no DNS row must be refused: {other:?}"),
+        }
+        assert_eq!(
+            mock.dhcp_posts(),
+            0,
+            "the refusal must not touch the device"
+        );
+    }
+
+    /// The refusal is about the firmware, not about the write: the same intent on a
+    /// router that does expose the page still lands and is still verified.
+    #[test]
+    fn the_same_write_lands_on_a_firmware_that_has_the_dns_row() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpWithDns);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let state = apply_dns(
+            &mut c,
+            "1.1.1.1",
+            "1.0.0.1",
+            dns_intent(),
+            false,
+            &mut |_| {},
+        );
+        match state {
+            WriteState::Success { note, .. } => assert!(note.contains("1.1.1.1"), "{note}"),
+            other => panic!("a firmware with the DNS row must accept the write: {other:?}"),
+        }
+        assert_eq!(mock.dhcp_posts(), 1);
     }
 }

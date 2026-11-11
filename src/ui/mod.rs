@@ -12,7 +12,7 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -275,7 +275,23 @@ fn draw_write_modal(f: &mut Frame, area: Rect, app: &App) {
         ),
     };
     let w = 68.min(area.width);
-    let h = (body.len() as u16 + 3).min(area.height);
+    let inner_w = w.saturating_sub(2);
+    let lines: Vec<Line> = body
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, Style::default().fg(t.fg))))
+        .collect();
+    // The paragraph decides the height: `line_count` on the same width it will be
+    // drawn at. `body.len()` was the bug - one long reason is one body line and
+    // three drawn lines, and the third was cut away by the border.
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::bordered()
+            .title(Span::styled(
+                title,
+                Style::default().fg(colour).add_modifier(Modifier::BOLD),
+            ))
+            .border_style(Style::default().fg(colour)),
+    );
+    let h = (para.line_count(inner_w) as u16).min(area.height);
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
         y: area.y + (area.height.saturating_sub(h)) / 2,
@@ -283,21 +299,7 @@ fn draw_write_modal(f: &mut Frame, area: Rect, app: &App) {
         height: h,
     };
     f.render_widget(Clear, rect);
-    let lines: Vec<Line> = body
-        .into_iter()
-        .map(|l| Line::from(Span::styled(l, Style::default().fg(t.fg))))
-        .collect();
-    f.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .title(Span::styled(
-                    title,
-                    Style::default().fg(colour).add_modifier(Modifier::BOLD),
-                ))
-                .border_style(Style::default().fg(colour)),
-        ),
-        rect,
-    );
+    f.render_widget(para, rect);
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
@@ -2291,6 +2293,39 @@ mod tests {
         );
     }
 
+    /// The failure popup used to cut its own reason at 66 columns. Every word of a
+    /// realistic mismatch message must reach the screen, at two window widths.
+    #[test]
+    fn a_failed_write_shows_its_whole_reason() {
+        for width in [80u16, 40u16] {
+            let mut app = fixture_app();
+            let err = "mismatch after write: wanted 1.1.1.1 / 1.0.0.1, device keeps 192.168.8.1 / 192.168.8.1";
+            app.write = crate::write::WriteState::Failed {
+                intent: crate::write::WriteIntent::SetDns {
+                    primary: "1.1.1.1".into(),
+                    secondary: "1.0.0.1".into(),
+                },
+                err: err.into(),
+            };
+            let text = render_to_string(&app, width, 24);
+            for word in [
+                "mismatch",
+                "wanted",
+                "1.1.1.1",
+                "1.0.0.1",
+                "device",
+                "keeps",
+                "192.168.8.1",
+                "dismiss",
+            ] {
+                assert!(
+                    text.contains(word),
+                    "{word} was cut away at width {width}\n{text}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn every_signal_series_has_a_row_at_eighteen_lines() {
         let mut app = fixture_app();
@@ -2372,5 +2407,28 @@ mod tests {
         assert_eq!(tab_from_key('8'), Some(Tab::Dns));
         assert_eq!(tab_from_key('9'), Some(Tab::Signal));
         assert_eq!(tab_from_key('0'), None);
+    }
+
+    /// A DNS panel that draws a writable setting a firmware does not have is the
+    /// bug that produced the mismatch popup: the row must say so, in the same words
+    /// the refusal uses, and must not appear on a router that has the setting.
+    #[test]
+    fn the_dns_tab_names_a_firmware_without_the_dns_row() {
+        let mut app = fixture_app();
+        app.tab = Tab::Dns;
+        let before = render_to_string(&app, 110, 40);
+        assert!(
+            !before.contains("no LAN DHCP DNS setting"),
+            "an unknown capability must not be reported as missing: {before}"
+        );
+        match app.snap.as_mut().and_then(|s| s.dns.as_mut()) {
+            Some(d) => d.editable = Some(false),
+            None => panic!("the fixture snapshot must carry dns"),
+        }
+        let frame = render_to_string(&app, 110, 40);
+        assert!(
+            frame.contains("no: this firmware has no LAN DHCP DNS setting"),
+            "{frame}"
+        );
     }
 }

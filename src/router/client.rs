@@ -7,6 +7,7 @@
 
 use crate::error::{classify, ApiError};
 use crate::router::bands::BandPayload;
+use crate::router::parse;
 use crate::xml::{self, Node};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
@@ -263,9 +264,8 @@ impl HuaweiClient {
         let encoded = encode_password(user, pass, ptype, &token);
         let xml_body = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><Username>{}</Username><Password>{}</Password><password_type>{}</password_type></request>",
-            esc(user),
-            encoded,
-            ptype
+            xml::esc(user),
+            encoded,            ptype
         );
 
         let resp = self.raw_post("/api/user/login", &xml_body)?;
@@ -304,6 +304,26 @@ impl HuaweiClient {
         unwrap_document(&raw)
     }
 
+    /// The DHCP document with its exact source text, for the whole-document write.
+    pub fn get_dhcp(&mut self) -> Result<crate::model::DhcpSettings, ApiError> {
+        let raw = self.raw("dhcp/settings")?;
+        let node = unwrap_document(&raw)?;
+        Ok(parse::parse_dhcp(&node).with_raw(&xml::inner_of_document(&raw)))
+    }
+
+    /// Whether this firmware exposes the LAN DHCP DNS setting at all.
+    ///
+    /// `dhcp/feature-switch` carries `dhcpsdns_display`, the exact flag the web UI's
+    /// `isDnsDisplay()` checks before it draws the DNS checkbox and the two server
+    /// fields. When it is not `1` the page is hidden and `POST dhcp/settings` applies
+    /// the DHCP range and lease while silently dropping `DnsStatus`, `PrimaryDns` and
+    /// `SecondaryDns`. `None` means the endpoint or the flag is missing, which is an
+    /// older firmware: the write is attempted as before.
+    pub fn dhcp_dns_editable(&mut self) -> Option<bool> {
+        let node = self.get("dhcp/feature-switch").ok()?;
+        node.value("dhcpsdns_display").map(|v| v.trim() == "1")
+    }
+
     /// Write the band/network-mode configuration. The caller must verify the
     /// result by reading `net/net-mode` back (see `write::apply_bands`).
     pub fn post(&mut self, endpoint: &str, body: &str) -> Result<Node, ApiError> {
@@ -314,21 +334,6 @@ impl HuaweiClient {
     /// Apply a band/network-mode payload.
     pub fn set_net_mode(&mut self, payload: &BandPayload) -> Result<Node, ApiError> {
         self.post("net/net-mode", &payload.xml())
-    }
-
-    /// Write DNS settings. `status` is "0" (manual servers) or "1" (automatic).
-    pub fn set_dns(
-        &mut self,
-        status: &str,
-        primary: &str,
-        secondary: &str,
-    ) -> Result<Node, ApiError> {
-        let body = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><DnsStatus>{status}</DnsStatus><PrimaryDns>{}</PrimaryDns><SecondaryDns>{}</SecondaryDns></request>",
-            esc(primary),
-            esc(secondary)
-        );
-        self.post("dhcp/settings", &body)
     }
 
     /// SMS inbox. The firmware wants POST here; GET answers 125002.
@@ -405,14 +410,6 @@ fn extract_csrf(html: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
-}
-
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }
 
 fn truncate(s: &str, n: usize) -> String {

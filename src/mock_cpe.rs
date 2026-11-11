@@ -29,6 +29,21 @@ pub enum Profile {
     /// `dhcp/settings` answers the values a DNS test writes, so a refused POST
     /// can still be read back as applied: the exact shape of the false success.
     DnsEcho,
+    /// `POST dhcp/settings` is a whole-document write: a body without the other
+    /// DHCP fields is refused with 100005 and nothing changes. The DNS bug's shape.
+    DhcpStrict,
+    /// The same short body is answered `OK` and dropped: the write claims success
+    /// and the read-back disagrees.
+    DhcpIgnoresShort,
+    /// Every POST is answered `OK` and nothing is ever stored.
+    DhcpIgnoresAll,
+    /// The H122-373 as it really is: `dhcp/feature-switch` answers
+    /// `dhcpsdns_display=0`, so the DHCP document is accepted, its range and lease
+    /// land, and the DNS trio is dropped on the floor. The write that cannot work.
+    DhcpNoDns,
+    /// A firmware that does expose the page (`dhcpsdns_display=1`): the DNS fields
+    /// are stored, which is the path the refusal must not block.
+    DhcpWithDns,
     /// The H122-373 band write: `POST net/net-mode` applies the payload and then
     /// answers `<code>100006</code>`. The device did what was asked; the code is
     /// noise. A tool that trusts the code calls this a failure.
@@ -62,10 +77,20 @@ impl Profile {
         ];
         match self {
             Profile::H122373 | Profile::DnsEcho => routes.push(("/api/wlan/host-list", HOST_LIST)),
+            Profile::DhcpStrict
+            | Profile::DhcpIgnoresShort
+            | Profile::DhcpIgnoresAll
+            | Profile::DhcpNoDns
+            | Profile::DhcpWithDns => routes.push(("/api/wlan/host-list", HOST_LIST)),
             // A 404 is what a firmware that does not implement the endpoint
             // actually returns; the tool must read it as "not exposed".
             Profile::NoHostList => {}
             Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses => {}
+        }
+        match self {
+            Profile::DhcpNoDns => routes.push(("/api/dhcp/feature-switch", FEATURE_DNS_HIDDEN)),
+            Profile::DhcpWithDns => routes.push(("/api/dhcp/feature-switch", FEATURE_DNS_SHOWN)),
+            _ => {}
         }
         if self == Profile::DnsEcho {
             for (path, body) in routes.iter_mut() {
@@ -115,6 +140,11 @@ const NET_MODE: &str =
 const NET_MODE_LIST: &str =
     "<response><BandList><Band>1</Band><Band>3</Band><Band>5</Band></BandList></response>";
 const DHCP: &str = "<response><PrimaryDns>203.0.113.1</PrimaryDns><SecondaryDns>203.0.113.2</SecondaryDns><Domains>mock.lan</Domains></response>";
+/// `dhcp/feature-switch` as the live H122-373 answers it: the DNS row and its two
+/// fields are hidden, which is why a DNS write there is accepted and dropped.
+const FEATURE_DNS_HIDDEN: &str = "<response><setmask_display>0</setmask_display><staticarp_display>0</staticarp_display><dhcpsdns_display>0</dhcpsdns_display><dhcps_ipallconfig_display>1</dhcps_ipallconfig_display></response>";
+/// The same page on a firmware that does expose it.
+const FEATURE_DNS_SHOWN: &str = "<response><setmask_display>0</setmask_display><staticarp_display>0</staticarp_display><dhcpsdns_display>1</dhcpsdns_display><dhcps_ipallconfig_display>1</dhcps_ipallconfig_display></response>";
 /// What a router that already carries the test's servers answers.
 const DHCP_ECHO: &str = "<response><DnsStatus>0</DnsStatus><PrimaryDns>9.9.9.9</PrimaryDns><SecondaryDns>8.8.8.8</SecondaryDns></response>";
 const SMS_REFUSED: &str = "<error><code>100005</code><message>No support</message></error>";
@@ -184,6 +214,89 @@ impl SwitchState {
     }
 }
 
+/// The `dhcp/settings` document a DHCP profile keeps. Field names and order copy
+/// what a live H122-373 answers, because the firmware validates names, not values.
+#[derive(Debug, Clone)]
+struct DhcpState {
+    dns_status: String,
+    primary: String,
+    secondary: String,
+    /// The lease the document carries: the one field the live firmware stores even
+    /// on a firmware with no DNS row, which makes it the witness that the document
+    /// was accepted while the DNS trio was dropped.
+    lease: String,
+}
+
+impl Default for DhcpState {
+    fn default() -> Self {
+        DhcpState {
+            dns_status: "1".into(),
+            primary: "192.168.8.1".into(),
+            secondary: "192.168.8.1".into(),
+            lease: "86400".into(),
+        }
+    }
+}
+
+impl DhcpState {
+    fn body(&self) -> String {
+        format!(
+            "<response><DnsStatus>{}</DnsStatus><DhcpStartIPAddress>192.168.8.100</DhcpStartIPAddress>\
+             <DhcpIPAddress>192.168.8.1</DhcpIPAddress><accessipaddress></accessipaddress>\
+             <homeurl>homerouter.cpe</homeurl><DhcpStatus>1</DhcpStatus>\
+             <DhcpLanNetmask>255.255.255.0</DhcpLanNetmask><SecondaryDns>{}</SecondaryDns>\
+             <PrimaryDns>{}</PrimaryDns><DhcpEndIPAddress>192.168.8.200</DhcpEndIPAddress>\
+             <DhcpLeaseTime>{}</DhcpLeaseTime></response>",
+            self.dns_status, self.secondary, self.primary, self.lease
+        )
+    }
+
+    /// Every field the real firmware insists on. A body missing one is not a write.
+    fn complete(body: &str) -> bool {
+        [
+            "DhcpIPAddress",
+            "DhcpLanNetmask",
+            "DhcpStatus",
+            "DhcpStartIPAddress",
+            "DhcpEndIPAddress",
+            "DhcpLeaseTime",
+            "DnsStatus",
+            "PrimaryDns",
+            "SecondaryDns",
+        ]
+        .iter()
+        .all(|f| body.contains(&format!("<{f}>")))
+    }
+
+    /// Store what the firmware stores. `dns` is the `dhcpsdns_display` the profile
+    /// answers: with `false` the live device keeps the range and the lease and drops
+    /// the DNS trio, which is exactly the silent ignore the refusal exists for.
+    fn apply(&mut self, body: &str, dns: bool) {
+        let tag = |name: &str| -> Option<String> {
+            let open = format!("<{name}>");
+            let close = format!("</{name}>");
+            let start = body.find(&open)? + open.len();
+            let end = body[start..].find(&close)? + start;
+            Some(body[start..end].trim().to_string())
+        };
+        if let Some(v) = tag("DhcpLeaseTime") {
+            self.lease = v;
+        }
+        if !dns {
+            return;
+        }
+        if let Some(v) = tag("DnsStatus") {
+            self.dns_status = v;
+        }
+        if let Some(v) = tag("PrimaryDns") {
+            self.primary = v;
+        }
+        if let Some(v) = tag("SecondaryDns") {
+            self.secondary = v;
+        }
+    }
+}
+
 /// A running fake router. Dropping it stops the listener.
 pub struct MockCpe {
     addr: String,
@@ -191,6 +304,7 @@ pub struct MockCpe {
     logins: Arc<AtomicUsize>,
     logouts: Arc<AtomicUsize>,
     signals: Arc<AtomicUsize>,
+    dhcp_posts: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -208,13 +322,23 @@ impl MockCpe {
         let sig = Arc::clone(&signals);
         let state = Arc::new(Mutex::new(SwitchState::default()));
         let st = Arc::clone(&state);
+        let dhcp_posts = Arc::new(AtomicUsize::new(0));
+        let dp = Arc::clone(&dhcp_posts);
+        let dhcp = Arc::new(Mutex::new(DhcpState::default()));
+        let dh = Arc::clone(&dhcp);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let _ = serve(stream, profile, &li, &lo, &sig, &st);
+                let counters = Counters {
+                    logins: &li,
+                    logouts: &lo,
+                    signals: &sig,
+                    dhcp_posts: &dp,
+                };
+                let _ = serve(stream, profile, &counters, &st, &dh);
             }
         });
         MockCpe {
@@ -223,6 +347,7 @@ impl MockCpe {
             logins,
             logouts,
             signals,
+            dhcp_posts,
             thread: Some(thread),
         }
     }
@@ -247,6 +372,11 @@ impl MockCpe {
     pub fn signals(&self) -> usize {
         self.signals.load(Ordering::SeqCst)
     }
+
+    /// `POST /api/dhcp/settings` calls seen so far: how a test proves nothing was sent.
+    pub fn dhcp_posts(&self) -> usize {
+        self.dhcp_posts.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for MockCpe {
@@ -261,13 +391,21 @@ impl Drop for MockCpe {
     }
 }
 
+/// Every counter the fake router keeps. One handle keeps `serve` under
+/// `clippy::too_many_arguments`, which is a hard error here.
+struct Counters<'a> {
+    logins: &'a AtomicUsize,
+    logouts: &'a AtomicUsize,
+    signals: &'a AtomicUsize,
+    dhcp_posts: &'a AtomicUsize,
+}
+
 fn serve(
     stream: TcpStream,
     profile: Profile,
-    logins: &AtomicUsize,
-    logouts: &AtomicUsize,
-    signals: &AtomicUsize,
+    counters: &Counters,
     state: &Mutex<SwitchState>,
+    dhcp: &Mutex<DhcpState>,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -277,7 +415,7 @@ fn serve(
     let path = parts.next().unwrap_or("/").to_string();
 
     if path.starts_with("/api/device/signal") {
-        signals.fetch_add(1, Ordering::SeqCst);
+        counters.signals.fetch_add(1, Ordering::SeqCst);
     }
 
     // Drain headers so the client is not left writing into a closed socket.
@@ -309,14 +447,50 @@ fn serve(
         profile,
         Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses
     );
+    let is_dhcp = matches!(
+        profile,
+        Profile::DhcpStrict
+            | Profile::DhcpIgnoresShort
+            | Profile::DhcpIgnoresAll
+            | Profile::DhcpNoDns
+            | Profile::DhcpWithDns
+    );
 
     let (status, body) = match (method, path.as_str()) {
+        ("GET", "/api/dhcp/settings") if is_dhcp => {
+            (200, dhcp.lock().map(|d| d.body()).unwrap_or_default())
+        }
+        ("POST", "/api/dhcp/settings") if is_dhcp => {
+            counters.dhcp_posts.fetch_add(1, Ordering::SeqCst);
+            if Profile::DhcpIgnoresAll == profile {
+                (200, "<response>OK</response>".to_string())
+            } else if !DhcpState::complete(&payload) {
+                match profile {
+                    // The real firmware's format error: the write did not happen.
+                    Profile::DhcpStrict => (
+                        200,
+                        "<error><code>100005</code><message>format error</message></error>"
+                            .to_string(),
+                    ),
+                    _ => (200, "<response>OK</response>".to_string()),
+                }
+            } else {
+                // DhcpNoDns is the live H122-373: the document is accepted and its
+                // range and lease land, but a firmware with no DNS row stores neither
+                // DnsStatus nor the two addresses.
+                let store_dns = profile != Profile::DhcpNoDns;
+                if let Ok(mut d) = dhcp.lock() {
+                    d.apply(&payload, store_dns);
+                }
+                (200, "<response>OK</response>".to_string())
+            }
+        }
         ("POST", "/api/user/login") => {
-            logins.fetch_add(1, Ordering::SeqCst);
+            counters.logins.fetch_add(1, Ordering::SeqCst);
             (200, "<response>OK</response>".to_string())
         }
         ("POST", "/api/user/logout") => {
-            logouts.fetch_add(1, Ordering::SeqCst);
+            counters.logouts.fetch_add(1, Ordering::SeqCst);
             (200, "<response>OK</response>".to_string())
         }
         ("POST", "/api/net/net-mode") if is_switch => {
@@ -442,6 +616,56 @@ mod tests {
                 .iter()
                 .any(|c| c.id == "auth" && c.state == "ready"),
             "auth never ran"
+        );
+    }
+
+    /// The live H122-373 drop, reproduced: the document is accepted, the lease is
+    /// stored, and the three DNS fields are thrown away. Without this the refusal
+    /// test would be measuring a fiction.
+    #[test]
+    fn a_dhcp_no_dns_profile_keeps_the_lease_and_drops_the_dns() {
+        let mock = MockCpe::start(Profile::DhcpNoDns);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let doc = "<request><DnsStatus>1</DnsStatus><DhcpStartIPAddress>192.168.8.100</DhcpStartIPAddress>\
+                   <DhcpIPAddress>192.168.8.1</DhcpIPAddress><accessipaddress></accessipaddress>\
+                   <homeurl>homerouter.cpe</homeurl><DhcpStatus>1</DhcpStatus>\
+                   <DhcpLanNetmask>255.255.255.0</DhcpLanNetmask><SecondaryDns>1.0.0.1</SecondaryDns>\
+                   <PrimaryDns>1.1.1.1</PrimaryDns><DhcpEndIPAddress>192.168.8.200</DhcpEndIPAddress>\
+                   <DhcpLeaseTime>86401</DhcpLeaseTime></request>";
+        c.post("dhcp/settings", doc)
+            .expect("the document must be accepted");
+        let after = c.get("dhcp/settings").expect("read back");
+        assert_eq!(
+            after.value("DhcpLeaseTime"),
+            Some("86401"),
+            "the lease is stored, which is the proof the POST was accepted"
+        );
+        let dns = crate::router::parse::parse_dns(&after);
+        assert_eq!(
+            dns.primary.as_deref(),
+            Some("192.168.8.1"),
+            "a firmware with no DNS row drops the address it was sent"
+        );
+        assert_eq!(dns.secondary.as_deref(), Some("192.168.8.1"));
+    }
+
+    /// The fake firmware has to be as strict as the real one, or the DNS tests
+    /// below prove nothing: a three-field body is a format error, not a write.
+    #[test]
+    fn a_strict_dhcp_profile_refuses_a_three_field_document() {
+        let mock = MockCpe::start(Profile::DhcpStrict);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let short = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><DnsStatus>1</DnsStatus><PrimaryDns>1.1.1.1</PrimaryDns><SecondaryDns>1.0.0.1</SecondaryDns></request>";
+        let err = c.post("dhcp/settings", short).expect_err("must refuse");
+        assert_eq!(err, crate::error::ApiError::Invalid(100005));
+        assert_eq!(mock.dhcp_posts(), 1);
+        let doc = c.get("dhcp/settings").expect("read back");
+        assert_eq!(
+            doc.value("PrimaryDns"),
+            Some("192.168.8.1"),
+            "nothing may change"
         );
     }
 }

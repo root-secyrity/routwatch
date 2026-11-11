@@ -156,16 +156,134 @@ pub struct DeviceExtras {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DnsInfo {
-    /// "0" = manual servers, "1" = automatic (from the DHCP server).
+    /// `DnsStatus` exactly as the device reports it. The DHCP page uses `0` for two
+    /// typed servers and `1` when the router answers itself (`js/dhcp.js`), but it is
+    /// not trustworthy across firmwares, so `is_manual()` decides from the addresses.
     pub status: Option<String>,
     pub primary: Option<String>,
     pub secondary: Option<String>,
+    /// The router's own LAN address (`DhcpIPAddress`). Advertising it for both
+    /// servers is what the DHCP panel calls automatic: the router resolves.
+    pub lan_ip: Option<String>,
+    /// Whether this firmware exposes the LAN DHCP DNS setting at all, read from
+    /// `dhcp/feature-switch`. `None` means the device did not say (no such endpoint),
+    /// which is an older firmware and is treated as writable, as before.
+    pub editable: Option<bool>,
 }
 
 impl DnsInfo {
+    /// True when the advertised servers are not the router itself.
+    ///
+    /// Decided by the addresses because `DnsStatus` is a flag, not a mode: the live box
+    /// reports `1` while serving `192.168.8.1 / 192.168.8.1`. A firmware that hides its
+    /// LAN IP falls back to the old reading *or* "the two servers differ" - custom servers
+    /// almost never share an address, while the router's own pair always does. That
+    /// covers `fixtures/sample-snapshot-5g.json` (status `1`, two custom servers, no
+    /// `DhcpIPAddress`).
     pub fn is_manual(&self) -> bool {
-        self.status.as_deref() == Some("0")
+        match (self.primary.as_deref(), self.secondary.as_deref()) {
+            (Some(p), Some(s)) => match self.lan_ip.as_deref() {
+                Some(lan) => !(p == lan && s == lan),
+                None => self.status.as_deref() == Some("0") || p != s,
+            },
+            _ => self.status.as_deref() == Some("0"),
+        }
     }
+}
+
+/// The `dhcp/settings` document as the firmware holds it.
+///
+/// `POST dhcp/settings` is a whole-document write: the firmware validates field
+/// names, so a body carrying only the DNS trio is refused (100005) or ignored.
+/// Reading it first and echoing it back is the only safe way to change one part.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DhcpSettings {
+    pub dhcp_ip: Option<String>,
+    pub netmask: Option<String>,
+    pub dhcp_status: Option<String>,
+    pub start_ip: Option<String>,
+    pub end_ip: Option<String>,
+    pub lease_time: Option<String>,
+    pub dns_status: Option<String>,
+    pub primary: Option<String>,
+    pub secondary: Option<String>,
+    pub homeurl: Option<String>,
+    pub access_ip: Option<String>,
+    /// The exact XML between `<response>` and `</response>`, as received. Empty when the
+    /// document was built by hand (tests, mocks).
+    pub raw_inner: String,
+}
+
+impl DhcpSettings {
+    /// Attach the source text so the write can echo it byte for byte.
+    pub fn with_raw(mut self, inner: &str) -> Self {
+        self.raw_inner = inner.to_string();
+        self
+    }
+
+    /// The whole document with the two DNS servers replaced.
+    ///
+    /// The raw text is echoed and only the two element bodies change, so an element this
+    /// code does not model (the mock's `Domains`, or a field another firmware adds)
+    /// survives. `DnsStatus` is copied from the device, never invented. When no raw text
+    /// is available the eleven known fields are serialised instead.
+    pub fn body_with_dns(&self, primary: &str, secondary: &str) -> String {
+        let inner = if self.raw_inner.trim().is_empty() {
+            self.known_fields_inner()
+        } else {
+            self.raw_inner.clone()
+        };
+        let inner = set_element(&inner, "PrimaryDns", primary);
+        let inner = set_element(&inner, "SecondaryDns", secondary);
+        format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><request>{inner}</request>")
+    }
+
+    /// Fallback body for a document with no source text: the eleven fields this code
+    /// models, in the order the firmware reports them.
+    fn known_fields_inner(&self) -> String {
+        fn el(name: &str, value: Option<&String>) -> String {
+            format!(
+                "<{name}>{}</{name}>",
+                crate::xml::esc(value.map(String::as_str).unwrap_or(""))
+            )
+        }
+        let mut inner = String::new();
+        inner.push_str(&el("DhcpIPAddress", self.dhcp_ip.as_ref()));
+        inner.push_str(&el("DhcpLanNetmask", self.netmask.as_ref()));
+        inner.push_str(&el("DhcpStatus", self.dhcp_status.as_ref()));
+        inner.push_str(&el("DhcpStartIPAddress", self.start_ip.as_ref()));
+        inner.push_str(&el("DhcpEndIPAddress", self.end_ip.as_ref()));
+        inner.push_str(&el("DhcpLeaseTime", self.lease_time.as_ref()));
+        inner.push_str(&el("DnsStatus", self.dns_status.as_ref()));
+        inner.push_str(&el("PrimaryDns", self.primary.as_ref()));
+        inner.push_str(&el("SecondaryDns", self.secondary.as_ref()));
+        inner.push_str(&el("homeurl", self.homeurl.as_ref()));
+        inner.push_str(&el("accessipaddress", self.access_ip.as_ref()));
+        inner
+    }
+}
+
+/// Replace one element's body, or append the element when the document lacks it.
+///
+/// Flat documents only, which is what this endpoint returns: the first `<name>` and the
+/// first `</name>` are the pair to replace.
+fn set_element(inner: &str, name: &str, value: &str) -> String {
+    let open = format!("<{name}>");
+    let close = format!("</{name}>");
+    let escaped = crate::xml::esc(value);
+    if let (Some(a), Some(b)) = (inner.find(&open), inner.find(&close)) {
+        if b > a {
+            let start = a + open.len();
+            let mut out = String::with_capacity(inner.len() + escaped.len());
+            out.push_str(&inner[..start]);
+            out.push_str(&escaped);
+            out.push_str(&inner[b..]);
+            return out;
+        }
+    }
+    let mut out = inner.to_string();
+    out.push_str(&format!("{open}{escaped}{close}"));
+    out
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -211,4 +329,96 @@ pub struct Snapshot {
     /// `--json`, so nothing changes for a firmware that answers everything.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsupported: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LIVE: &str = "<response><DnsStatus>1</DnsStatus><DhcpStartIPAddress>192.168.8.100</DhcpStartIPAddress><DhcpIPAddress>192.168.8.1</DhcpIPAddress><accessipaddress></accessipaddress><homeurl>homerouter.cpe</homeurl><DhcpStatus>1</DhcpStatus><DhcpLanNetmask>255.255.255.0</DhcpLanNetmask><SecondaryDns>192.168.8.1</SecondaryDns><PrimaryDns>192.168.8.1</PrimaryDns><DhcpEndIPAddress>192.168.8.200</DhcpEndIPAddress><DhcpLeaseTime>86400</DhcpLeaseTime></response>";
+
+    #[test]
+    fn a_dns_document_is_read_whole_and_written_whole() {
+        let node = crate::xml::parse(LIVE).unwrap();
+        let doc =
+            crate::router::parse::parse_dhcp(&node).with_raw(&crate::xml::inner_of_document(LIVE));
+        assert_eq!(doc.dhcp_ip.as_deref(), Some("192.168.8.1"));
+        assert_eq!(doc.lease_time.as_deref(), Some("86400"));
+        let body = doc.body_with_dns("1.1.1.1", "1.0.0.1");
+        for field in [
+            "DhcpIPAddress",
+            "DhcpLanNetmask",
+            "DhcpStatus",
+            "DhcpStartIPAddress",
+            "DhcpEndIPAddress",
+            "DhcpLeaseTime",
+            "DnsStatus",
+            "PrimaryDns",
+            "SecondaryDns",
+            "homeurl",
+            "accessipaddress",
+        ] {
+            assert!(
+                body.contains(&format!("<{field}>")),
+                "{field} missing: {body}"
+            );
+        }
+        assert!(body.contains("<PrimaryDns>1.1.1.1</PrimaryDns>"), "{body}");
+        assert!(
+            body.contains("<DnsStatus>1</DnsStatus>"),
+            "DnsStatus must be copied: {body}"
+        );
+        assert!(
+            body.contains("<DhcpLeaseTime>86400</DhcpLeaseTime>"),
+            "every element keeps the device's own bytes: {body}"
+        );
+    }
+
+    /// An element this code does not model must survive the write, not be dropped by
+    /// re-serialisation: that is the class of bug the whole-document fix exists for.
+    #[test]
+    fn an_unknown_element_survives_the_write() {
+        let text = "<response><DnsStatus>1</DnsStatus><DhcpIPAddress>192.168.8.1</DhcpIPAddress><Domains>homerouter.cpe</Domains><PrimaryDns>192.168.8.1</PrimaryDns><SecondaryDns>192.168.8.1</SecondaryDns></response>";
+        let node = crate::xml::parse(text).unwrap();
+        let doc =
+            crate::router::parse::parse_dhcp(&node).with_raw(&crate::xml::inner_of_document(text));
+        let body = doc.body_with_dns("1.1.1.1", "1.0.0.1");
+        assert!(body.contains("<Domains>homerouter.cpe</Domains>"), "{body}");
+        assert!(body.contains("<PrimaryDns>1.1.1.1</PrimaryDns>"), "{body}");
+        assert!(
+            !body.contains("<PrimaryDns>192.168.8.1</PrimaryDns>"),
+            "{body}"
+        );
+    }
+
+    /// The live box answers DnsStatus=1 while serving the router itself: status is
+    /// a flag, not a mode. Manual means "not the router's own address".
+    #[test]
+    fn manual_is_decided_by_the_addresses_not_by_dns_status() {
+        let router_itself = DnsInfo {
+            status: Some("1".into()),
+            primary: Some("192.168.8.1".into()),
+            secondary: Some("192.168.8.1".into()),
+            lan_ip: Some("192.168.8.1".into()),
+            editable: None,
+        };
+        assert!(!router_itself.is_manual());
+        let custom = DnsInfo {
+            primary: Some("1.1.1.1".into()),
+            secondary: Some("1.0.0.1".into()),
+            ..router_itself.clone()
+        };
+        assert!(custom.is_manual());
+        let unknown_lan = DnsInfo {
+            lan_ip: None,
+            status: Some("0".into()),
+            primary: Some("1.1.1.1".into()),
+            secondary: Some("1.0.0.1".into()),
+            editable: None,
+        };
+        assert!(
+            unknown_lan.is_manual(),
+            "old firmware keeps the old reading"
+        );
+    }
 }

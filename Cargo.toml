@@ -1,6 +1,6 @@
 [package]
 name = "routwatch"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 rust-version = "1.88"
 description = "Huawei LTE/5G CPE manager in the terminal - live signal, traffic, clients, bands and DNS"
@@ -21,7 +21,7 @@ thiserror = "2"
 dirs = "6"
 sha2 = "0.10"
 base64 = "0.22"
-ratatui = "0.29"
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 unicode-width = "0.2"
 libc = "0.2"
 
