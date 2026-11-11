@@ -183,10 +183,16 @@ fn unescape(s: &str) -> String {
 }
 
 /// The text between the root element's tags, as received: what a whole-document
-/// write echoes back. Empty when the text has no closing tag.
+/// write echoes back. The live device answers with an XML declaration first, so
+/// the declaration is skipped before the root element's tags are measured; empty
+/// when the text has no closing tag.
 pub fn inner_of_document(text: &str) -> String {
-    match (text.find('>'), text.rfind("</")) {
-        (Some(open), Some(close)) if close > open => text[open + 1..close].to_string(),
+    let body = match text.find("?>") {
+        Some(p) if text[..p].trim_start().starts_with("<?") => &text[p + 2..],
+        _ => text,
+    };
+    match (body.find('>'), body.rfind("</")) {
+        (Some(open), Some(close)) if close > open => body[open + 1..close].to_string(),
         _ => String::new(),
     }
 }
@@ -199,6 +205,24 @@ mod tests {
     fn escaping_is_reversible_for_hostile_text() {
         assert_eq!(esc("a&b<c>\"d\""), "a&amp;b&lt;c&gt;&quot;d&quot;");
         assert_eq!(esc("192.168.8.1"), "192.168.8.1");
+    }
+
+    /// The live router answers with `<?xml ...?>` first. Measuring the first `>`
+    /// without skipping it left `<response>` inside the echoed body, which a
+    /// whole-document POST then carried as a nested element.
+    #[test]
+    fn the_inner_text_skips_the_xml_declaration() {
+        let doc = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><response><DnsStatus>1</DnsStatus><PrimaryDns>192.168.8.1</PrimaryDns></response>";
+        assert_eq!(
+            inner_of_document(doc),
+            "<DnsStatus>1</DnsStatus><PrimaryDns>192.168.8.1</PrimaryDns>"
+        );
+        assert_eq!(
+            inner_of_document("<response><A>1</A></response>"),
+            "<A>1</A>"
+        );
+        assert_eq!(inner_of_document("<response>"), "");
+        assert_eq!(inner_of_document("no tags here"), "");
     }
 
     #[test]
