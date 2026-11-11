@@ -44,7 +44,7 @@ impl WriteIntent {
             WriteIntent::SetDns { primary, secondary } => {
                 format!("DNS {primary} / {secondary}")
             }
-            WriteIntent::ResetDns => "DNS: back to automatic".to_string(),
+            WriteIntent::ResetDns => "DNS: router answers DNS itself".to_string(),
         }
     }
 }
@@ -597,7 +597,10 @@ mod tests {
             secondary: "1.0.0.1".into(),
         };
         assert_eq!(i.label(), "DNS 1.1.1.1 / 1.0.0.1");
-        assert_eq!(WriteIntent::ResetDns.label(), "DNS: back to automatic");
+        assert_eq!(
+            WriteIntent::ResetDns.label(),
+            "DNS: router answers DNS itself"
+        );
     }
 
     #[test]

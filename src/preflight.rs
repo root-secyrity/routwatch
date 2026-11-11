@@ -75,7 +75,13 @@ pub fn for_intent(intent: &WriteIntent, snap: Option<&Snapshot>) -> Preflight {
         WriteIntent::ResetDns => Preflight {
             rows: vec![
                 ("DNS now".to_string(), dns_now(snap)),
-                ("DNS after".to_string(), "automatic (DHCP)".to_string()),
+                (
+                    "DNS after".to_string(),
+                    snap.and_then(|s| s.dns.as_ref())
+                        .and_then(|d| d.lan_ip.clone())
+                        .map(|lan| format!("router as resolver ({lan})"))
+                        .unwrap_or_else(|| "router as resolver".to_string()),
+                ),
             ],
             warning: Some("DNS does not restart the radio".to_string()),
         },
@@ -84,7 +90,10 @@ pub fn for_intent(intent: &WriteIntent, snap: Option<&Snapshot>) -> Preflight {
 
 fn dns_now(snap: Option<&Snapshot>) -> String {
     match snap.and_then(|s| s.dns.as_ref()) {
-        Some(d) if d.status.as_deref() == Some("1") => "automatic (DHCP)".to_string(),
+        Some(d) if !d.is_manual() => match &d.lan_ip {
+            Some(lan) => format!("router as resolver ({lan})"),
+            None => "router as resolver".to_string(),
+        },
         Some(d) => format!(
             "{} / {}",
             d.primary.clone().unwrap_or_else(|| "?".into()),
@@ -124,13 +133,13 @@ mod tests {
     }
 
     #[test]
-    fn the_preflight_says_automatic_dns_as_automatic() {
+    fn the_preflight_names_the_router_as_resolver_instead_of_automatic() {
         let snap = Snapshot {
             dns: Some(crate::model::DnsInfo {
                 status: Some("1".into()),
-                primary: None,
-                secondary: None,
-                lan_ip: None,
+                primary: Some("192.168.8.1".into()),
+                secondary: Some("192.168.8.1".into()),
+                lan_ip: Some("192.168.8.1".into()),
             }),
             ..Snapshot::default()
         };
@@ -144,10 +153,17 @@ mod tests {
         assert!(p
             .rows
             .iter()
-            .any(|(k, v)| k == "DNS now" && v == "automatic (DHCP)"));
+            .any(|(k, v)| k == "DNS now" && v == "router as resolver (192.168.8.1)"));
         assert!(p
             .rows
             .iter()
             .any(|(k, v)| k == "DNS after" && v == "1.1.1.1 / 1.0.0.1"));
+
+        let reset = for_intent(&WriteIntent::ResetDns, Some(&snap));
+        assert!(reset
+            .rows
+            .iter()
+            .any(|(k, v)| k == "DNS after" && v == "router as resolver (192.168.8.1)"));
+        assert!(!reset.rows.iter().any(|(_, v)| v.contains("automatic")));
     }
 }
