@@ -77,7 +77,7 @@ impl Tab {
             Tab::Bands => {
                 "space tick · j/k · a apply · u undo · n preset · s save · x del · m mode · o nr · e report"
             }
-            Tab::Traffic => "d edit DNS · D auto DNS · e report",
+            Tab::Traffic => "d edit DNS · D auto DNS · b reset budget · e report",
             Tab::Network => "p ping host · e report",
             Tab::Clients => "j/k select · s sort · c copy mac · e report",
             Tab::Sms => "R read inbox",
@@ -352,6 +352,17 @@ pub struct App {
     pub client_sel: usize,
     pub error_log: VecDeque<String>,
     pub budget_gb: f64,
+    /// Local ledger plus the budget baseline. Filled by `on_snapshot` and
+    /// flushed by the TUI loop; `preview` and `status` never write it.
+    pub usage: crate::usage::Usage,
+    /// Where the TUI flushes it. `None` outside the TUI.
+    pub usage_path: Option<std::path::PathBuf>,
+    pub usage_dirty: bool,
+    pub usage_saved: Option<Instant>,
+    /// The exclusive claim on the ledger; held for the whole TUI session.
+    pub usage_lock: Option<std::fs::File>,
+    /// `b` on the Traffic tab asks here first; a reset is not undoable.
+    pub reset_confirm: bool,
     pub refresh_ms: u64,
     /// `true` writes serial/IMEI/WAN/client identities into `e` reports. Off by
     /// default: a report is meant to be pasted in public.
@@ -477,6 +488,12 @@ impl App {
             client_sel: 0,
             error_log: VecDeque::new(),
             budget_gb: budget_gb as f64,
+            usage: crate::usage::Usage::default(),
+            usage_path: None,
+            usage_dirty: false,
+            usage_saved: None,
+            usage_lock: None,
+            reset_confirm: false,
             refresh_ms,
             report_identity: false,
             phases: [PhaseState::Waiting; 10],
@@ -512,6 +529,26 @@ impl App {
     }
 
     pub fn on_snapshot(&mut self, snap: Snapshot, poll_ms: u128) {
+        // A different router means different counters, not a different user:
+        // keep the daily table, restart the baseline, and record the change as
+        // a gap. Resetting the whole ledger here lost a month of history.
+        if !self.usage.router.is_empty() && self.usage.router != snap.router {
+            crate::usage::switch_router(
+                &mut self.usage,
+                snap.generated_at,
+                &snap.traffic,
+                snap.quota.as_ref(),
+            );
+        }
+        self.usage.router = snap.router.clone();
+        let start_day = snap.quota.as_ref().map_or(1, |q| q.start_day);
+        self.usage_dirty |= crate::usage::observe(
+            &mut self.usage,
+            snap.generated_at,
+            &snap.traffic,
+            snap.quota.as_ref(),
+            start_day,
+        );
         self.history_dl.push_back(snap.traffic.dl_rate_bytes as f64);
         self.history_ul.push_back(snap.traffic.ul_rate_bytes as f64);
         while self.history_dl.len() > HISTORY {
@@ -2123,5 +2160,61 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "bands after" && v == "B1,B3"));
         assert!(p.warning.unwrap_or_default().contains("offline"));
+    }
+
+    /// Every poll feeds the ledger: one snapshot is the baseline, the next one
+    /// is the delta. Two hundred seconds apart, so the gap guard (300 s) does
+    /// not fire and the sample lands in today's bucket.
+    #[test]
+    fn a_snapshot_feeds_the_usage_ledger() {
+        let mut app = App::new(
+            crate::theme::Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        );
+        let mut snap = crate::model::Snapshot {
+            router: "10.0.0.1".into(),
+            generated_at: 1_000,
+            ..Default::default()
+        };
+        snap.traffic.total_dl_bytes = 1_000;
+        app.on_snapshot(snap.clone(), 2_000);
+        snap.generated_at = 1_200;
+        snap.traffic.total_dl_bytes = 1_200;
+        app.on_snapshot(snap, 2_000);
+        assert_eq!(app.usage.days.len(), 1);
+        assert_eq!(app.usage.days[0].dl, 200);
+        assert!(app.usage_dirty, "a new sample must be marked for flushing");
+    }
+
+    /// A new address is a new counter, not a new month: the table survives and
+    /// only the baseline restarts.
+    #[test]
+    fn a_router_switch_does_not_wipe_the_days() {
+        let mut app = App::new(
+            crate::theme::Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        );
+        let mut snap = crate::model::Snapshot {
+            router: "10.0.0.1".into(),
+            generated_at: 1_000,
+            ..Default::default()
+        };
+        snap.traffic.total_dl_bytes = 1_000;
+        app.on_snapshot(snap.clone(), 2_000);
+        snap.generated_at = 1_200;
+        snap.traffic.total_dl_bytes = 1_500;
+        app.on_snapshot(snap.clone(), 2_000);
+        snap.router = "10.0.0.2".into();
+        snap.generated_at = 1_400;
+        snap.traffic.total_dl_bytes = 9_000;
+        app.on_snapshot(snap, 2_000);
+        assert_eq!(app.usage.days.len(), 1, "the history survives a new router");
+        assert_eq!(app.usage.router, "10.0.0.2");
     }
 }
