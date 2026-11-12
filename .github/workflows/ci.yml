@@ -8,6 +8,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job here only reads the source and runs cargo, so the token needs no
+# write scope. release.yml keeps contents: write for its own upload step.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-24.04
