@@ -54,7 +54,7 @@ impl Tab {
         }
     }
 
-    /// Short label for narrow terminals, where eight full titles do not fit.
+    /// Short label for narrow terminals, where nine full titles do not fit.
     pub fn short(&self) -> &'static str {
         match self {
             Tab::Dashboard => "Dash",

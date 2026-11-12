@@ -468,8 +468,8 @@ pub fn two_per_column(data: &[u64], width: u16) -> Vec<u64> {
 /// slots into a `Paragraph` beside its label.
 ///
 /// `bars` is a one-row contract: a block sparkline is a row of eighths, and
-/// `height` is ignored for it. The dashboard passes 2 and the old tests pin
-/// one line, so the distinction is kept here rather than at every call site.
+/// `height` is ignored for it. The dashboard passes 2 and the tests pin one
+/// line, so the distinction is kept here rather than at every call site.
 #[allow(clippy::too_many_arguments)]
 pub fn spark_lines(
     values: &VecDeque<f64>,

@@ -2507,10 +2507,10 @@ fn speed_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
         return;
     }
 
-    // The dials needed seven rows; a mirrored plot needs four. Anything shorter
-    // keeps the two readings and says why there is no trend. One sample is a
-    // reading, not a trend: a single braille column on the right edge reads as
-    // a broken plot, so the compact lines carry it until there are two.
+    // A mirrored plot needs four rows. Anything shorter keeps the two readings
+    // and says why there is no trend. One sample is a reading, not a trend: a
+    // single braille column on the right edge reads as a broken plot, so the
+    // compact lines carry it until there are two.
     if !wide || samples < 2 || inner.height < 5 || inner.width < 24 {
         f.render_widget(
             Paragraph::new(vec![
