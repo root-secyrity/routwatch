@@ -24,6 +24,7 @@ pub mod scrub;
 pub mod share;
 pub mod theme;
 pub mod ui;
+pub mod usage;
 pub mod worker;
 pub mod write;
 pub mod xml;
