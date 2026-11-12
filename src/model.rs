@@ -53,6 +53,22 @@ pub struct Signal {
     pub nr: Option<Nr>,
 }
 
+/// The router's own monthly accounting, when the firmware exposes it.
+/// `month_dl_bytes` and `month_ul_bytes` are the counters behind
+/// `monitoring/month_statistics`; `start_day` comes from
+/// `monitoring/start_date` and defaults to 1 when that endpoint is refused.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Quota {
+    pub month_dl_bytes: u64,
+    pub month_ul_bytes: u64,
+    /// Billing cycle start day of month, 1..=28.
+    pub start_day: u8,
+    pub data_limit_bytes: Option<u64>,
+    /// `MonthLastClearTime` exactly as the firmware writes it.
+    pub last_clear: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Traffic {
     pub dl_rate_bytes: u64,
