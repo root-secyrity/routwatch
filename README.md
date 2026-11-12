@@ -25,7 +25,7 @@ identifiers are placeholders. The remaining seven sections are in
 
 | Route | Command |
 |---|---|
-| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.4.6/routwatch-0.4.6-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.4.5-1-x86_64.pkg.tar.zst` |
+| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.4.6/routwatch-0.4.6-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.4.6-1-x86_64.pkg.tar.zst` |
 | Static musl binary | [routwatch-x86_64-linux-musl](https://github.com/root-secyrity/routwatch/releases/latest/download/routwatch-x86_64-linux-musl) - links nothing, runs on Arch, Debian, Ubuntu, Fedora, Alpine, Raspberry Pi OS |
 | Any distro, from source | `git clone https://github.com/root-secyrity/routwatch.git && cd routwatch && sudo make install` |
 | Windows 10/11, via WSL2 | no separate build: install the static binary inside WSL ([details](docs/platforms.md#windows)) |
