@@ -5,10 +5,19 @@ credential handling and about writes are taken seriously.
 
 ## Supported versions
 
-| Version | Supported       |
-| ------- | --------------- |
-| 0.2.x   | yes             |
-| < 0.2   | no, please upgrade |
+| Version | Supported          |
+| ------- | ------------------ |
+| 0.5.x   | yes                |
+| < 0.5   | no, please upgrade |
+
+## Automated checks
+
+- Dependabot alerts and security updates are on, and `.github/dependabot.yml` opens
+  a weekly pull request for `cargo` and for the GitHub Actions it pins.
+- CodeQL runs on every push to `main` and every pull request (default setup, Rust
+  and Actions query packs). Results land in **Security -> Code scanning**.
+- Secret scanning and push protection are on: a commit that carries a token or a
+  credential is refused at push time.
 
 ## Reporting a vulnerability
 
