@@ -19,7 +19,7 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 dirs = "7"
-sha2 = "0.10"
+sha2 = "0.11"
 base64 = "0.22"
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 unicode-width = "0.2"
