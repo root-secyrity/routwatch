@@ -721,7 +721,6 @@ fn render_half(
         return;
     }
     let ramp = fade_ramp(color, opts).unwrap_or_else(|| Ramp::flat(color));
-    let samples = two_per_column(data, area.width);
     if opts.ascii {
         render_ascii(buf, area, data, max, &ramp, opts, flip);
     } else if bars {
@@ -731,8 +730,30 @@ fn render_half(
             render_bars(buf, area, data, max, &ramp, opts);
         }
     } else {
+        // One sample owns one cell: both dot columns of the cell carry the same
+        // value. Asking for two samples per cell instead stretched a short
+        // history over the whole plot, so one reading painted a four-cell bar
+        // and the bar width changed as the history grew.
+        let pad = (area.width as usize).saturating_sub(data.len());
+        let mut samples: Vec<u64> = vec![0; pad * 2];
+        samples.extend(data.iter().flat_map(|&v| [v, v]));
         area_graph(buf, area, &samples, max, &ramp, flip, opts.baseline);
     }
+}
+
+/// Compress `data` into exactly `cells` buckets, keeping the largest sample in
+/// each one. A bucket feeds one cell, so a spike can never widen past a cell
+/// however long the history is.
+pub fn bucket_max(data: &[u64], cells: usize) -> Vec<u64> {
+    let mut out = vec![0u64; cells];
+    if cells == 0 || data.is_empty() {
+        return out;
+    }
+    for (i, &v) in data.iter().enumerate() {
+        let slot = (i * cells / data.len()).min(cells - 1);
+        out[slot] = out[slot].max(v);
+    }
+    out
 }
 
 /// The x-axis strip under a time-series plot: the window's start, its
@@ -972,6 +993,47 @@ mod tests {
         );
         assert_eq!(buf[(1, 0)].symbol(), "%", "rx grows up to the ceiling");
         assert_eq!(buf[(1, 2)].symbol(), "%", "tx hangs from the zero row");
+    }
+
+    #[test]
+    fn a_short_history_paints_one_cell_per_sample() {
+        // The plot used to be stretched over the whole width, so five samples in
+        // a ten-cell panel painted a two-cell bar. One sample owns one cell now.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
+        let plot = buf.area;
+        let opts = ChartOpts {
+            baseline: false,
+            ..ChartOpts::default()
+        };
+        render_mirrored_scaled(
+            &mut buf,
+            plot,
+            &[0, 0, 0, 0, 9],
+            &[],
+            9,
+            9,
+            false,
+            Color::Green,
+            Color::Cyan,
+            opts,
+        );
+        let inked = (0..10).filter(|x| buf[(*x, 0)].symbol() != " ").count();
+        assert_eq!(inked, 1, "one sample owns one cell, whatever the width");
+        assert_ne!(buf[(9, 0)].symbol(), " ", "the newest sample sits right");
+    }
+
+    #[test]
+    fn a_bucket_never_widens_a_spike() {
+        let mut data = [1u64; 120];
+        data[60] = 500;
+        let out = bucket_max(&data, 95);
+        assert_eq!(out.len(), 95, "one bucket per cell");
+        assert_eq!(
+            out.iter().filter(|v| **v == 500).count(),
+            1,
+            "the spike keeps exactly one cell: {out:?}"
+        );
+        assert!(out.iter().filter(|v| **v == 1).count() >= 94);
     }
 
     #[test]

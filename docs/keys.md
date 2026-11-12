@@ -48,6 +48,7 @@ those two sections.
 | `n` `s` `x` | Bands | next merge preset · save the ticked merge · delete it |
 | `m` `o` | Bands | network mode · NR option |
 | `d` `z` | Traffic / DNS | type DNS servers · back to DHCP (`Shift+d` also resets) |
+| `b` | Traffic | reset the budget baseline (asks first; the day table and the router counters stay) |
 | `j` `k` `Enter` | DNS | choose a preset · apply it (then `y`) |
 | `t` | everywhere | next colour theme (nine: eight palettes plus `auto`, which follows your desktop) |
 | `s` `c` | Clients | sort by name/ip/band/time · copy the MAC |
@@ -65,7 +66,8 @@ the last sample (`stale 45s`) and, while a scan runs, the endpoint being read
 (`✓ plmn 3/10`); on a narrow terminal the state is the last thing dropped.
 
 The write keys (`a` on Bands, `d` on Traffic/DNS, `b` on Device) are the only
-ones that change the router. The three rules that guard them are in the README's
+ones that change the router; `b` on Traffic only moves the local budget baseline,
+which is why it asks for a `y` but dials nothing. The three rules that guard them are in the README's
 Safety list; what can go wrong during a write is in [limits.md](limits.md).
 
 Back: [README](../README.md) · [all docs](README.md)

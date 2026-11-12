@@ -129,6 +129,11 @@ pub fn rows() -> Vec<KeyRow> {
             full: "DNS (8) and traffic: type servers / back to DHCP",
         },
         KeyRow {
+            keys: "b",
+            short: "traffic: reset budget",
+            full: "traffic: reset the budget baseline (asks first; the day table stays)",
+        },
+        KeyRow {
             keys: "Enter",
             short: "DNS: apply the preset",
             full: "DNS: apply the chosen preset (then y)",

@@ -86,8 +86,9 @@ pub fn bar<'a>(fraction: f64, width: usize, color: Color, dim: Color) -> Line<'a
 /// physical domain is known). Auto-scaling made a single sample paint one column
 /// at the right edge - invisible - and made two series incomparable.
 /// Segmented threshold ruler: the bar itself carries the quality zones, and the
-/// fill shows where the reading sits. Replaces the circular gauge for signal
-/// metrics (circles stay for download/upload).
+/// fill shows where the reading sits. It replaced the circular gauge for signal
+/// metrics, and the last circle (download/upload on the Signal tab) is gone too:
+/// the Speed section draws a mirrored plot now.
 /// Domain + threshold zones for a `ruler`. Grouped so the call stays readable.
 pub struct RulerSpec {
     pub min: f64,
@@ -161,149 +162,9 @@ pub fn ruler<'a>(value: f64, spec: &RulerSpec, ok: Color, warn: Color, danger: C
     });
     Line::from(spans)
 }
-/// Sparkline in one of the three styles the plan promises.
-/// Braille canvas: 2 dots horizontally and 4 vertically per cell, filled from the
+
 pub fn title_style(color: Color) -> Style {
     Style::default().fg(color).add_modifier(Modifier::BOLD)
-}
-
-/// A radial gauge drawn on a braille dot grid.
-///
-/// The sweep runs 135° → 405° (bottom-left, up the left side, over the top, down
-/// the right) so the gap sits at the bottom like a physical meter. The filled part
-/// is the accent colour, the rest is dimmed, and a needle marks the exact value.
-/// Dot coordinates are normalised per-axis (2 dots per cell horizontally, 4
-/// vertically), which renders round in a normal terminal cell ratio.
-pub fn radial_gauge<'a>(
-    value: f64,
-    min: f64,
-    max: f64,
-    width: usize,
-    height: usize,
-    fill: Color,
-    dim: Color,
-) -> Vec<Line<'a>> {
-    if width < 4 || height < 2 {
-        return Vec::new();
-    }
-    let frac = if max > min {
-        ((value - min) / (max - min)).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let gw = width * 2;
-    let gh = height * 4;
-    let cx = (gw as f64 - 1.0) / 2.0;
-    let cy = (gh as f64 - 1.0) / 2.0;
-    let rx = (gw as f64 - 1.0) / 2.0;
-    let ry = (gh as f64 - 1.0) / 2.0;
-
-    // 1 = empty arc (dim), 2 = filled arc (accent), 3 = needle
-    let mut cells = vec![vec![0u8; gw]; gh];
-    let needle_angle = 135.0 + 270.0 * frac;
-
-    for (y, row) in cells.iter_mut().enumerate() {
-        for (x, cell) in row.iter_mut().enumerate() {
-            let dx = (x as f64 - cx) / rx;
-            let dy = (y as f64 - cy) / ry;
-            let r = (dx * dx + dy * dy).sqrt();
-            if !(0.86..=1.02).contains(&r) {
-                continue;
-            }
-            let mut angle = dy.atan2(dx).to_degrees();
-            if angle < 135.0 {
-                angle += 360.0;
-            }
-            if (135.0..=405.0).contains(&angle) {
-                *cell = if angle <= needle_angle { 2 } else { 1 };
-            }
-        }
-    }
-
-    // Needle: from the centre out to 82% of the radius.
-    let steps = gw.max(gh) * 2;
-    for i in 0..=steps {
-        let t = i as f64 / steps as f64;
-        let r = t * 0.82;
-        let a = needle_angle.to_radians();
-        let x = (cx + r * a.cos() * rx) as isize;
-        let y = (cy + r * a.sin() * ry) as isize;
-        if x >= 0 && y >= 0 && (x as usize) < gw && (y as usize) < gh {
-            cells[y as usize][x as usize] = 3;
-        }
-    }
-
-    // kind -> (colour, bold): the arc's filled part and the needle share the
-    // accent colour, so runs only break on kind == 1 versus kind >= 2.
-    let style_for = |kind: u8| -> (Color, bool) {
-        match kind {
-            0 => (dim, false),
-            1 => (dim, false),
-            3 => (fill, true),
-            _ => (fill, false),
-        }
-    };
-
-    let mut lines = Vec::with_capacity(height);
-    for row in 0..height {
-        let mut spans: Vec<Span> = Vec::new();
-        let mut run = String::new();
-        let mut run_key: Option<(Color, bool)> = None;
-        for col in 0..width {
-            let (code, kind) = braille_cell(&cells, row, col);
-            let key = style_for(kind);
-            if Some(key) != run_key {
-                if let Some((colour, bold)) = run_key {
-                    let mut style = Style::default().fg(colour);
-                    if bold {
-                        style = style.add_modifier(Modifier::BOLD);
-                    }
-                    spans.push(Span::styled(std::mem::take(&mut run), style));
-                }
-                run_key = Some(key);
-            }
-            run.push(code);
-        }
-        if let Some((colour, bold)) = run_key {
-            let mut style = Style::default().fg(colour);
-            if bold {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            spans.push(Span::styled(run, style));
-        }
-        lines.push(Line::from(spans));
-    }
-    lines
-}
-
-fn braille_cell(cells: &[Vec<u8>], row: usize, col: usize) -> (char, u8) {
-    let mut code = 0x2800u32;
-    let mut strongest = 0u8;
-    for dy in 0..4 {
-        for dx in 0..2 {
-            let y = row * 4 + dy;
-            let x = col * 2 + dx;
-            if y >= cells.len() || x >= cells[y].len() {
-                continue;
-            }
-            let v = cells[y][x];
-            if v != 0 {
-                strongest = strongest.max(v);
-                code |= match (dx, dy) {
-                    (0, 0) => 0x01,
-                    (0, 1) => 0x02,
-                    (0, 2) => 0x04,
-                    (0, 3) => 0x40,
-                    (1, 0) => 0x08,
-                    (1, 1) => 0x10,
-                    (1, 2) => 0x20,
-                    (1, 3) => 0x80,
-                    _ => 0,
-                };
-            }
-        }
-    }
-    (char::from_u32(code).unwrap_or(' '), strongest)
 }
 
 /// Display width, so Arabic host names (double-width in most fonts' cell count)
@@ -413,31 +274,6 @@ mod tests {
             Some(Color::Indexed(2)),
             "top of range reads good"
         );
-    }
-
-    #[test]
-    fn radial_gauge_geometry() {
-        let lines = radial_gauge(-96.0, -140.0, -44.0, 9, 4, Color::Reset, Color::Reset);
-        assert_eq!(lines.len(), 4, "height in cells");
-        for line in &lines {
-            let text: String = line.spans.iter().map(|s| s.content.clone()).collect();
-            assert_eq!(text.chars().count(), 9, "width in cells: {text:?}");
-        }
-        let painted = lines
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .flat_map(|s| s.content.chars())
-            .filter(|c| *c != '\u{2800}')
-            .count();
-        assert!(painted > 12, "the arc must be drawn, painted={painted}");
-    }
-
-    #[test]
-    fn radial_gauge_saturates_and_tolerates_tiny_areas() {
-        let low = radial_gauge(0.0, 0.0, 100.0, 8, 3, Color::Reset, Color::Reset);
-        let high = radial_gauge(999.0, 0.0, 100.0, 8, 3, Color::Reset, Color::Reset);
-        assert_eq!(low.len(), high.len());
-        assert!(radial_gauge(1.0, 0.0, 1.0, 2, 1, Color::Reset, Color::Reset).is_empty());
     }
 
     #[test]

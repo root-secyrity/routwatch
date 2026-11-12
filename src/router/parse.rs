@@ -221,6 +221,55 @@ pub fn parse_traffic(n: &Node) -> Traffic {
     }
 }
 
+/// `monitoring/month_statistics` plus `monitoring/start_date`.
+///
+/// Both endpoints as captured in `DOCK/QUOTA-SHAPE.md`. No aliases: nothing
+/// else has been observed on a device, and a guessed spelling only buys a wrong
+/// number in the UI.
+pub fn parse_quota(month: &Node, start: Option<&Node>) -> Quota {
+    let dl = u64_of(month, "CurrentMonthDownload").unwrap_or(0);
+    let ul = u64_of(month, "CurrentMonthUpload").unwrap_or(0);
+    let start_day = start
+        .and_then(|n| u32_of(n, "StartDay"))
+        .filter(|d| (1..=28).contains(d))
+        .map(|d| d as u8)
+        .unwrap_or(1);
+    // The device puts the unit inside the value: `<DataLimit>0GB</DataLimit>`.
+    // Zero means "no limit set", which is not the same as a limit of zero.
+    let data_limit = start
+        .and_then(|n| s_of(n, "DataLimit"))
+        .and_then(|raw| limit_bytes(&raw))
+        .filter(|b| *b > 0);
+    Quota {
+        month_dl_bytes: dl,
+        month_ul_bytes: ul,
+        start_day,
+        data_limit_bytes: data_limit,
+        last_clear: month.value("MonthLastClearTime").map(str::to_string),
+    }
+}
+
+/// `"100GB"` -> `Some(107374182400)`. A bare number is bytes; an unknown
+/// suffix, an empty string or an overflow returns `None`.
+fn limit_bytes(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    let split = raw.find(|c: char| !c.is_ascii_digit()).unwrap_or(raw.len());
+    let (digits, suffix) = raw.split_at(split);
+    if digits.is_empty() {
+        return None;
+    }
+    let value: u64 = digits.parse().ok()?;
+    let scale = match suffix.trim().to_ascii_uppercase().as_str() {
+        "" | "B" => 1,
+        "KB" => 1024,
+        "MB" => 1024 * 1024,
+        "GB" => 1024 * 1024 * 1024,
+        "TB" => 1024 * 1024 * 1024 * 1024,
+        _ => return None,
+    };
+    value.checked_mul(scale)
+}
+
 pub fn parse_connection(n: &Node) -> Connection {
     let status_code = u32_of(n, "ConnectionStatus").unwrap_or(0) as u16;
     let status = match status_code {
@@ -677,5 +726,69 @@ mod tests {
         assert_eq!(parse_signal(&n).cqi, Some(11));
         let n = parse("<response><cqi0>127</cqi0><cqi1>127</cqi1></response>").unwrap();
         assert_eq!(parse_signal(&n).cqi, None);
+    }
+
+    #[test]
+    fn quota_reads_the_month_counters_and_the_cycle_day() {
+        let month = parse(
+            "<response><CurrentMonthDownload>4096</CurrentMonthDownload>\
+             <CurrentMonthUpload>1024</CurrentMonthUpload>\
+             <MonthLastClearTime>2026-11-01</MonthLastClearTime></response>",
+        )
+        .unwrap();
+        let start = parse("<response><StartDay>15</StartDay></response>").unwrap();
+        let q = parse_quota(&month, Some(&start));
+        assert_eq!(q.month_dl_bytes, 4096);
+        assert_eq!(q.month_ul_bytes, 1024);
+        assert_eq!(q.start_day, 15);
+        assert_eq!(q.last_clear.as_deref(), Some("2026-11-01"));
+    }
+
+    #[test]
+    fn quota_without_start_date_uses_day_one() {
+        let month =
+            parse("<response><CurrentMonthDownload>1</CurrentMonthDownload></response>").unwrap();
+        assert_eq!(parse_quota(&month, None).start_day, 1);
+    }
+
+    #[test]
+    fn a_start_day_outside_one_to_28_is_not_trusted() {
+        let month =
+            parse("<response><CurrentMonthDownload>1</CurrentMonthDownload></response>").unwrap();
+        let start = parse("<response><StartDay>31</StartDay></response>").unwrap();
+        assert_eq!(parse_quota(&month, Some(&start)).start_day, 1);
+    }
+
+    #[test]
+    fn the_data_limit_is_scaled_from_its_unit() {
+        let month =
+            parse("<response><CurrentMonthDownload>1</CurrentMonthDownload></response>").unwrap();
+        let start =
+            parse("<response><StartDay>1</StartDay><DataLimit>100GB</DataLimit></response>")
+                .unwrap();
+        assert_eq!(
+            parse_quota(&month, Some(&start)).data_limit_bytes,
+            Some(100 * 1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn a_zero_limit_means_no_limit() {
+        // The device ships `<DataLimit>0GB</DataLimit>` when no plan limit is set.
+        let month =
+            parse("<response><CurrentMonthDownload>1</CurrentMonthDownload></response>").unwrap();
+        let start =
+            parse("<response><StartDay>1</StartDay><DataLimit>0GB</DataLimit></response>").unwrap();
+        assert_eq!(parse_quota(&month, Some(&start)).data_limit_bytes, None);
+    }
+
+    #[test]
+    fn an_unreadable_limit_is_not_a_guess() {
+        let month =
+            parse("<response><CurrentMonthDownload>1</CurrentMonthDownload></response>").unwrap();
+        let start =
+            parse("<response><StartDay>1</StartDay><DataLimit>unlimited</DataLimit></response>")
+                .unwrap();
+        assert_eq!(parse_quota(&month, Some(&start)).data_limit_bytes, None);
     }
 }

@@ -18,13 +18,21 @@ why each one is stated instead of hidden.
   and says which `nr` fields did arrive (`nrearfcn`, bandwidths, rank, BLER, CQI,
   TX power) rather than inventing dBm; it switches to the full gauges the moment
   any one of `nrrsrp`, `nrrsrq` or `nrsinr` carries a value.
-- **The budget is local**: the firmware answers `monitoring/month_statistics`,
-  but routwatch does not read the monthly counters; the bar compares your own
-  `budget_gb` against the traffic it samples.
+- **The budget counts from a baseline, and says where its number came from**: the
+  bar compares your `budget_gb` against traffic measured since the baseline
+  (`b` moves it, and it moves itself at the start of each billing cycle read from
+  `monitoring/start_date`). When the firmware answers
+  `monitoring/month_statistics`, the number is the router's own month counter;
+  otherwise it is the lifetime counters, so it survives a reboot but not a
+  counter clear. The per-day ledger behind the usage table only counts while
+  routwatch runs, gaps over five minutes are marked rather than spread, and the
+  panel prints how many days it covers.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown in a `0700`
   directory, with IMEI, serial, WAN IP, MACs and SSIDs hidden - these files get
   pasted in public. `report_identity`, `--report-identity` or `i` in the settings
   overlay writes the full version, and a report never overwrites another.
+  The month counters are traffic totals, not identities, so they survive
+  redaction on purpose.
 - **`auto` theme is best-effort**: it reads the running desktop's published colours
   and falls back to `terminal`. The default is still `terminal`, so no machine
   changes appearance unasked.
@@ -49,6 +57,11 @@ why each one is stated instead of hidden.
   `spark_scaled`; a panel that wants a trend calls `chart::spark_auto` (auto
   ceiling) or `chart::spark_lines_scaled` (a fixed, possibly negative domain such
   as RSRP).
+- **A sample is one cell wide**: the mirrored plot is right aligned at one
+  braille cell per sample and never stretched, so the bars keep their width as
+  the session fills. A history longer than the panel is bucketed per cell with
+  the maximum of that bucket, so a spike never widens a bar. A panel too narrow
+  for three ticks prints only the window start and `now`.
 - **`bars` uses the height it is given**: a block sparkline used to be clamped to
   one row whatever the caller asked for, so a three-row slot in the speed panel
   left two rows empty. It now stacks eighths over the whole slot; `dots` and
