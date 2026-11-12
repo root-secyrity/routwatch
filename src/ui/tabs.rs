@@ -222,6 +222,8 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
         height: inner.height - 2,
     };
 
+    // The Signal tab gives this panel half a frame: peak and average there
+    // would be cut mid-word, so the two live readings keep the row alone.
     let mean = {
         let n = rx.len() + tx.len();
         if n == 0 {
@@ -229,6 +231,11 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
         } else {
             (rx.iter().sum::<u64>() + tx.iter().sum::<u64>()) / n as u64
         }
+    };
+    let meta = if inner.width >= 56 {
+        format!("   peak {} · avg {}", bps(peak as f64), bps(mean as f64))
+    } else {
+        String::new()
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -239,10 +246,7 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
                 bps(last(&app.history_ul)),
                 Style::default().fg(theme.accent),
             ),
-            Span::styled(
-                format!("   peak {} · avg {}", bps(peak as f64), bps(mean as f64)),
-                Style::default().fg(theme.dim),
-            ),
+            Span::styled(meta, Style::default().fg(theme.dim)),
         ])),
         Rect { height: 1, ..inner },
     );
@@ -1180,7 +1184,23 @@ pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
 
 pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
-    let [top, dns_area] = Layout::vertical([Constraint::Min(8), Constraint::Length(7)]).areas(area);
+    // The table gets a panel of its own; below 24 rows the stats panel keeps
+    // every fact and names the missing table instead of clipping a row.
+    let tall = area.height >= 24;
+    let (top, usage_area, dns_area) = if tall {
+        let [a, b, c] = Layout::vertical([
+            // Nine would leave seven inner rows for eight lines and clip the
+            // reset row the test pins; ten gives it eight.
+            Constraint::Length(10),
+            Constraint::Min(7),
+            Constraint::Length(7),
+        ])
+        .areas(area);
+        (a, Some(b), c)
+    } else {
+        let [a, c] = Layout::vertical([Constraint::Min(8), Constraint::Length(7)]).areas(area);
+        (a, None, c)
+    };
     let Some(s) = &app.snap else {
         f.render_widget(
             Paragraph::new("waiting…").block(panel("TRAFFIC".into(), t)),
@@ -1189,9 +1209,8 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let tr = &s.traffic;
-    // The router exposes no monthly plan counter (month-statistics answers 100003),
-    // so this bar is explicitly a LOCAL budget over the current session.
-    let used_gb = (tr.session_dl_bytes + tr.session_ul_bytes) as f64 / 1024.0 / 1024.0 / 1024.0;
+    let used = crate::usage::used(tr, s.quota.as_ref(), &app.usage);
+    let used_gb = used as f64 / 1024.0 / 1024.0 / 1024.0;
     let frac = if app.budget_gb > 0.0 {
         used_gb / app.budget_gb
     } else {
@@ -1204,30 +1223,179 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
     } else {
         t.ok
     };
+    // Which number the bar is measuring, in the panel, not in a README.
+    let source = if s.quota.is_some() {
+        "router month counter"
+    } else {
+        "local ledger since the baseline"
+    };
     let mut lines = vec![
         Line::from(vec![
             Span::styled("down ", Style::default().fg(t.dim)),
-            Span::styled(bps(tr.dl_rate_bytes as f64), Style::default().fg(t.ok).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                bps(tr.dl_rate_bytes as f64),
+                Style::default().fg(t.ok).add_modifier(Modifier::BOLD),
+            ),
             Span::raw("      "),
             Span::styled("up ", Style::default().fg(t.dim)),
-            Span::styled(bps(tr.ul_rate_bytes as f64), Style::default().fg(t.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                bps(tr.ul_rate_bytes as f64),
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(""),
-        kv("session", format!("{} ↓ / {} ↑ · {}", bytes(tr.session_dl_bytes), bytes(tr.session_ul_bytes), dur(tr.session_secs)), Style::default().fg(t.fg), t.dim),
-        kv("total", format!("{} ↓ / {} ↑ · {}", bytes(tr.total_dl_bytes), bytes(tr.total_ul_bytes), dur(tr.total_secs)), Style::default().fg(t.fg), t.dim),
+        kv(
+            "session",
+            format!(
+                "{} ↓ / {} ↑ · {}",
+                bytes(tr.session_dl_bytes),
+                bytes(tr.session_ul_bytes),
+                dur(tr.session_secs)
+            ),
+            Style::default().fg(t.fg),
+            t.dim,
+        ),
+        kv(
+            "total",
+            format!(
+                "{} ↓ / {} ↑ · {}",
+                bytes(tr.total_dl_bytes),
+                bytes(tr.total_ul_bytes),
+                dur(tr.total_secs)
+            ),
+            Style::default().fg(t.fg),
+            t.dim,
+        ),
         Line::from(""),
-        kv("budget", format!("{used_gb:.1} GB of {:.0} GB session budget (local - no plan counter on this firmware)", app.budget_gb), Style::default().fg(colour), t.dim),
+        kv(
+            "budget",
+            format!("{used_gb:.1} GB of {:.0} GB · {source}", app.budget_gb),
+            Style::default().fg(colour),
+            t.dim,
+        ),
         bar(frac, (top.width.saturating_sub(24)) as usize, colour, t.dim),
+        Line::from(Span::styled(
+            // At zero the baseline is set by the first sample; printing a date
+            // there would say 1970.
+            if app.usage.reset_at == 0 {
+                "baseline starts with the first sample · b resets the baseline".to_string()
+            } else {
+                format!(
+                    "reset {} · b resets the baseline · auto at cycle start",
+                    crate::usage::date_label(app.usage.reset_at)
+                )
+            },
+            Style::default().fg(t.dim),
+        )),
     ];
-    lines.extend(crate::ui::chart::spark_auto(
-        &app.history_dl,
-        top.width.saturating_sub(4) as usize,
-        3,
-        app.graph.is_bars(),
-        t.ok,
-        app.chart_opts(),
-    ));
-    f.render_widget(Paragraph::new(lines).block(panel("TRAFFIC".into(), t)), top);
+    if !tall {
+        lines.push(Line::from(Span::styled(
+            "usage table needs 24 rows",
+            Style::default().fg(t.dim),
+        )));
+        lines.extend(crate::ui::chart::spark_auto(
+            &app.history_dl,
+            top.width.saturating_sub(4) as usize,
+            2,
+            app.graph.is_bars(),
+            t.ok,
+            app.chart_opts(),
+        ));
+    }
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(panel("TRAFFIC".into(), t)),
+        top,
+    );
+    if let Some(area) = usage_area {
+        usage_panel(f, area, app, s);
+    }
+
+    /// Today, this week and this month, from the ledger. The month row prefers the
+    /// router's own counter; the ledger only fills the gap when the firmware
+    /// refuses it, and the title says which one is on screen.
+    fn usage_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot) {
+        let t = &app.theme;
+        let inner = area.height.saturating_sub(2);
+        if inner < 5 {
+            return;
+        }
+        let today = crate::usage::local_day(s.generated_at);
+        let tot = crate::usage::totals(&app.usage, today);
+        let q = s.quota.as_ref();
+        let title = if q.is_some() {
+            "USAGE · month row = router counter"
+        } else {
+            "USAGE · local ledger"
+        };
+        let row = |label: &str, dl: u64, ul: u64, style: Style| {
+            let total = dl.saturating_add(ul);
+            Line::from(Span::styled(
+                format!(
+                    "{label:<8}{:>11}{:>11}{:>11}",
+                    bytes(dl),
+                    bytes(ul),
+                    bytes(total)
+                ),
+                style,
+            ))
+        };
+        let (mdl, mul) = match q {
+            Some(q) => (q.month_dl_bytes, q.month_ul_bytes),
+            None => tot.month,
+        };
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!("{:<8}{:>11}{:>11}{:>11}", "period", "down", "up", "total"),
+                Style::default().fg(t.dim),
+            )),
+            row("today", tot.today.0, tot.today.1, Style::default().fg(t.fg)),
+            row("week", tot.week.0, tot.week.1, Style::default().fg(t.fg)),
+            row(
+                if q.is_some() { "month*" } else { "month" },
+                mdl,
+                mul,
+                Style::default().fg(if q.is_some() { t.accent } else { t.fg }),
+            ),
+        ];
+        if inner >= 6 {
+            let covered = tot
+                .first_day
+                .filter(|f| *f <= today.num)
+                .map(|f| today.num - f + 1)
+                .unwrap_or(0);
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "ledger covers {covered} day(s) · week starts Sunday{}",
+                    if q.is_some() {
+                        " · month* = router cycle"
+                    } else {
+                        ""
+                    }
+                ),
+                Style::default().fg(t.dim),
+            )));
+        }
+        // Whatever rows are left go to the recent days, newest first: the rows
+        // above answer "how much", this list answers "when".
+        let free = (inner as usize).saturating_sub(lines.len());
+        if free > 0 {
+            for b in app.usage.days.iter().rev().take(free) {
+                let (_, m, d) = crate::usage::civil_from_days(b.day);
+                lines.push(row(
+                    &format!("{m:02}-{d:02}"),
+                    b.dl,
+                    b.ul,
+                    Style::default().fg(t.dim),
+                ));
+            }
+        }
+        f.render_widget(
+            Paragraph::new(lines).block(panel(title.to_string(), t)),
+            area,
+        );
+    }
 
     // DNS panel - the write target of this tab.
     let mut dns_lines = Vec::new();
@@ -2271,87 +2439,70 @@ fn quality_label(metric: &str, value: Option<f32>) -> &'static str {
 fn speed_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     let t = &app.theme;
     let Some(s) = &app.snap else { return };
-    let block = panel("SPEED".into(), t);
+    let mut title = match app.history_dl.len().max(app.history_ul.len()) {
+        0 => "SPEED · waiting".to_string(),
+        1 => "SPEED · 1 sample, collecting".to_string(),
+        n => format!(
+            "SPEED · last {}s",
+            (n as u64 * app.refresh_ms.max(1) / 1000).max(1)
+        ),
+    };
+    // A narrow panel clips the long title mid-word; the readings below already
+    // say what the panel is.
+    if area.width < 34 {
+        title = "SPEED".to_string();
+    }
+    let block = panel(title, t);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let dl = s.traffic.dl_rate_bytes as f64;
-    let ul = s.traffic.ul_rate_bytes as f64;
-    let peak = app
-        .history_dl
-        .iter()
-        .chain(app.history_ul.iter())
-        .fold(0.0_f64, |a, b| a.max(*b))
-        .max(100_000.0);
-
-    let mut text_top = inner.y;
-    if wide && inner.height >= 7 {
-        let gauges = Rect { height: 4, ..inner };
-        let rects = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(gauges);
-        for (i, (label, value, colour)) in [("down", dl, t.ok), ("up", ul, t.accent)]
-            .iter()
-            .enumerate()
-        {
-            let mut body = crate::ui::widgets::radial_gauge(
-                *value,
-                0.0,
-                peak * 1.1,
-                (rects[i].width as usize).saturating_sub(2).min(10),
-                3,
-                *colour,
-                t.border,
-            );
-            body.push(Line::from(Span::styled(
-                format!("{label} {}", bps(*value)),
-                Style::default().fg(*colour).add_modifier(Modifier::BOLD),
-            )));
-            f.render_widget(
-                Paragraph::new(body).alignment(ratatui::layout::Alignment::Center),
-                rects[i],
-            );
-        }
-        text_top += 4;
+    let samples = app.history_dl.len().max(app.history_ul.len());
+    if samples == 0 {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "waiting for the first sample",
+                Style::default().fg(t.dim),
+            ))),
+            inner,
+        );
+        return;
     }
 
-    let rest = Rect {
-        y: text_top,
-        height: inner.height.saturating_sub(text_top - inner.y),
-        ..inner
-    };
-    let mut lines = Vec::new();
-    if !(wide && inner.height >= 7) {
-        lines.push(Line::from(vec![
-            Span::styled("↓ ", Style::default().fg(t.ok)),
-            Span::styled(
-                bps(dl),
-                Style::default().fg(t.ok).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("   "),
-            Span::styled("↑ ", Style::default().fg(t.accent)),
-            Span::styled(
-                bps(ul),
-                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+    // The dials needed seven rows; a mirrored plot needs four. Anything shorter
+    // keeps the two readings and says why there is no trend. One sample is a
+    // reading, not a trend: a single braille column on the right edge reads as
+    // a broken plot, so the compact lines carry it until there are two.
+    if !wide || samples < 2 || inner.height < 5 || inner.width < 24 {
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(vec![
+                    Span::styled("↓ ", Style::default().fg(t.ok)),
+                    Span::styled(
+                        bps(s.traffic.dl_rate_bytes as f64),
+                        Style::default().fg(t.ok).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("   "),
+                    Span::styled("↑ ", Style::default().fg(t.accent)),
+                    Span::styled(
+                        bps(s.traffic.ul_rate_bytes as f64),
+                        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    format!(
+                        "session {} ↓ · {} ↑",
+                        bytes(s.traffic.session_dl_bytes),
+                        bytes(s.traffic.session_ul_bytes)
+                    ),
+                    Style::default().fg(t.dim),
+                )),
+            ]),
+            inner,
+        );
+        return;
     }
-    lines.push(Line::from(Span::styled(
-        format!(
-            "session {} ↓ · {} ↑",
-            bytes(s.traffic.session_dl_bytes),
-            bytes(s.traffic.session_ul_bytes)
-        ),
-        Style::default().fg(t.dim),
-    )));
-    lines.extend(crate::ui::chart::spark_auto(
-        &app.history_dl,
-        rest.width.saturating_sub(2) as usize,
-        (rest.height as usize).saturating_sub(2).clamp(1, 3),
-        app.graph.is_bars(),
-        t.ok,
-        app.chart_opts(),
-    ));
-    f.render_widget(Paragraph::new(lines), rest);
+
+    mirrored_body(f, inner, app);
 }
 
 fn network_strip(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot) {

@@ -2181,6 +2181,7 @@ mod tests {
             (Tab::Dns, "Enter apply"),
             (Tab::Device, "x dump json"),
             (Tab::Signal, "v view"),
+            (Tab::Traffic, "b reset budget"),
         ];
         for (tab, needle) in cases {
             app.select_tab(tab);
@@ -2529,5 +2530,95 @@ mod tests {
             .expect("wide write row");
         assert!(row.contains("nothing was sent"), "{row}");
         assert!(!row.contains('…'), "nothing to cut at 140: {row}");
+    }
+
+    /// The Speed section is a trend, not two dials: the header line and a plot
+    /// with real braille cells in it. Sliced at the next panel border so the
+    /// Signal graphs below (also braille) cannot pass the test for it.
+    #[test]
+    fn the_speed_section_is_a_mirrored_plot_not_two_dials() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        for v in 1..=40 {
+            app.history_dl.push_back(v as f64 * 1_000_000.0);
+            app.history_ul.push_back(v as f64 * 120_000.0);
+        }
+        let text = render_to_string(&app, 120, 34);
+        let lines: Vec<&str> = text.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.contains("SPEED"))
+            .expect("the SPEED panel is drawn");
+        let end = lines[start + 1..]
+            .iter()
+            .position(|l| l.trim_start().starts_with('┌'))
+            .map(|i| start + 1 + i)
+            .unwrap_or(lines.len());
+        let panel = lines[start..end].join("\n");
+        assert!(panel.contains("peak") || panel.contains("▲"), "{panel}");
+        let braille = panel
+            .chars()
+            .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+            .count();
+        assert!(
+            braille > 40,
+            "the plot drew {braille} braille cells in {} rows\n{panel}",
+            end - start
+        );
+    }
+
+    #[test]
+    fn a_speed_panel_with_no_samples_says_so() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        app.history_dl.clear();
+        app.history_ul.clear();
+        let text = render_to_string(&app, 120, 34);
+        assert!(text.contains("waiting for the first sample"));
+    }
+
+    #[test]
+    fn the_traffic_tab_shows_the_usage_table_when_tall() {
+        let mut app = fixture_app();
+        app.tab = Tab::Traffic;
+        let text = render_to_string(&app, 120, 34);
+        assert!(text.contains("USAGE"), "{text}");
+        assert!(text.contains("today"));
+        assert!(text.contains("week"));
+        assert!(text.contains("month"));
+    }
+
+    #[test]
+    fn a_short_traffic_tab_names_the_missing_table_instead_of_clipping() {
+        let mut app = fixture_app();
+        app.tab = Tab::Traffic;
+        let text = render_to_string(&app, 80, 24);
+        assert!(text.contains("usage table needs 24 rows"), "{text}");
+        for line in text.lines() {
+            assert!(line.chars().count() <= 80, "a line overflowed: {line:?}");
+        }
+    }
+
+    #[test]
+    fn the_budget_modal_answers_its_question() {
+        let mut app = fixture_app();
+        app.tab = Tab::Traffic;
+        app.reset_confirm = true;
+        let text = render_to_string(&app, 100, 30);
+        assert!(text.contains("reset the traffic budget?"), "{text}");
+        assert!(text.contains("not touched"));
+    }
+
+    #[test]
+    fn the_traffic_status_line_names_the_reset_key() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Traffic);
+        let text = render_to_string(&app, 160, 30);
+        let status = text.lines().last().unwrap_or_default();
+        assert!(status.contains("b reset budget"), "{status}");
+        assert!(
+            status.contains("q quit"),
+            "global keys must survive: {status}"
+        );
     }
 }
