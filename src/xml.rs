@@ -72,7 +72,6 @@ const MAX_DEPTH: usize = 256;
 
 pub fn parse(src: &str) -> Result<Node, ApiError> {
     let mut reader = Reader::from_str(src);
-    reader.config_mut().trim_text(true);
 
     let mut stack: Vec<Node> = Vec::new();
     let mut root: Option<Node> = None;
@@ -80,7 +79,7 @@ pub fn parse(src: &str) -> Result<Node, ApiError> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let name = e.name().as_ref().to_string();
                 stack.push(Node::new(name));
                 if stack.len() > MAX_DEPTH {
                     return Err(ApiError::Parse(format!(
@@ -89,7 +88,7 @@ pub fn parse(src: &str) -> Result<Node, ApiError> {
                 }
             }
             Ok(Event::Empty(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let name = e.name().as_ref().to_string();
                 let node = Node::new(name);
                 match stack.last_mut() {
                     Some(parent) => parent.children.push(node),
@@ -100,13 +99,19 @@ pub fn parse(src: &str) -> Result<Node, ApiError> {
             }
             Ok(Event::Text(e)) => {
                 if let Some(top) = stack.last_mut() {
-                    top.text
-                        .push_str(&unescape(&String::from_utf8_lossy(e.as_ref())));
+                    let t = e.as_ref();
+                    // Indentation between elements is dropped. A value keeps its
+                    // inner spaces, and an entity splits it into segments, so the
+                    // segment is pushed whole and only the all-space ones are
+                    // skipped. `value` trims the ends.
+                    if !t.trim().is_empty() {
+                        top.text.push_str(&unescape(t));
+                    }
                 }
             }
             Ok(Event::CData(e)) => {
                 if let Some(top) = stack.last_mut() {
-                    top.text.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    top.text.push_str(e.as_ref());
                 }
             }
             Ok(Event::End(_)) => {
@@ -117,6 +122,25 @@ pub fn parse(src: &str) -> Result<Node, ApiError> {
                             root = Some(node);
                             break;
                         }
+                    }
+                }
+            }
+            // quick-xml 0.42 reports every entity reference as its own event
+            // instead of leaving "&name;" inline in the surrounding text.
+            Ok(Event::GeneralRef(e)) => {
+                if let Some(top) = stack.last_mut() {
+                    match e.resolve_char_ref() {
+                        Ok(Some(c)) => top.text.push(c),
+                        _ => match quick_xml::escape::resolve_xml_entity(e.as_ref()) {
+                            Some(rep) => top.text.push_str(rep),
+                            // An unknown entity stays literal, as it did when the
+                            // reference arrived inside the text event.
+                            None => {
+                                top.text.push('&');
+                                top.text.push_str(e.as_ref());
+                                top.text.push(';');
+                            }
+                        },
                     }
                 }
             }
