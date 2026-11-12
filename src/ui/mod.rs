@@ -132,6 +132,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     if !matches!(app.write, crate::write::WriteState::Idle) {
         draw_write_modal(f, area, app);
     }
+    // Before settings, so an open settings overlay still wins.
+    if app.reset_confirm {
+        draw_reset_modal(f, area, app);
+    }
     if app.settings_open {
         draw_settings(f, area, app);
     }
@@ -220,6 +224,56 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
                 ))
                 .border_style(Style::default().fg(t.accent)),
         ),
+        rect,
+    );
+}
+
+/// Local, not a router write: no preflight rows, no read-back. One sentence and
+/// two answers.
+fn draw_reset_modal(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let w = area.width.min(54);
+    let h = 7.min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let used = app
+        .snap
+        .as_ref()
+        .map(|s| crate::usage::used(&s.traffic, s.quota.as_ref(), &app.usage))
+        .unwrap_or(0);
+    let lines = vec![
+        Line::from(Span::styled(
+            "reset the traffic budget?",
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(
+                "{} counted of {:.0} GB",
+                widgets::bytes(used),
+                app.budget_gb
+            ),
+            Style::default().fg(t.dim),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "the month counters are not touched",
+            Style::default().fg(t.dim),
+        )),
+        Line::from(Span::styled(
+            "y reset   ·   n / Esc cancel",
+            Style::default().fg(t.dim),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(tabs::panel("BUDGET".into(), t)),
         rect,
     );
 }

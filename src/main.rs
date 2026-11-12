@@ -1237,6 +1237,18 @@ fn install_restore_hook() {
 }
 
 fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), ApiError> {
+    // The ledger lives beside the recordings, under the user's data dir. One
+    // writer at a time: a second window runs read-only rather than racing.
+    let usage_path = routwatch::usage::path();
+    app.usage = routwatch::usage::load(&usage_path);
+    match routwatch::usage::claim(&usage_path) {
+        Ok(Some(guard)) => {
+            app.usage_lock = Some(guard);
+            app.usage_path = Some(usage_path);
+        }
+        Ok(None) => app.note("another routwatch is using the ledger: read-only this session"),
+        Err(e) => app.note(format!("usage ledger not locked: {e}")),
+    }
     let (tx, rx) = worker::spawn(cfg, password);
 
     install_restore_hook();
@@ -1252,6 +1264,23 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
 
     while !app.quit {
         drain(&mut app, &rx);
+        // Once every 30 s, not on every poll: the ledger is a file, and the
+        // counters move by kilobytes a second.
+        if app.usage_dirty
+            && app
+                .usage_saved
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+        {
+            if let Some(path) = app.usage_path.as_deref() {
+                match routwatch::usage::save(path, &app.usage) {
+                    Ok(()) => {
+                        app.usage_dirty = false;
+                        app.usage_saved = Some(std::time::Instant::now());
+                    }
+                    Err(e) => app.note(format!("usage not saved: {e}")),
+                }
+            }
+        }
         terminal.draw(|f| ui::draw(f, &app)).ok();
 
         if event::poll(Duration::from_millis(200)).unwrap_or(false) {
@@ -1267,6 +1296,15 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
                 Ok(_) => {}
                 Err(_) => break,
             }
+        }
+    }
+
+    // Last write before the terminal goes back: whatever the 30 s window would
+    // have kept is worth one more small file, and this is the only moment the
+    // lock is known to still be ours.
+    if app.usage_dirty {
+        if let Some(path) = app.usage_path.as_deref() {
+            let _ = routwatch::usage::save(path, &app.usage);
         }
     }
 
@@ -1463,6 +1501,53 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         return;
     }
+    // The budget reset is local, so it gets its own small confirm instead of
+    // borrowing the router-write modal.
+    if app.reset_confirm {
+        match k.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                let sample = app.snap.as_ref().map(|s| {
+                    (
+                        routwatch::usage::source_total(&s.traffic, s.quota.as_ref()),
+                        s.quota.is_some(),
+                    )
+                });
+                match sample {
+                    Some((total, has_quota)) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        routwatch::usage::reset(&mut app.usage, now, total, has_quota);
+                        app.usage_dirty = true;
+                        // `note` replaces the previous message, so it is written
+                        // once, after the save attempt: a failure must not be
+                        // overwritten by a success line.
+                        match app.usage_path.clone() {
+                            Some(path) => match routwatch::usage::save(&path, &app.usage) {
+                                Ok(()) => {
+                                    app.usage_dirty = false;
+                                    app.note("budget baseline reset");
+                                }
+                                Err(e) => app.note(format!("usage not saved: {e}")),
+                            },
+                            None => app.note("baseline reset · read-only session: not saved"),
+                        }
+                        app.reset_confirm = false;
+                    }
+                    None => {
+                        app.reset_confirm = false;
+                        app.note("no sample yet: nothing to reset against");
+                    }
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.reset_confirm = false;
+            }
+            _ => {}
+        }
+        return;
+    }
     // `u` belongs to the verdict it undoes, so it is read before the banner that
     // swallows every other key while a write is settled.
     if app.tab == Tab::Bands && matches!(normalise_key(k.code), KeyCode::Char('u')) {
@@ -1577,6 +1662,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             }
         }
         KeyCode::Char('z') if matches!(app.tab, Tab::Traffic | Tab::Dns) => app.begin_dns_reset(),
+        // Local baseline reset, not a router write: it asks once and never
+        // touches the month counters.
+        KeyCode::Char('b') if app.tab == Tab::Traffic => app.reset_confirm = true,
         KeyCode::Enter | KeyCode::Char('a') if app.tab == Tab::Dns => {
             // The Custom row opens the prompt instead of confirming a fixed pair.
             if app.dns_preset_is_custom() {
