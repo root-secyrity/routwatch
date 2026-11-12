@@ -7,6 +7,8 @@
 
 use crate::model::{Quota, Traffic};
 use serde::{Deserialize, Serialize};
+use std::io;
+use std::path::{Path, PathBuf};
 
 pub const VERSION: u32 = 1;
 /// A sample gap longer than this is recorded as a gap, not spread over the
@@ -327,6 +329,102 @@ pub fn totals(u: &Usage, today: LocalDay) -> Totals {
     out
 }
 
+/// `$XDG_DATA_HOME/routwatch/usage.json`, the same base `record::default_dir`
+/// uses.
+pub fn path() -> PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("routwatch/usage.json")
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    path.with_extension("lock")
+}
+
+/// One writer per machine. The first TUI takes an exclusive lock on
+/// `usage.lock`; a second one gets `None` and runs read-only instead of
+/// overwriting the first one's day. The kernel drops the lock when the process
+/// exits, so a crash never leaves a stale claim.
+pub fn claim(path: &Path) -> io::Result<Option<std::fs::File>> {
+    // The crate is already unix-only (`src/output.rs:10` imports `os::unix`
+    // unconditionally), so a `cfg(unix)` guard here would be noise.
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let lock = lock_path(path);
+    if let Some(dir) = lock.parent() {
+        std::fs::create_dir_all(dir)?;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        // The lock file has no content worth keeping or cutting: the claim is
+        // the flock on its inode, not the bytes.
+        .truncate(false)
+        .mode(0o600)
+        .open(&lock)?;
+    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
+    // SAFETY: `fd` is owned by `file` for the length of this call.
+    let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    Ok((rc == 0).then_some(file))
+}
+
+/// A missing or unreadable file is an empty ledger, never an error: the TUI must
+/// start on a fresh machine. A file from another version is not read either;
+/// `save` refuses to overwrite it, so the user sees "usage not saved" instead of
+/// silently losing a ledger this build does not understand.
+pub fn load(path: &Path) -> Usage {
+    let raw = match std::fs::read(path) {
+        Ok(r) => r,
+        Err(_) => return Usage::default(),
+    };
+    match serde_json::from_slice::<Usage>(&raw) {
+        Ok(u) if u.version == VERSION => u,
+        _ => Usage::default(),
+    }
+}
+
+/// Write via a sibling temp file and a rename, with 0600 on the file and 0700
+/// on the directory. A half-written ledger is worse than a stale one.
+pub fn save(path: &Path, u: &Usage) -> io::Result<()> {
+    // Never destroy a ledger written by another build: the shape may differ.
+    let found = std::fs::read(path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("version").and_then(|n| n.as_u64()));
+    if let Some(found) = found {
+        if found != u64::from(VERSION) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "usage file is version {found}, this build writes {VERSION}; left untouched"
+                ),
+            ));
+        }
+    }
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir)?;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_vec_pretty(u).map_err(io::Error::other)?;
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(&body)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +681,70 @@ mod tests {
         reset(&mut u, 5_000, 4_000, false);
         assert_eq!(used(&tr(4_000, 0), None, &u), 0);
         assert_eq!(u.reset_at, 5_000);
+    }
+
+    #[test]
+    fn save_and_load_round_trip_at_0600() {
+        let dir = std::env::temp_dir().join(format!("routwatch-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("usage.json");
+        let mut u = Usage::default();
+        u.days.push(DayBucket {
+            day: 20_700,
+            dl: 10,
+            ul: 2,
+        });
+        save(&path, &u).unwrap();
+        assert_eq!(load(&path), u);
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_file_loads_as_empty() {
+        let dir = std::env::temp_dir().join(format!("routwatch-usage-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("usage.json");
+        std::fs::write(&path, b"not json").unwrap();
+        assert_eq!(load(&path), Usage::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_foreign_version_is_never_overwritten() {
+        let dir = std::env::temp_dir().join(format!("routwatch-usage-v-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("usage.json");
+        let foreign = br#"{"version":999,"days":[{"day":1,"dl":7,"ul":0}]}"#;
+        std::fs::write(&path, foreign).unwrap();
+        let err = save(&path, &Usage::default()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&path).unwrap(), foreign);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_writer_is_refused_the_lock() {
+        let dir = std::env::temp_dir().join(format!("routwatch-usage-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("usage.json");
+        let first = claim(&path).unwrap();
+        assert!(first.is_some(), "the first claim must win");
+        assert!(
+            claim(&path).unwrap().is_none(),
+            "the second claim must be refused"
+        );
+        drop(first);
+        assert!(
+            claim(&path).unwrap().is_some(),
+            "the lock must die with the handle"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
