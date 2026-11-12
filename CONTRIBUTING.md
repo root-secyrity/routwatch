@@ -84,6 +84,21 @@ change it here, in the same PR that changes the count.
 - No em dash (U+2014) in prose, comments or commit messages: use a comma, a colon
   or a single hyphen. CI checks for it.
 
+## Comments
+
+A comment states what the code must do or why the hardware needs it. It does not narrate the
+sequence that produced it ("used to", "before this", "the old tests"): the diff and the history
+already carry that.
+
+- Do not write a count the code already holds ("seven tab bodies"). If the code holds it, leave
+  it unnamed; if a number has to appear in prose, a test asserts it.
+- A claim about a device names the firmware and the date it was measured, or it is called
+  unverified in that word.
+- One note per fact. If the same sentence would sit above four different fields, write it once
+  at module level or drop it.
+- Do not sweep comments wholesale. In this repository a "why" comment is often the only public
+  record of a firmware behaviour, because the build log and the real captures are not tracked.
+
 ## Commits and branches
 
 Conventional commits with a lowercase scope: `fix(doctor): ...`, `feat(cli): ...`,
