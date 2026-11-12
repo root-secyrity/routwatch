@@ -120,6 +120,24 @@ pub fn collect_traced(
     // is a fact about the firmware and is recorded so the panel can name the
     // gap instead of drawing an empty table that reads as "0 clients".
     let mut unsupported: Vec<String> = Vec::new();
+    // The router's own month counter. Not every firmware has it: a refusal is
+    // recorded like any other gap, and the UI then says "local ledger" instead
+    // of drawing a zero. The cycle day is a second read, only worth making when
+    // the counter answered at all.
+    let quota = match step(trace, Phase::Traffic, || {
+        c.get("monitoring/month_statistics")
+    }) {
+        Ok(node) => {
+            let start = step(trace, Phase::Traffic, || {
+                c.get("monitoring/start_date").ok()
+            });
+            Some(parse::parse_quota(&node, start.as_ref()))
+        }
+        Err(e) => {
+            note_unsupported(&mut unsupported, "quota", &e);
+            None
+        }
+    };
     let clients = match step(trace, Phase::Clients, || c.get("wlan/host-list")) {
         Ok(node) => parse::parse_clients(&node),
         Err(e) => {
@@ -174,7 +192,7 @@ pub fn collect_traced(
         all_bands_mask,
         network_bands_mask,
         unsupported,
-        quota: None,
+        quota,
     })
 }
 
