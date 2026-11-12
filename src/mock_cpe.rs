@@ -26,6 +26,10 @@ pub enum Profile {
     H122373,
     /// A firmware without `wlan/host-list`: the panel must say so, not "0".
     NoHostList,
+    /// A firmware that answers both quota endpoints
+    /// (`monitoring/month_statistics`, `monitoring/start_date`). Otherwise the
+    /// H122-373 shape.
+    Quota,
     /// `dhcp/settings` answers the values a DNS test writes, so a refused POST
     /// can still be read back as applied: the exact shape of the false success.
     DnsEcho,
@@ -76,7 +80,9 @@ impl Profile {
             ("/api/sms/sms-count", SMS_REFUSED),
         ];
         match self {
-            Profile::H122373 | Profile::DnsEcho => routes.push(("/api/wlan/host-list", HOST_LIST)),
+            Profile::H122373 | Profile::DnsEcho | Profile::Quota => {
+                routes.push(("/api/wlan/host-list", HOST_LIST))
+            }
             Profile::DhcpStrict
             | Profile::DhcpIgnoresShort
             | Profile::DhcpIgnoresAll
@@ -91,6 +97,10 @@ impl Profile {
             Profile::DhcpNoDns => routes.push(("/api/dhcp/feature-switch", FEATURE_DNS_HIDDEN)),
             Profile::DhcpWithDns => routes.push(("/api/dhcp/feature-switch", FEATURE_DNS_SHOWN)),
             _ => {}
+        }
+        if self == Profile::Quota {
+            routes.push(("/api/monitoring/month_statistics", MONTH_STATS));
+            routes.push(("/api/monitoring/start_date", START_DATE));
         }
         if self == Profile::DnsEcho {
             for (path, body) in routes.iter_mut() {
@@ -128,6 +138,17 @@ const TRAFFIC: &str = r#"<response>
 <CurrentDownload>29000000</CurrentDownload><TotalUpload>1690000000000</TotalUpload>
 <TotalDownload>49990000000000</TotalDownload>
 </response>"#;
+/// The month counters, in the shape captured in `DOCK/QUOTA-SHAPE.md`. The
+/// numbers are synthetic on purpose: 10 GiB down, 1 GiB up, no plan limit.
+const MONTH_STATS: &str = r#"<response>
+<CurrentMonthDownload>10737418240</CurrentMonthDownload>
+<CurrentMonthUpload>1073741824</CurrentMonthUpload>
+<MonthDuration>86400</MonthDuration>
+<MonthLastClearTime>2026-11-01</MonthLastClearTime>
+<CurrentDayUsed>1048576</CurrentDayUsed>
+<CurrentDayDuration>3600</CurrentDayDuration>
+</response>"#;
+const START_DATE: &str = r#"<response><StartDay>1</StartDay><DataLimit>0GB</DataLimit></response>"#;
 const PLMN: &str = "<response><State>0</State><FullName>Mock Net</FullName><Numeric>00101</Numeric><ShortName>MOCK</ShortName><Rat>7</Rat></response>";
 const DEVICE: &str = r#"<response>
 <DeviceName>Mock-CPE</DeviceName><DeviceType>Mock-CPE</DeviceType>
@@ -558,8 +579,34 @@ mod tests {
         (mock, client)
     }
 
-    /// A model that answers everything: the whole snapshot fills, and nothing is
-    /// reported as unsupported.
+    /// The quota profile answers both month endpoints: the snapshot carries the
+    /// router's own counters, not a guess.
+    #[test]
+    fn collect_reads_the_month_counters() {
+        let (mock, mut client) = signed_in(Profile::Quota);
+        let snap = headless::collect(&mut client, mock.addr()).expect("collect");
+        let q = snap.quota.expect("the mock answers month_statistics");
+        assert_eq!(q.month_dl_bytes, 10_737_418_240);
+        assert_eq!(q.month_ul_bytes, 1_073_741_824);
+        assert_eq!(q.start_day, 1);
+    }
+
+    /// And the reference profile keeps refusing them: no quota, no zero drawn
+    /// as a real counter.
+    #[test]
+    fn the_default_profile_reports_no_quota() {
+        let (mock, mut client) = signed_in(Profile::H122373);
+        let snap = headless::collect(&mut client, mock.addr()).expect("collect");
+        assert!(snap.quota.is_none());
+        assert!(
+            snap.unsupported.iter().any(|s| s.contains("quota")),
+            "the refusal must be recorded, got {:?}",
+            snap.unsupported
+        );
+    }
+
+    /// A model that answers every section: the whole snapshot fills. The one
+    /// recorded gap is the month counter, which this firmware does not have.
     #[test]
     fn a_full_profile_produces_a_complete_snapshot() {
         let (mock, mut client) = signed_in(Profile::H122373);
@@ -569,7 +616,7 @@ mod tests {
         assert_eq!(snap.connection.net_type, "LTE");
         assert_eq!(snap.clients.len(), 2, "host list was not parsed");
         assert_eq!(snap.device.software.as_deref(), Some("11.0.2.21"));
-        assert!(snap.unsupported.is_empty(), "{:?}", snap.unsupported);
+        assert_eq!(snap.unsupported, vec!["quota".to_string()]);
     }
 
     /// The bug the mock found: no `wlan/host-list` used to mean `clients: []`
@@ -580,7 +627,11 @@ mod tests {
         let snap = headless::collect(&mut client, mock.addr()).expect("collect");
 
         assert!(snap.clients.is_empty());
-        assert_eq!(snap.unsupported, vec!["clients".to_string()]);
+        // `quota` first: the month read runs before the client read.
+        assert_eq!(
+            snap.unsupported,
+            vec!["quota".to_string(), "clients".to_string()]
+        );
         // Every other read still worked: one gap is not a broken scan.
         assert_eq!(snap.signal.rsrp_dbm, Some(-95.0));
     }
