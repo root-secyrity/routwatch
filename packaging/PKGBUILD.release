@@ -9,9 +9,9 @@
 # When a new tag is cut, bump pkgver and refresh the checksum:
 #   updpkgsums
 #
-# 0.5.0: pkgver is bumped and the digest below still names the v0.4.6 archive
-# on purpose: the v0.5.0 archive cannot be hashed before the tag exists. The
-# checksum PR after the tag pins the right one.
+# 0.5.0: the checksum is pinned to the v0.5.0 tag archive, confirmed from two
+# endpoints (github.com archive and codeload, byte-identical) before the package
+# was built.
 #
 # 0.4.6: the checksum is pinned to the v0.4.6 tag archive, confirmed from two
 # endpoints (github.com archive and codeload, byte-identical) before the package
@@ -42,7 +42,7 @@ provides=('routwatch')
 conflicts=('routwatch-git')
 options=('!lto' '!strip')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('fa2a344fb7d9fb965a4d5f91ad2290a0b2329832c03ef922075302e1615f3c0d')
+sha256sums=('cdf8e3d5c81449b4df09a9062bdb828a649125db7be3242470782abab485e16f')
 
 build() {
 	cd "$pkgname-$pkgver"
