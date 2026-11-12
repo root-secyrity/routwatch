@@ -54,7 +54,7 @@ view = "full"           # full · gauges · lite · dense
 graph_style = "dots"    # dots/bars colour each cell by height; braille is flat;
                         # ascii is the single-width fallback for fonts that draw
                         # braille or blocks wider than one cell
-budget_gb = 100         # local budget only; the monthly counters are not read
+budget_gb = 100         # GB since the baseline; the router month counter is read when it exists
 ```
 
 The password ladder is `--password-stdin` → `ROUTWATCH_PASSWORD` → `secret-tool`

@@ -732,6 +732,9 @@ pub fn status_json(s: &Snapshot) -> serde_json::Value {
         "clients_known": !s.unsupported.iter().any(|u| u == "clients"),
         "net_mode": s.net_mode.network_mode,
         "dns_primary": s.dns.as_ref().and_then(|d| d.primary.clone()),
+        // Null on a firmware that refuses the month counters; an object when it
+        // answers them. Traffic totals, safe in a redacted report.
+        "quota": s.quota,
         "generated_at": s.generated_at,
     })
 }
@@ -859,6 +862,21 @@ mod status_tests {
             );
         }
         assert!(!text.contains('\n'), "status --json is one line");
+    }
+
+    #[test]
+    fn status_json_says_whether_the_month_counter_was_read() {
+        let mut s = snap_with(None, false, None);
+        assert!(status_json(&s)["quota"].is_null(), "no counter, no object");
+        s.quota = Some(crate::model::Quota {
+            month_dl_bytes: 4_000,
+            month_ul_bytes: 1_000,
+            start_day: 1,
+            ..Default::default()
+        });
+        let v = status_json(&s);
+        assert_eq!(v["quota"]["month_dl_bytes"], 4_000);
+        assert_eq!(v["quota"]["start_day"], 1);
     }
 }
 

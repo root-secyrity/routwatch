@@ -117,7 +117,9 @@ pub const PROBE: &[Spec] = &[
         group: "sms",
         path: "sms/config",
     },
-    // Known-blocked on this firmware - probed so the UI can say why.
+    // Known-blocked on this firmware - probed so the UI can say why. The sms
+    // block is the only one this note covers: the quota reads below answer on
+    // the reference device.
     Spec {
         group: "sms",
         path: "sms/sms-list",

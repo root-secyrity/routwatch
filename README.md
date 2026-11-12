@@ -107,8 +107,10 @@ question.
 
 - **5G per-field metrics can be empty** on some firmware: the signal panel shows
   the bars and says which `nr` fields did arrive rather than inventing dBm.
-- **The budget is local**: routwatch compares your `budget_gb` against the traffic
-  it samples; it does not read the router's monthly counters.
+- **The budget starts at a baseline**: `budget_gb` is compared against traffic
+  since a baseline that `b` resets and the billing cycle moves. The router's own
+  month counter is used when the firmware answers it; otherwise the lifetime
+  counters are. The per-day table only counts while routwatch runs.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown with IMEI,
   serial, WAN IP, MACs and SSIDs hidden, because these files get pasted in public.
 

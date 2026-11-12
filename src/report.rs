@@ -414,6 +414,24 @@ mod tests {
         assert_eq!(s.plmn.name, "OperatorNet", "the input must not be mutated");
     }
 
+    /// Traffic totals are not identity: a redacted report keeps the month
+    /// counters so a helper can still see what the plan is used for.
+    #[test]
+    fn redaction_keeps_the_month_counters() {
+        let s = Snapshot {
+            quota: Some(crate::model::Quota {
+                month_dl_bytes: 4_000,
+                month_ul_bytes: 1_000,
+                start_day: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let q = redacted(&s).quota.expect("quota survives redaction");
+        assert_eq!((q.month_dl_bytes, q.month_ul_bytes), (4_000, 1_000));
+        assert_eq!(q.start_day, 1);
+    }
+
     /// Absent identity stays absent: "this firmware reports no serial" is a fact.
     #[test]
     fn redaction_does_not_invent_fields_the_router_never_sent() {
