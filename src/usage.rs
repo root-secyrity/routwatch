@@ -312,6 +312,11 @@ pub fn totals(u: &Usage, today: LocalDay) -> Totals {
     };
     let mut out = Totals::default();
     for b in &u.days {
+        // A day after "today" means the clock moved back (a fixture replayed, a
+        // timezone flip). Counting it would put tomorrow's bytes in this week.
+        if b.day > today.num {
+            continue;
+        }
         if b.day == today.num {
             out.today.0 = out.today.0.saturating_add(b.dl);
             out.today.1 = out.today.1.saturating_add(b.ul);
@@ -567,6 +572,30 @@ mod tests {
         observe_day(&mut u, 2_200, day(start + 30, 1), &tr(9_000, 0), None, 1);
         assert_eq!(used(&tr(9_000, 0), None, &u), 0);
         assert_eq!(u.reset_at, 2_200);
+    }
+
+    #[test]
+    fn a_sample_older_than_the_ledger_counts_no_future_days() {
+        let mut u = Usage::default();
+        let today = days_from_civil(2026, 2, 2);
+        u.cycle_start = days_from_civil(2026, 2, 1);
+        u.days = vec![
+            DayBucket {
+                day: today,
+                dl: 10,
+                ul: 1,
+            },
+            DayBucket {
+                day: days_from_civil(2026, 11, 12),
+                dl: 9_999,
+                ul: 0,
+            },
+        ];
+        let t = totals(&u, day(today, 1));
+        assert_eq!(t.today, (10, 1));
+        assert_eq!(t.week, (10, 1));
+        assert_eq!(t.month, (10, 1));
+        assert_eq!(t.first_day, Some(today));
     }
 
     #[test]

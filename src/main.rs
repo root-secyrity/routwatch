@@ -1044,6 +1044,10 @@ fn run(cli: Cli) -> Result<(), ApiError> {
         }) => {
             let (w, h) = parse_size(size)?;
             let mut app = build_app(&cli, &cfg)?;
+            // Read the ledger so the usage table shows the same numbers the TUI
+            // would, but never take the lock and never write: a preview is a
+            // read-only frame.
+            app.usage = routwatch::usage::load(&routwatch::usage::path());
             let mut snap: Snapshot = match fixture {
                 Some(path) => {
                     let raw = std::fs::read_to_string(path)
