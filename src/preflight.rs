@@ -164,6 +164,7 @@ mod tests {
                 lan_ip: Some("192.168.8.1".into()),
                 editable: Some(false),
             }),
+            quota: None,
             ..Snapshot::default()
         };
         let p = for_intent(
@@ -202,6 +203,7 @@ mod tests {
                 lan_ip: Some("192.168.8.1".into()),
                 editable,
             }),
+            quota: None,
             ..Snapshot::default()
         };
         let set = WriteIntent::SetDns {

@@ -174,6 +174,7 @@ pub fn collect_traced(
         all_bands_mask,
         network_bands_mask,
         unsupported,
+        quota: None,
     })
 }
 
@@ -878,6 +879,7 @@ mod doctor_tests {
 
         let refusing = Snapshot {
             unsupported: vec!["clients".into()],
+            quota: None,
             ..Snapshot::default()
         };
         let json = serde_json::to_string(&refusing).expect("serialize");
@@ -981,6 +983,7 @@ mod phase_tests {
 
         let warm = Snapshot {
             temperature: Some(41.0),
+            quota: None,
             ..Snapshot::default()
         };
         let json = serde_json::to_string(&warm).expect("serialize");

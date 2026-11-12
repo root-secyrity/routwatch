@@ -171,6 +171,7 @@ mod tests {
                 mac: Some("AA:BB:CC:DD:EE:FF".into()),
                 ..Default::default()
             }],
+            quota: None,
             ..Default::default()
         }
     }

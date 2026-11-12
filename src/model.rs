@@ -345,6 +345,10 @@ pub struct Snapshot {
     /// `--json`, so nothing changes for a firmware that answers everything.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsupported: Vec<String>,
+    /// The router's own month counters. `None` when the firmware refuses
+    /// `monitoring/month_statistics`; the UI then says "local ledger".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<Quota>,
 }
 
 #[cfg(test)]

@@ -340,6 +340,7 @@ mod tests {
                 ssid: Some("HomeNet".into()),
                 ..Default::default()
             }],
+            quota: None,
             ..Default::default()
         };
         s.dns = Some(DnsInfo {

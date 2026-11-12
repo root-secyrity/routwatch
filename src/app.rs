@@ -1673,6 +1673,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            quota: None,
             ..Default::default()
         };
         app.on_snapshot(snap, 1);
@@ -1722,6 +1723,7 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
+            quota: None,
             ..Default::default()
         };
         app.on_snapshot(snap, 1);
