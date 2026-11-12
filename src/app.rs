@@ -54,7 +54,7 @@ impl Tab {
         }
     }
 
-    /// Short label for narrow terminals, where eight full titles do not fit.
+    /// Short label for narrow terminals, where nine full titles do not fit.
     pub fn short(&self) -> &'static str {
         match self {
             Tab::Dashboard => "Dash",
@@ -430,8 +430,9 @@ impl App {
         }
     }
 
-    /// Choosing a section leaves a stripped view: Lite/Dense are single-screen
-    /// summaries that ignore `tab`, so a digit there used to look dead.
+    /// Choosing a section leaves a stripped view: Lite, Dense and Gauges are
+    /// single-screen summaries that ignore `tab`, so a digit there must still
+    /// select one.
     pub fn select_tab(&mut self, tab: Tab) {
         self.tab = tab;
         // Lite, Dense and Gauges are whole-screen summaries that ignore `tab`;

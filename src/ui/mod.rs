@@ -482,7 +482,7 @@ fn draw_tabbar(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
-    // Eight full titles need ~96 columns; below that, abbreviate instead of clipping.
+    // Nine full titles need ~96 columns; below that, abbreviate instead of clipping.
     let narrow = area.width < 96;
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let active = *tab == app.tab;
@@ -2261,7 +2261,7 @@ mod tests {
 
     #[test]
     fn help_uses_the_room_a_wide_terminal_has() {
-        // Before this, the panel was pinned at 52 columns and cut 12 of 21 rows
+        // The panel must use the width it is given: 52 columns cut 12 of 21 rows
         // mid-word even on a 120 column terminal.
         let text = help_frame(120, 30, false);
         for needle in [
@@ -2305,8 +2305,8 @@ mod tests {
 
     #[test]
     fn help_never_draws_a_key_into_its_description() {
-        // `8 / j k / Enter` used to be 14 characters in a 12 column field and
-        // ran straight into its text.
+        // The key column must hold `8 / j k / Enter` (14 characters), or the
+        // keys run straight into the description.
         let text = help_frame(120, 30, false);
         let line = text
             .lines()
@@ -2386,8 +2386,8 @@ mod tests {
         );
     }
 
-    /// The failure popup used to cut its own reason at 66 columns. Every word of a
-    /// realistic mismatch message must reach the screen, at two window widths.
+    /// The failure popup shows its whole reason: every word of a realistic
+    /// mismatch message must reach the screen, at two window widths.
     #[test]
     fn a_failed_write_shows_its_whole_reason() {
         for width in [80u16, 40u16] {

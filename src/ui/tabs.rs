@@ -1,4 +1,4 @@
-//! The seven tab bodies, plus the Lite and Dense views.
+//! The nine tab bodies, plus the Lite and Dense views.
 //!
 //! Every panel is built from `App` only; nothing here touches the network, which
 //! is what makes the render tests possible.
@@ -2507,10 +2507,10 @@ fn speed_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
         return;
     }
 
-    // The dials needed seven rows; a mirrored plot needs four. Anything shorter
-    // keeps the two readings and says why there is no trend. One sample is a
-    // reading, not a trend: a single braille column on the right edge reads as
-    // a broken plot, so the compact lines carry it until there are two.
+    // A mirrored plot needs four rows. Anything shorter keeps the two readings
+    // and says why there is no trend. One sample is a reading, not a trend: a
+    // single braille column on the right edge reads as a broken plot, so the
+    // compact lines carry it until there are two.
     if !wide || samples < 2 || inner.height < 5 || inner.width < 24 {
         f.render_widget(
             Paragraph::new(vec![
@@ -2612,8 +2612,7 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     let avail = (inner.height as usize).saturating_sub(3);
     let rows = (avail / 3).min(4);
     // The traces own their rows: the label, value and domain sit on the line
-    // above, so there is no gutter to reserve. Subtracting one used to leave the
-    // trace ending fourteen cells before the panel edge.
+    // above, so there is no gutter to reserve and the trace runs to the edge.
     let width = (inner.width as usize).max(8);
 
     let mut lines: Vec<Line> = Vec::new();

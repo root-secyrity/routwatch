@@ -450,8 +450,7 @@ mod tests {
         assert_eq!(parse_temperature(&absent), None);
     }
 
-    /// Scrubbed capture: the real device output with names, MACs, IPs
-    /// and identifiers replaced. Kept inline so no private data ships.
+    /// Scrubbed capture: identifiers replaced, inline so no private data ships.
     const SIGNAL_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <response>
 <pci>481</pci>
@@ -508,11 +507,9 @@ mod tests {
 <bsic></bsic>
 <rxlev></rxlev>
 </response>"#;
-    /// Scrubbed capture: the real device output with names, MACs, IPs
-    /// and identifiers replaced. Kept inline so no private data ships.
+    /// Scrubbed capture: identifiers replaced, inline so no private data ships.
     const HOSTS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?><response><Hosts><Host><AssociatedTime>388587</AssociatedTime><HostName>living-room-tv</HostName><AssociatedSsid>TestNet</AssociatedSsid><ID>InternetGatewayDevice.LANDevice.1.Hosts.Host.6.</ID><Frequency>5GHz</Frequency><ActualName>living-room-tv</ActualName><MacAddress>02:00:00:00:00:01</MacAddress><IpAddress>192.168.8.101;fe80::1</IpAddress></Host><Host><AssociatedTime>0</AssociatedTime><HostName>phone-1</HostName><AssociatedSsid>TestNet</AssociatedSsid><ID>InternetGatewayDevice.LANDevice.1.Hosts.Host.30.</ID><Frequency>5GHz</Frequency><ActualName>phone-1</ActualName><MacAddress>02:00:00:00:00:02</MacAddress><IpAddress>192.168.8.102;fe80::2</IpAddress></Host><Host><AssociatedTime>41972</AssociatedTime><HostName></HostName><AssociatedSsid>TestNet</AssociatedSsid><ID>InternetGatewayDevice.LANDevice.1.Hosts.Host.47.</ID><Frequency>2.4GHz</Frequency><ActualName></ActualName><MacAddress>02:00:00:00:00:03</MacAddress><IpAddress>192.168.8.103;fe80::3</IpAddress></Host></Hosts></response>"#;
-    /// Scrubbed capture: the real device output with names, MACs, IPs
-    /// and identifiers replaced. Kept inline so no private data ships.
+    /// Scrubbed capture: identifiers replaced, inline so no private data ships.
     const TRAFFIC_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <response>
 <CurrentConnectTime>165315</CurrentConnectTime>

@@ -257,8 +257,7 @@ mod tests {
     use super::*;
     use crate::xml::parse;
 
-    /// Scrubbed capture: the real device output with names, MACs, IPs
-    /// and identifiers replaced. Kept inline so no private data ships.
+    /// Scrubbed capture: identifiers replaced, inline so no private data ships.
     const NETMODE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <response>
 <AccessList>

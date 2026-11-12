@@ -468,8 +468,8 @@ pub fn two_per_column(data: &[u64], width: u16) -> Vec<u64> {
 /// slots into a `Paragraph` beside its label.
 ///
 /// `bars` is a one-row contract: a block sparkline is a row of eighths, and
-/// `height` is ignored for it. The dashboard passes 2 and the old tests pin
-/// one line, so the distinction is kept here rather than at every call site.
+/// `height` is ignored for it. The dashboard passes 2 and the tests pin one
+/// line, so the distinction is kept here rather than at every call site.
 #[allow(clippy::too_many_arguments)]
 pub fn spark_lines(
     values: &VecDeque<f64>,
@@ -997,8 +997,8 @@ mod tests {
 
     #[test]
     fn a_short_history_paints_one_cell_per_sample() {
-        // The plot used to be stretched over the whole width, so five samples in
-        // a ten-cell panel painted a two-cell bar. One sample owns one cell now.
+        // One sample owns one cell: five samples in a ten-cell panel paint five
+        // cells, not a stretched two-cell bar each.
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
         let plot = buf.area;
         let opts = ChartOpts {
@@ -1038,10 +1038,9 @@ mod tests {
 
     #[test]
     fn bars_fill_the_requested_height() {
-        // A block sparkline used to be clamped to one row whatever the caller
-        // asked for, so a three-row slot in the traffic and speed panels left
-        // two rows empty. The renderer already stacks eighths; only the clamp
-        // held it back.
+        // A block sparkline fills the height the caller asks for: the renderer
+        // stacks eighths, so a three-row slot in the traffic and speed panels
+        // must draw three rows instead of clamping to one and leaving two empty.
         let mut v: VecDeque<f64> = VecDeque::new();
         for i in 0..10 {
             v.push_back(i as f64);
@@ -1187,9 +1186,8 @@ mod tests {
     #[test]
     fn a_scaled_series_keeps_its_middle_height() {
         // -96 of a -140..-44 domain sits at 46%: seven of sixteen sub-rows, so
-        // two of the four rows carry ink. Casting the negative domain to u64
-        // (min 0, max 1) collapsed every sample onto the baseline row instead,
-        // and a baseline dot still paints, so the count used to stay at 1.
+        // two of the four rows carry ink. A cast to u64 (min 0, max 1) collapses
+        // every sample onto the baseline row, whose dot still paints.
         let mut v: VecDeque<f64> = VecDeque::new();
         for _ in 0..40 {
             v.push_back(-96.0);
