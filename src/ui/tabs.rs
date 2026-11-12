@@ -215,10 +215,16 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     if inner.width <= gutter + 8 {
         return;
     }
+    // One cell per sample, never a stretch. Stretching the history across the
+    // whole width made a single reading paint a four-cell bar at start-up and a
+    // one-cell bar two minutes later, so the same value changed width while the
+    // app ran. A short history now leaves the left side blank.
+    let capacity = (inner.width - gutter) as usize;
+    let cells = samples.min(capacity).max(1);
     let plot = Rect {
-        x: inner.x + gutter,
+        x: inner.x + inner.width - cells as u16,
         y: inner.y + 1,
-        width: inner.width - gutter,
+        width: cells as u16,
         height: inner.height - 2,
     };
 
@@ -264,14 +270,12 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     } else {
         opts
     };
-    let (rx_plot, tx_plot) = if collecting {
+    let (rx_plot, tx_plot) = if samples <= capacity {
         (rx.clone(), tx.clone())
     } else {
-        let slots = plot.width as usize * 2;
-        let per_sample = (refresh / 1000).max(1);
         (
-            crate::ui::chart::resample_to_window(&rx, per_sample, secs, slots),
-            crate::ui::chart::resample_to_window(&tx, per_sample, secs, slots),
+            crate::ui::chart::bucket_max(&rx, cells),
+            crate::ui::chart::bucket_max(&tx, cells),
         )
     };
     // A percentile ceiling, not the peak: one burst stays visible as a clipped
@@ -322,23 +326,58 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
         label(plot.y + plot.height - 1, bps(tx_max as f64));
     }
 
+    // The axis belongs to the drawn region: a narrow plot cannot hold three
+    // ticks, and a status word is not a time span. One sample still says what is
+    // happening (the plot is a single column, so the strip spans the panel).
     let axis = if collecting {
         "collecting…".to_string()
     } else {
-        crate::ui::chart::time_axis(plot.width, secs)
+        let full = crate::ui::chart::time_axis(plot.width, secs);
+        if full.chars().count() <= plot.width as usize {
+            full
+        } else {
+            narrow_axis(plot.width, secs)
+        }
     };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            axis,
-            Style::default().fg(theme.dim),
-        ))),
-        Rect {
-            x: plot.x,
-            y: inner.y + inner.height - 1,
-            width: plot.width,
-            height: 1,
-        },
-    );
+    if !axis.is_empty() {
+        let strip = if collecting {
+            Rect {
+                x: inner.x + gutter,
+                width: inner.width - gutter,
+                ..plot
+            }
+        } else {
+            plot
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                axis,
+                Style::default().fg(theme.dim),
+            ))),
+            Rect {
+                x: strip.x,
+                y: inner.y + inner.height - 1,
+                width: strip.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// The axis for a plot too narrow for three ticks: the window start on the
+/// left, `now` on the right, midpoint dropped.
+fn narrow_axis(width: u16, secs: u64) -> String {
+    let w = width as usize;
+    if w < 3 {
+        return String::new();
+    }
+    let left = format!("-{secs}s");
+    if w >= left.chars().count() + 4 {
+        let pad = w - left.chars().count() - 3;
+        format!("{left}{}now", " ".repeat(pad))
+    } else {
+        "now".to_string()
+    }
 }
 
 fn dashboard_roomy(f: &mut Frame, area: Rect, app: &App) {

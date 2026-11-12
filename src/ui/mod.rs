@@ -977,6 +977,44 @@ mod tests {
     }
 
     #[test]
+    fn a_short_history_keeps_every_bar_one_cell_wide() {
+        let mut app = App::new(
+            crate::theme::by_name("dark"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.snap = Some(
+            serde_json::from_str(include_str!("../../fixtures/sample-snapshot.json")).unwrap(),
+        );
+        for i in 0..15 {
+            app.history_dl
+                .push_back(if i == 14 { 4_000_000.0 } else { 1_000_000.0 });
+            app.history_ul.push_back(100_000.0);
+        }
+        let frame = crate::ui::render_to_string(&app, 120, 40);
+        let lines: Vec<&str> = frame.lines().collect();
+        let meta = lines
+            .iter()
+            .position(|l| l.contains("peak "))
+            .expect("throughput meta row");
+        let top = lines[meta + 1];
+        let inked = top
+            .chars()
+            .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c) && *c != '\u{2800}')
+            .count();
+        assert_eq!(
+            inked, 1,
+            "one sample is one cell wide, not a stretched block: {top:?}"
+        );
+        assert!(
+            frame.contains("-30s") && frame.contains("now"),
+            "a 15-cell plot still names its window"
+        );
+    }
+
+    #[test]
     fn a_single_sample_says_collecting_and_draws_one_mark() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
