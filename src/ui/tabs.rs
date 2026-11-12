@@ -1,4 +1,4 @@
-//! The seven tab bodies, plus the Lite and Dense views.
+//! The nine tab bodies, plus the Lite and Dense views.
 //!
 //! Every panel is built from `App` only; nothing here touches the network, which
 //! is what makes the render tests possible.

@@ -482,7 +482,7 @@ fn draw_tabbar(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
-    // Eight full titles need ~96 columns; below that, abbreviate instead of clipping.
+    // Nine full titles need ~96 columns; below that, abbreviate instead of clipping.
     let narrow = area.width < 96;
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let active = *tab == app.tab;
