@@ -136,7 +136,6 @@ fn graph_style_name(style: crate::theme::GraphStyle) -> &'static str {
 /// time window, and an axis that names the window actually drawn.
 fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let opts = app.chart_opts();
     let refresh = app.refresh_ms.max(1);
     let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
     let tx: Vec<u64> = app.history_ul.iter().map(|v| v.max(0.0) as u64).collect();
@@ -188,6 +187,20 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    mirrored_body(f, inner, app);
+}
+
+/// The mirrored download/upload body, starting at `inner.y`. The caller owns the
+/// block, the empty state and the "no room" line, because the Dashboard and the
+/// Signal tab phrase those differently.
+fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
+    let theme = &app.theme;
+    let opts = app.chart_opts();
+    let refresh = app.refresh_ms.max(1);
+    let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
+    let tx: Vec<u64> = app.history_ul.iter().map(|v| v.max(0.0) as u64).collect();
+    let samples = rx.len().max(tx.len());
+    let secs = (samples as u64 * refresh / 1000).max(1);
     let rx_peak = rx.iter().copied().max().unwrap_or(0);
     let tx_peak = tx.iter().copied().max().unwrap_or(0);
     let peak = rx_peak.max(tx_peak).max(1);
