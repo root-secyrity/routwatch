@@ -668,9 +668,9 @@ mod tests {
 
     #[test]
     fn the_cycle_advances_even_when_auto_resolves_nothing() {
-        // `auto` with no desktop theme to read returns the terminal palette, so
-        // its resolved id used to equal the one we came from and `t` looked
-        // dead on exactly the machines that had nothing to follow.
+        // `auto` with no desktop theme to read resolves to the terminal palette.
+        // The cycle still has to name `auto` and land on the next id, or `t`
+        // looks dead on exactly the machines that had nothing to follow.
         let auto = cycle("terminal");
         assert_eq!(auto.id, "auto", "the cycle must name what it asked for");
         assert_eq!(cycle("auto").id, "ocean");

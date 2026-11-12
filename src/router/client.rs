@@ -105,8 +105,8 @@ impl HuaweiClient {
     }
 
     /// `/api/<endpoint>`, with the slash between the two owned in exactly one
-    /// place. `raw("/")` used to build `/api//`, which a strict server answers
-    /// with 404 - and the callers that pass "" or "/" only ever meant `/api/`.
+    /// place: `raw("/")` must build `/api/`, never `/api//`, which a strict
+    /// server answers with 404. Callers that pass "" or "/" mean `/api/`.
     fn api_path(endpoint: &str) -> String {
         let trimmed = endpoint.trim_matches('/');
         if trimmed.is_empty() {
@@ -431,9 +431,9 @@ mod tests {
         assert_eq!(extract_csrf("<html></html>"), None);
     }
 
-    /// `raw("/")` used to build `GET /api//`, which a strict server answers 404 -
-    /// `doctor --live` then declared a reachable router unreachable and stopped
-    /// before it probed a single capability.
+    /// `raw("/")` must build `/api/`: a doubled slash is answered 404, and
+    /// `doctor --live` would declare a reachable router unreachable before it
+    /// probed a single capability.
     #[test]
     fn api_paths_never_double_the_slash() {
         assert_eq!(HuaweiClient::api_path(""), "/api/");

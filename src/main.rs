@@ -1208,9 +1208,9 @@ fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, A
 
 // --------------------------------------------------------------------- TUI
 
-/// Runs the restore closure exactly once, on drop. A `?` between raw mode and
-/// the event loop used to return early and leave the user's terminal without
-/// echo, canonical input or signals.
+/// Runs the restore closure exactly once, on drop. Every early return between
+/// raw mode and the event loop must restore echo, canonical input and signals,
+/// `?` included.
 struct RestoreOnDrop<F: FnMut()>(Option<F>);
 
 impl<F: FnMut()> Drop for RestoreOnDrop<F> {
@@ -2306,9 +2306,8 @@ mod key_tests {
         assert!(app.settings_open, "Shift+S must open settings, not sort");
     }
 
-    /// `--tab` used to advertise seven sections while `dns` and `signal` worked,
-    /// so the help lied about the tool's own surface. The list in the help and the
-    /// list `Tab::parse` accepts must be the same list.
+    /// The list the help advertises and the list `Tab::parse` accepts must be
+    /// the same list: nine sections, `dns` and `signal` included.
     #[test]
     fn the_tab_help_names_every_section_it_accepts() {
         let listed: Vec<&str> = TAB_HELP

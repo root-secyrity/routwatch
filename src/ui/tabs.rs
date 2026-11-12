@@ -2612,8 +2612,7 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     let avail = (inner.height as usize).saturating_sub(3);
     let rows = (avail / 3).min(4);
     // The traces own their rows: the label, value and domain sit on the line
-    // above, so there is no gutter to reserve. Subtracting one used to leave the
-    // trace ending fourteen cells before the panel edge.
+    // above, so there is no gutter to reserve and the trace runs to the edge.
     let width = (inner.width as usize).max(8);
 
     let mut lines: Vec<Line> = Vec::new();

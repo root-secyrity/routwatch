@@ -619,8 +619,8 @@ mod tests {
         assert_eq!(snap.unsupported, vec!["quota".to_string()]);
     }
 
-    /// The bug the mock found: no `wlan/host-list` used to mean `clients: []`
-    /// with no explanation, which the panel drew as "0 clients".
+    /// A firmware without `wlan/host-list` must record the gap: `clients: []`
+    /// with no explanation is drawn as "0 clients".
     #[test]
     fn a_hidden_client_list_is_recorded_not_zeroed() {
         let (mock, mut client) = signed_in(Profile::NoHostList);

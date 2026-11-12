@@ -993,9 +993,9 @@ mod tests {
     }
 
     /// The live H122-373 hides the DNS row: `dhcpsdns_display=0` means the firmware
-    /// accepts the document and drops the three DNS fields, which the tool used to
-    /// report as a mismatch after a write that could never land. The refusal comes
-    /// before the POST, so the device is not touched at all.
+    /// accepts the document and drops the three DNS fields, so a write there can
+    /// never land. The refusal comes before the POST, so the device is not
+    /// touched at all.
     #[test]
     fn a_firmware_without_the_dns_row_is_refused_before_the_post() {
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpNoDns);
