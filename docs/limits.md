@@ -57,6 +57,11 @@ why each one is stated instead of hidden.
   `spark_scaled`; a panel that wants a trend calls `chart::spark_auto` (auto
   ceiling) or `chart::spark_lines_scaled` (a fixed, possibly negative domain such
   as RSRP).
+- **A sample is one cell wide**: the mirrored plot is right aligned at one
+  braille cell per sample and never stretched, so the bars keep their width as
+  the session fills. A history longer than the panel is bucketed per cell with
+  the maximum of that bucket, so a spike never widens a bar. A panel too narrow
+  for three ticks prints only the window start and `now`.
 - **`bars` uses the height it is given**: a block sparkline used to be clamped to
   one row whatever the caller asked for, so a three-row slot in the speed panel
   left two rows empty. It now stacks eighths over the whole slot; `dots` and
