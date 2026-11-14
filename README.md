@@ -113,8 +113,12 @@ question.
   counters are. The per-day table only counts while routwatch runs.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown with IMEI,
   serial, WAN IP, MACs and SSIDs hidden, because these files get pasted in public.
+- **The speed test measures this host, not the router**: `T` on Network runs a
+  single plain-HTTP stream from this machine through the CPE, so the number
+  includes the local Wi-Fi or LAN path and spends data that counts in the router's
+  month total. It asks before it runs; `Esc` stops it.
 
-Eight more, including the `100006` band-write code, the small-terminal order and
+Fourteen more, including the `100006` band-write code, the small-terminal order and
 the graph colour floor, are stated in [`docs/limits.md`](docs/limits.md). Nothing
 there is a wish list: each entry is something a firmware or a terminal actually
 did.

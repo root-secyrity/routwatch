@@ -99,6 +99,17 @@ why each one is stated instead of hidden.
   without a session). The speed test is host-side by necessity: it measures the
   path through this machine, never the WAN link on its own.
 
+- **The speed test measures this host, not the router**: the transfer runs from
+  this machine through the CPE, so the number includes the local Wi-Fi or LAN
+  segment, and it is a single plain-HTTP stream rather than the sum of every
+  flow. A window shorter than three seconds is printed as a ramp-limited
+  estimate, because TCP has not reached its rate yet. The endpoints are third
+  party (`speed.cloudflare.com` by default), so they see this host's address, and
+  the bytes are counted by the router's own month counter: the usage panel moves
+  by the test size (60 MB down + 10 MB up with the default bounds). Router polls
+  can time out while the link is saturated; `P` pauses them, and a poll that fails
+  during a test is backoff, not a gap in the history.
+
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
 README's Safety list, and the guard that enforces them is in
