@@ -57,6 +57,10 @@ pub enum Profile {
     SwitchWarnsLate,
     /// The code without the change: a real refusal dressed as the same warning.
     SwitchRefuses,
+    /// A firmware that answers the three codes this client names, each on its own
+    /// path: `monitoring/status` answers 100003, `sms/sms-count` answers 100002,
+    /// and `monitoring/month_statistics` answers 100004.
+    CodesRefused,
 }
 
 /// How long `SwitchWarnsLate` takes to publish the new mask. Shorter than the
@@ -92,6 +96,7 @@ impl Profile {
             // actually returns; the tool must read it as "not exposed".
             Profile::NoHostList => {}
             Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses => {}
+            Profile::CodesRefused => {}
         }
         match self {
             Profile::DhcpNoDns => routes.push(("/api/dhcp/feature-switch", FEATURE_DNS_HIDDEN)),
@@ -108,6 +113,18 @@ impl Profile {
                     *body = DHCP_ECHO;
                 }
             }
+        }
+        if self == Profile::CodesRefused {
+            // Rewritten in place: a second entry for a path already in the list
+            // loses to the first one, so the answer would never be this code.
+            for (path, body) in routes.iter_mut() {
+                match *path {
+                    "/api/monitoring/status" => *body = NO_RIGHT_100003,
+                    "/api/sms/sms-count" => *body = NOT_SUPPORT_100002,
+                    _ => {}
+                }
+            }
+            routes.push(("/api/monitoring/month_statistics", BUSY_100004));
         }
         routes
     }
@@ -169,6 +186,9 @@ const FEATURE_DNS_SHOWN: &str = "<response><setmask_display>0</setmask_display><
 /// What a router that already carries the test's servers answers.
 const DHCP_ECHO: &str = "<response><DnsStatus>0</DnsStatus><PrimaryDns>9.9.9.9</PrimaryDns><SecondaryDns>8.8.8.8</SecondaryDns></response>";
 const SMS_REFUSED: &str = "<error><code>100005</code><message>No support</message></error>";
+const NO_RIGHT_100003: &str = "<error><code>100003</code><message>No right</message></error>";
+const NOT_SUPPORT_100002: &str = "<error><code>100002</code><message>Not support</message></error>";
+const BUSY_100004: &str = "<error><code>100004</code><message>Busy</message></error>";
 const HOST_LIST: &str = r#"<response><Hosts>
 <Host><HostName>living-room-tv</HostName><IpAddress>192.168.8.101</IpAddress><MacAddress>02:00:00:00:00:01</MacAddress><WifiFrequency>5</WifiFrequency></Host>
 <Host><HostName>phone-1</HostName><IpAddress>192.168.8.102</IpAddress><MacAddress>02:00:00:00:00:02</MacAddress><WifiFrequency>5</WifiFrequency></Host>
@@ -718,5 +738,102 @@ mod tests {
             Some("192.168.8.1"),
             "nothing may change"
         );
+    }
+
+    /// The three codes the firmware actually uses to say no, each on its own path,
+    /// so the wording of every refusal can be checked without a router.
+    #[test]
+    fn a_profile_that_answers_the_real_refusal_codes() {
+        let (mock, mut c) = signed_in(Profile::CodesRefused);
+        let status = c.raw("monitoring/status").expect("raw read");
+        assert!(
+            status.contains("<code>100003</code>"),
+            "the status body must carry the refusal, got {status}"
+        );
+        let count = c.raw("sms/sms-count").expect("raw read");
+        assert!(
+            count.contains("<code>100002</code>"),
+            "the sms count must carry NOT_SUPPORT, got {count}"
+        );
+        let month = c.raw("monitoring/month_statistics").expect("raw read");
+        assert!(
+            month.contains("<code>100004</code>"),
+            "the month read must carry BUSY, got {month}"
+        );
+        drop(mock);
+    }
+
+    /// And the probe reads those codes as the states the report promises: a
+    /// missing path is unsupported, a busy one is a failed call.
+    #[test]
+    fn the_probe_names_each_refusal() {
+        let (mock, mut c) = signed_in(Profile::CodesRefused);
+        let caps = crate::router::endpoints::probe_all(&mut c);
+        let cap = |path: &str| {
+            caps.iter()
+                .find(|r| r.path == path)
+                .unwrap_or_else(|| panic!("{path} was not probed"))
+                .cap
+                .clone()
+        };
+
+        let status = cap("monitoring/status");
+        assert_eq!(status.state(), "unsupported");
+        assert_eq!(status.reason(), "firmware_error_100003");
+        assert_eq!(
+            status.detail().as_deref(),
+            Some("the firmware refused this request (100003 ERROR_NO_RIGHT)")
+        );
+
+        let sms = cap("sms/sms-count");
+        assert_eq!(sms.state(), "unsupported");
+        assert_eq!(sms.reason(), "firmware_error_100002");
+        assert_eq!(
+            sms.detail().as_deref(),
+            Some("the firmware does not serve this request (100002 ERROR_NOT_SUPPORT)")
+        );
+
+        let month = cap("monitoring/month_statistics");
+        assert_eq!(month.state(), "failed");
+        assert_eq!(
+            month.detail().as_deref(),
+            Some("router busy (100004 ERROR_BUSY)")
+        );
+        drop(mock);
+    }
+
+    /// The report itself, not only the probe: doctor must publish the same two
+    /// states and the same wording.
+    #[test]
+    fn doctor_publishes_the_refusals_with_their_codes() {
+        let mock = MockCpe::start(Profile::CodesRefused);
+        let mut cfg = crate::config::Config::default();
+        cfg.router.ip = mock.addr().to_string();
+
+        let report = headless::doctor(&cfg, "/tmp/mock/config.toml", true, Some("demo"));
+        let cap = |id: &str| {
+            report
+                .capabilities
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap_or_else(|| panic!("{id} missing from the report"))
+        };
+
+        let status = cap("monitoring/status");
+        assert_eq!(status.state, "unsupported");
+        assert_eq!(status.reason, "firmware_error_100003");
+        assert!(
+            status.detail.contains("100003 ERROR_NO_RIGHT"),
+            "{status:?}"
+        );
+
+        let sms = cap("sms/sms-count");
+        assert_eq!(sms.state, "unsupported");
+        assert_eq!(sms.reason, "firmware_error_100002");
+        assert!(sms.detail.contains("100002 ERROR_NOT_SUPPORT"), "{sms:?}");
+
+        let month = cap("monitoring/month_statistics");
+        assert_eq!(month.state, "failed");
+        assert!(month.detail.contains("100004 ERROR_BUSY"), "{month:?}");
     }
 }

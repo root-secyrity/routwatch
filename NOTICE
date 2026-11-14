@@ -34,6 +34,46 @@ what the H122-373 firmware does and does not answer) come from HManagerPy
 2.1.0, the Electron application this tool replaces, written by RoOt-SeC.
 
 
+Firmware error codes
+--------------------
+The constant names in src/error.rs (ERROR_NOT_SUPPORT, ERROR_NO_RIGHT,
+ERROR_BUSY, ERROR_FORMAT_ERROR, ERROR_PARAMETER_ERROR) follow the error table
+published with Huawei-Hilink-API by Henrik Sylvester Pedersen, MIT-licensed:
+
+  https://github.com/if0xx/Huawei-Hilink-API
+
+The table is a reference for what a code means, not source: no PHP was copied,
+and each constant routwatch keeps is re-stated as data with its own test. What a
+code means on this firmware is decided by measurement, not by the table. The MIT
+text of that project is reproduced below.
+
+  MIT License
+
+  Copyright (c) [2015] [Henrik Sylvester Pedersen]
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+The endpoint names and field spellings were cross-checked against
+huawei-lte-api by Salamek (LGPL-3.0) and its discussion #190. That project is
+read for facts about the WebAPI only: no code from it is used, because its
+licence is not compatible with MIT here.
+
 Theme palettes - derived code
 -----------------------------
 src/theme.rs carries eight palettes whose colour values are taken byte-for-byte

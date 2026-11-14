@@ -24,6 +24,7 @@ breaks `cargo test` here rather than leaving the promise unattended.
 | No palette takes the magenta slot | `no_derived_palette_takes_the_magenta_slot` | `src/theme.rs` |
 | A derived palette keeps body text readable | `every_derived_palette_keeps_text_readable` | `src/theme.rs` |
 | Machine output stays flat and free of secrets | `status_json_is_flat_and_secret_free` | `src/headless.rs` |
+| A firmware error names its Huawei constant in the text a person reads | `display_names_the_code_beside_its_meaning` | `src/error.rs` |
 | A snapshot without a sensor omits the temperature key | `a_snapshot_without_a_sensor_omits_the_temperature_key` | `src/headless.rs` |
 | A diagnostic names only the credential sources it consults | `the_credential_message_names_only_rungs_the_lookup_uses` | `src/config.rs` |
 | A piped password is a credential, not a keyword `doctor` ignores | `doctor_credits_the_stdin_password_instead_of_denying_it` | `src/headless.rs` |
