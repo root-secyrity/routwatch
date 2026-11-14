@@ -22,6 +22,7 @@ pub mod report;
 pub mod router;
 pub mod scrub;
 pub mod share;
+pub mod speedtest;
 pub mod theme;
 pub mod ui;
 pub mod usage;
