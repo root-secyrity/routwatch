@@ -139,6 +139,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.settings_open {
         draw_settings(f, area, app);
     }
+    if app.speed_confirm {
+        draw_speed_modal(f, area, app);
+    }
 
     // `sky` and `paper` own a panel fill. Applied last so it also covers the
     // modal's `Clear` cells, which otherwise fall back to the terminal default
@@ -274,6 +277,53 @@ fn draw_reset_modal(f: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(lines)
             .wrap(Wrap { trim: true })
             .block(tabs::panel("BUDGET".into(), t)),
+        rect,
+    );
+}
+
+/// The speed test spends data, so it asks first and names what it will spend.
+/// The numbers come from the same clamped config the run reads.
+fn draw_speed_modal(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let w = area.width.min(58);
+    let h = 7.min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let cfg = app.speed_cfg.clone().sanitised();
+    let spend = if cfg.download_only {
+        format!("up to {} MB down, no upload", cfg.max_mb)
+    } else {
+        format!("up to {} MB down + {} MB up", cfg.max_mb, cfg.upload_mb)
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            "run a speed test?",
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "through this host, not the router",
+            Style::default().fg(t.dim),
+        )),
+        Line::from(Span::styled(spend, Style::default().fg(t.dim))),
+        Line::from(Span::styled(
+            "counts in the router's month total",
+            Style::default().fg(t.dim),
+        )),
+        Line::from(Span::styled(
+            "Enter run   ·   Esc cancel",
+            Style::default().fg(t.dim),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(tabs::panel("SPEED TEST".into(), t)),
         rect,
     );
 }
@@ -2658,5 +2708,148 @@ mod tests {
             status.contains("q quit"),
             "global keys must survive: {status}"
         );
+    }
+
+    #[test]
+    fn a_finished_test_is_drawn_with_its_radio_and_its_window() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Network);
+        app.speed = Some(crate::speedtest::SpeedResult {
+            download_bps: 94_000_000.0,
+            upload_bps: 12_000_000.0,
+            ttfb_ms: 18.0,
+            down_bytes: 50_000_000,
+            up_bytes: 10_000_000,
+            down_secs: 4.2,
+            up_secs: 6.6,
+            download_url: "http://x/".into(),
+            upload_url: "http://y/".into(),
+            partial: false,
+            short_window: false,
+            note: None,
+            at_unix: crate::app::unix_now(),
+        });
+        app.speed_context = Some(crate::app::SpeedContext {
+            net_type: "LTE".into(),
+            band_at_start: Some("LTE B3".into()),
+            band: "LTE B3".into(),
+            rsrp_dbm: Some(-92.0),
+            sinr_db: Some(11.0),
+            // The device counter is bytes per second: 11.5 MB/s is 92 Mbps and
+            // must be rendered through `bps`, never through `bitrate`.
+            router_peak_dl: 11_500_000,
+            router_peak_ul: 2_000_000,
+        });
+        let text = render_to_string(&app, 120, 40);
+        assert!(text.contains("94.00 Mbps"), "{text}");
+        assert!(
+            text.contains("this host"),
+            "the direction must be on screen\n{text}"
+        );
+        assert!(text.contains("LTE B3"), "{text}");
+        assert!(
+            text.contains("4.2 s"),
+            "the window must be visible, not implied\n{text}"
+        );
+        assert!(
+            text.contains("peak device ↓ 92.00 Mbps"),
+            "the device peak is bytes and must go through bps\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_short_window_is_labelled_ramp_limited() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Network);
+        app.speed = Some(crate::speedtest::SpeedResult {
+            download_bps: 400_000_000.0,
+            down_secs: 0.9,
+            short_window: true,
+            ..crate::speedtest::SpeedResult::default()
+        });
+        let text = render_to_string(&app, 120, 40);
+        assert!(text.contains("ramp-limited"), "{text}");
+    }
+
+    #[test]
+    fn a_running_test_shows_progress_not_a_stale_result() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Network);
+        let (run, _, _) = app.start_speed_test();
+        app.on_speed_progress(
+            run,
+            crate::speedtest::SpeedProgress {
+                phase: crate::speedtest::Phase::Upload,
+                bytes: 4_000_000,
+                rate_bps: 24_000_000.0,
+            },
+        );
+        let text = render_to_string(&app, 120, 40);
+        assert!(text.contains("uploading"), "{text}");
+        assert!(text.contains("24.00 Mbps"), "{text}");
+    }
+
+    /// `network_tab` returns early when `snap` is None; the speed panel must be
+    /// drawn before that guard, or a finished test disappears with the router.
+    #[test]
+    fn the_speed_panel_renders_before_the_first_snapshot() {
+        let mut app = App::new(
+            crate::theme::Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.select_tab(Tab::Network);
+        app.speed = Some(crate::speedtest::SpeedResult {
+            download_bps: 20_000_000.0,
+            ..crate::speedtest::SpeedResult::default()
+        });
+        let text = render_to_string(&app, 120, 40);
+        assert!(text.contains("20.00 Mbps"), "{text}");
+    }
+
+    #[test]
+    fn the_panel_survives_eighty_by_twenty_four() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Network);
+        app.speed = Some(crate::speedtest::SpeedResult {
+            download_bps: 94_000_000.0,
+            ..crate::speedtest::SpeedResult::default()
+        });
+        let text = render_to_string(&app, 80, 24);
+        assert!(text.contains("PING"), "{text}");
+        assert!(text.contains("94.00 Mbps"), "{text}");
+    }
+
+    #[test]
+    fn the_dashboard_carries_one_test_line() {
+        let mut app = fixture_app();
+        app.speed = Some(crate::speedtest::SpeedResult {
+            download_bps: 94_000_000.0,
+            upload_bps: 12_000_000.0,
+            down_secs: 4.2,
+            at_unix: crate::app::unix_now(),
+            ..crate::speedtest::SpeedResult::default()
+        });
+        let text = render_to_string(&app, 130, 40);
+        assert!(text.contains("test"), "{text}");
+        assert!(text.contains("94.00 Mbps"), "{text}");
+    }
+
+    #[test]
+    fn the_help_lists_the_speed_key() {
+        let rows = crate::ui::help::rows();
+        assert!(
+            rows.iter().any(|r| r.keys == "T"),
+            "the help must name the key T opens"
+        );
+    }
+
+    #[test]
+    fn age_label_counts_from_the_result_time() {
+        assert_eq!(crate::ui::tabs::age_label(1_000, 1_030), "30s ago");
+        assert_eq!(crate::ui::tabs::age_label(1_000, 1_600), "10m ago");
+        assert_eq!(crate::ui::tabs::age_label(1_000, 7_400), "1h ago");
     }
 }

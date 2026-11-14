@@ -9,6 +9,7 @@ use crate::theme::{GraphStyle, Theme};
 use crate::worker::PingOutcome;
 use crate::write::{parse_dns_pair, WriteIntent, WriteState};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub const HISTORY: usize = 120;
@@ -78,7 +79,7 @@ impl Tab {
                 "space tick · j/k · a apply · u undo · n preset · s save · x del · m mode · o nr · e report"
             }
             Tab::Traffic => "d edit DNS · D auto DNS · b reset budget · e report",
-            Tab::Network => "p ping host · e report",
+            Tab::Network => "p ping host · T speed test · e report",
             Tab::Clients => "j/k select · s sort · c copy mac · e report",
             Tab::Sms => "R read inbox",
             Tab::Device => "x dump json · b restart · R extras",
@@ -409,7 +410,41 @@ pub struct App {
     pub settings_open: bool,
     /// Where `w` writes the settings (set by the CLI, never guessed here).
     pub config_path: Option<std::path::PathBuf>,
+    // --- speed test ---
+    pub speed_cfg: crate::config::Speedtest,
+    pub speed_running: bool,
+    pub speed_confirm: bool,
+    /// Incremented per run; every event carries the id it belongs to.
+    pub speed_run: u64,
+    /// Replaced on every run, so one run's cancellation cannot reach another.
+    pub speed_cancel: std::sync::Arc<AtomicBool>,
+    /// When the current test started, for the watchdog only.
+    pub speed_started: Option<Instant>,
+    pub speed: Option<crate::speedtest::SpeedResult>,
+    pub speed_progress: Option<crate::speedtest::SpeedProgress>,
+    pub speed_error: Option<String>,
+    pub speed_context: Option<SpeedContext>,
+    speed_band_at_start: Option<String>,
+    speed_peak_dl: u64,
+    speed_peak_ul: u64,
     started: Instant,
+}
+
+/// The radio values around a test, so a number is never shown without the
+/// signal that carried it, and a band change mid-test cannot hide.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeedContext {
+    pub net_type: String,
+    /// The band when the test started, and the band when it finished. They
+    /// differ when the CPE moved during the window, and both are shown.
+    pub band_at_start: Option<String>,
+    pub band: String,
+    pub rsrp_dbm: Option<f32>,
+    pub sinr_db: Option<f32>,
+    /// Peak rates the device itself reported while the test ran, in bytes per
+    /// second (`src/model.rs:74`). A consistency check, not proof.
+    pub router_peak_dl: u64,
+    pub router_peak_ul: u64,
 }
 
 impl App {
@@ -525,6 +560,19 @@ impl App {
             events_back: 0,
             settings_open: false,
             config_path: None,
+            speed_cfg: crate::config::Speedtest::default(),
+            speed_running: false,
+            speed_confirm: false,
+            speed_run: 0,
+            speed_cancel: std::sync::Arc::new(AtomicBool::new(false)),
+            speed_started: None,
+            speed: None,
+            speed_progress: None,
+            speed_error: None,
+            speed_context: None,
+            speed_band_at_start: None,
+            speed_peak_dl: 0,
+            speed_peak_ul: 0,
             started: Instant::now(),
         }
     }
@@ -557,6 +605,12 @@ impl App {
         }
         while self.history_ul.len() > HISTORY {
             self.history_ul.pop_front();
+        }
+        // What the device itself reported while a test ran: a consistency check
+        // on the number the test measured, not proof of it.
+        if self.speed_running {
+            self.speed_peak_dl = self.speed_peak_dl.max(snap.traffic.dl_rate_bytes);
+            self.speed_peak_ul = self.speed_peak_ul.max(snap.traffic.ul_rate_bytes);
         }
         let push = |q: &mut VecDeque<f64>, v: Option<f32>| {
             if let Some(x) = v {
@@ -1098,6 +1152,143 @@ impl App {
         self.notice = Some((msg.into(), Instant::now()));
     }
 
+    /// The UI never holds an unbounded limit: the confirmation modal and the
+    /// run itself read the same clamped values.
+    pub fn set_speed_cfg(&mut self, cfg: crate::config::Speedtest) {
+        self.speed_cfg = cfg.sanitised();
+    }
+
+    /// `T` asks once: the test spends the user's data.
+    pub fn begin_speed_test(&mut self) -> bool {
+        if self.speed_running {
+            self.note("a speed test is already running");
+            return false;
+        }
+        self.speed_confirm = true;
+        true
+    }
+
+    /// Starts a run and hands back what the worker needs: the id to tag its
+    /// events with, the clamped config, and a flag no earlier run can touch.
+    pub fn start_speed_test(
+        &mut self,
+    ) -> (u64, crate::config::Speedtest, std::sync::Arc<AtomicBool>) {
+        self.speed_confirm = false;
+        self.speed_run += 1;
+        self.speed_cancel = std::sync::Arc::new(AtomicBool::new(false));
+        self.speed_running = true;
+        self.speed_started = Some(Instant::now());
+        self.speed_error = None;
+        self.speed_peak_dl = 0;
+        self.speed_peak_ul = 0;
+        self.speed_band_at_start = self.snap.as_ref().and_then(|s| s.signal.band.clone());
+        self.speed_progress = Some(crate::speedtest::SpeedProgress {
+            phase: crate::speedtest::Phase::Download,
+            bytes: 0,
+            rate_bps: 0.0,
+        });
+        (
+            self.speed_run,
+            self.speed_cfg.clone(),
+            std::sync::Arc::clone(&self.speed_cancel),
+        )
+    }
+
+    /// `Esc` during a run: both readers stop at their next chunk, and the
+    /// thread still reports what it already measured.
+    pub fn cancel_speed_test(&mut self) {
+        if self.speed_running {
+            self.speed_cancel.store(true, Ordering::Relaxed);
+            self.note("stopping the speed test");
+        }
+    }
+
+    /// A thread that dies without answering must not leave the panel spinning.
+    /// The budget is `speedtest::worst_case_secs`, the same sum the agent's
+    /// timeouts are built from: a shorter one would call a live thread dead.
+    pub fn speed_watchdog(&mut self) {
+        let Some(started) = self.speed_started else {
+            return;
+        };
+        let limit = Duration::from_secs(crate::speedtest::worst_case_secs(&self.speed_cfg));
+        if self.speed_running && started.elapsed() > limit {
+            self.speed_running = false;
+            self.speed_started = None;
+            self.speed_progress = None;
+            let msg = "the test stopped answering; try again".to_string();
+            self.speed_error = Some(msg.clone());
+            self.note(msg);
+        }
+    }
+
+    pub fn on_speed_progress(&mut self, run: u64, p: crate::speedtest::SpeedProgress) {
+        if self.speed_running && run == self.speed_run {
+            self.speed_progress = Some(p);
+        }
+    }
+
+    pub fn on_speed_done(&mut self, run: u64, out: Result<crate::speedtest::SpeedResult, String>) {
+        if run != self.speed_run {
+            // A run that was replaced by the watchdog still reports; its
+            // numbers are stale by definition.
+            return;
+        }
+        self.speed_running = false;
+        self.speed_started = None;
+        self.speed_progress = None;
+        match out {
+            Ok(mut r) => {
+                if self.speed_peak_dl > 0 {
+                    let seen =
+                        crate::speedtest::rate_bps(self.speed_peak_dl, Duration::from_secs(1));
+                    if r.download_bps > 20.0 * seen {
+                        // Formatted here, not through the UI helper: `app` must
+                        // not depend on a render module to build a note.
+                        r.note = Some(format!(
+                            "the device counter did not see this rate: {:.1} Mbps against {:.1} Mbps it reported",
+                            r.download_bps / 1e6,
+                            seen / 1e6
+                        ));
+                    }
+                }
+                let label = if r.partial {
+                    "speed test, partial"
+                } else {
+                    "speed test"
+                };
+                // `*_bps` is bits per second, so this division is the Mbps one.
+                self.note(format!(
+                    "{label}: down {:.1} Mbps · up {:.1} Mbps",
+                    r.download_bps / 1e6,
+                    r.upload_bps / 1e6
+                ));
+                self.log(LogLevel::Info, "speed test finished");
+                self.speed = Some(r);
+                self.speed_context = self.radio_now();
+            }
+            Err(e) => {
+                self.speed_error = Some(e.clone());
+                self.log(LogLevel::Warn, format!("speed test failed: {e}"));
+                self.note(format!("speed test failed: {e}"));
+            }
+        }
+    }
+
+    fn radio_now(&self) -> Option<SpeedContext> {
+        let s = self.snap.as_ref()?;
+        Some(SpeedContext {
+            net_type: s.connection.net_type.clone(),
+            // `band` is the label ("LTE B3"); `earfcn` is the channel number and
+            // would print a bare integer where a band belongs (`src/model.rs:35`).
+            band_at_start: self.speed_band_at_start.clone(),
+            band: s.signal.band.clone().unwrap_or_else(|| "-".into()),
+            rsrp_dbm: s.signal.rsrp_dbm,
+            sinr_db: s.signal.sinr_db,
+            router_peak_dl: self.speed_peak_dl,
+            router_peak_ul: self.speed_peak_ul,
+        })
+    }
+
     pub fn set_ping(&mut self, outcome: PingOutcome) {
         let level = if outcome.ok {
             LogLevel::Info
@@ -1233,13 +1424,24 @@ fn ip_key(ip: &str) -> (u32, u32, u32, u32) {
     )
 }
 
+/// Seconds since the epoch, for a result's age. Clock jumps are not an error.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The frozen snapshot every render and state test starts from. Public so the
+/// UI tests draw the same app the state tests build.
+#[cfg(test)]
+pub(crate) fn fixture_snap() -> crate::model::Snapshot {
+    serde_json::from_str(include_str!("../fixtures/sample-snapshot.json")).expect("fixture")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn fixture_snap() -> crate::model::Snapshot {
-        serde_json::from_str(include_str!("../fixtures/sample-snapshot.json")).expect("fixture")
-    }
 
     #[test]
     fn a_successful_apply_remembers_the_mask_it_replaced() {
@@ -2217,5 +2419,135 @@ mod tests {
         app.on_snapshot(snap, 2_000);
         assert_eq!(app.usage.days.len(), 1, "the history survives a new router");
         assert_eq!(app.usage.router, "10.0.0.2");
+    }
+
+    fn fixture_app() -> App {
+        // `Theme::get` is the public door (src/theme.rs:208); there is no by_id.
+        App::new(
+            crate::theme::Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        )
+    }
+
+    #[test]
+    fn a_finished_test_keeps_the_radio_it_ran_on() {
+        let mut app = fixture_app();
+        app.on_snapshot(fixture_snap(), 2000);
+        let (run, _, _) = app.start_speed_test();
+        assert!(app.speed_running);
+        app.on_speed_done(
+            run,
+            Ok(crate::speedtest::SpeedResult {
+                download_bps: 94_000_000.0,
+                upload_bps: 12_000_000.0,
+                ttfb_ms: 18.0,
+                down_bytes: 50_000_000,
+                up_bytes: 10_000_000,
+                down_secs: 4.2,
+                up_secs: 6.6,
+                download_url: "http://x/".into(),
+                upload_url: "http://y/".into(),
+                partial: false,
+                short_window: false,
+                note: None,
+                at_unix: 1_700_000_000,
+            }),
+        );
+        assert!(!app.speed_running);
+        assert_eq!(app.speed.as_ref().unwrap().download_bps, 94_000_000.0);
+        let ctx = app.speed_context.as_ref().expect("radio snapshot");
+        assert!(!ctx.net_type.is_empty());
+        let band = app
+            .snap
+            .as_ref()
+            .unwrap()
+            .signal
+            .band
+            .clone()
+            .unwrap_or_else(|| "-".into());
+        assert_eq!(ctx.band, band);
+    }
+
+    #[test]
+    fn a_second_t_is_refused_while_a_test_runs() {
+        let mut app = fixture_app();
+        app.start_speed_test();
+        assert!(!app.begin_speed_test());
+        assert!(!app.speed_confirm, "no second confirmation appears");
+    }
+
+    #[test]
+    fn the_app_clamps_the_limits_it_holds() {
+        // The clamp is the config crate's, and the app stores its result: 5_000
+        // becomes 500, not the default 60. One rule, one place.
+        let mut app = fixture_app();
+        app.set_speed_cfg(crate::config::Speedtest {
+            max_mb: 5_000,
+            upload_mb: 0,
+            ..crate::config::Speedtest::default()
+        });
+        assert_eq!(app.speed_cfg.max_mb, 500);
+        assert_eq!(app.speed_cfg.upload_mb, 1);
+    }
+
+    #[test]
+    fn a_result_from_an_older_run_is_ignored() {
+        let mut app = fixture_app();
+        let (old, _, _) = app.start_speed_test();
+        app.on_speed_done(old, Err("cancelled".into()));
+        let (current, _, _) = app.start_speed_test();
+        // A late answer from the abandoned run must not clear the live one.
+        app.on_speed_done(old, Err("late".into()));
+        assert!(app.speed_running, "run {current} is still measuring");
+        assert_eq!(app.speed_run, current);
+    }
+
+    #[test]
+    fn every_run_gets_its_own_cancel_flag() {
+        let mut app = fixture_app();
+        let (first, _, flag) = app.start_speed_test();
+        app.cancel_speed_test();
+        assert!(flag.load(Ordering::Relaxed));
+        let (second, _, fresh) = app.start_speed_test();
+        assert_ne!(first, second);
+        assert!(
+            !fresh.load(Ordering::Relaxed),
+            "the new run is not cancelled by the old flag"
+        );
+        assert!(flag.load(Ordering::Relaxed), "the old flag stays set");
+    }
+
+    #[test]
+    fn a_test_that_outlives_its_budget_is_cleared() {
+        let mut app = fixture_app();
+        app.start_speed_test();
+        let past = crate::speedtest::worst_case_secs(&app.speed_cfg) + 1;
+        app.speed_started = Instant::now().checked_sub(Duration::from_secs(past));
+        app.speed_watchdog();
+        assert!(!app.speed_running);
+        assert!(app.speed_error.is_some());
+    }
+
+    #[test]
+    fn a_rate_the_device_never_saw_is_flagged() {
+        let mut app = fixture_app();
+        app.on_snapshot(fixture_snap(), 2000);
+        let (run, _, _) = app.start_speed_test();
+        // The device reports bytes per second; 100 kB/s is 0.8 Mbps. A measured
+        // 94 Mbps cannot have crossed a link the counter never saw.
+        app.speed_peak_dl = 100_000;
+        app.on_speed_done(
+            run,
+            Ok(crate::speedtest::SpeedResult {
+                download_bps: 94_000_000.0,
+                down_secs: 4.2,
+                ..crate::speedtest::SpeedResult::default()
+            }),
+        );
+        let note = app.speed.as_ref().unwrap().note.clone().unwrap_or_default();
+        assert!(note.contains("did not see"), "{note}");
     }
 }

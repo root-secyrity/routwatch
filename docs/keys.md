@@ -51,6 +51,7 @@ those two sections.
 | `b` | Traffic | reset the budget baseline (asks first; the day table and the router counters stay) |
 | `j` `k` `Enter` | DNS | choose a preset · apply it (then `y`) |
 | `t` | everywhere | next colour theme (nine: eight palettes plus `auto`, which follows your desktop) |
+| `T` | Network | speed test through this host (asks first; spends data) |
 | `s` `c` | Clients | sort by name/ip/band/time · copy the MAC |
 | `e` | SMS / Device | read the extras: inbox, SIM, data switch |
 | `e` | every other section | write a Markdown report to `~/.local/share/routwatch/reports/` |

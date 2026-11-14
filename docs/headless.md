@@ -46,6 +46,16 @@ endpoint field names, redacted snapshot - as `0600` in the current directory.
 `dump` follows the same rule for its output (json or text): `0600` inside a
 `0700` directory, and an existing file is replaced only with `--force`.
 
+`routwatch speedtest` measures the path from this machine through the CPE, in
+plain HTTP: it is not the router measuring its own WAN link, and it spends data
+(60 MB down and 10 MB up with the default bounds) that also counts in the
+router's month total. It needs no router session, so it works on a machine that
+never logged in. `--dry-run` prints the plan and sends nothing, `--json` prints
+that same plan there and the result otherwise, `--download-only` skips the
+upload, `--max-mb`, `--upload-mb` and `--seconds` change the bounds (clamped the
+same way the TUI clamps them), and a real run needs `--allow-data`, which exits
+`3` without it.
+
 If you are publishing the output of `dump` somewhere else, prefer
 `dump --redact` over editing a raw file by hand; see
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for what a public issue may contain.

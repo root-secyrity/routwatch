@@ -207,6 +207,30 @@ enum Cmd {
         #[arg(long)]
         waybar: bool,
     },
+    /// Download/upload test from this host through the CPE (plain HTTP)
+    Speedtest {
+        #[arg(long)]
+        json: bool,
+        /// Print the plan and exit without sending a byte
+        #[arg(long)]
+        dry_run: bool,
+        /// Confirm the data this run will spend
+        #[arg(long)]
+        allow_data: bool,
+        /// Skip the upload
+        #[arg(long)]
+        download_only: bool,
+        #[arg(long, value_name = "URL")]
+        download_url: Option<String>,
+        #[arg(long, value_name = "URL")]
+        upload_url: Option<String>,
+        #[arg(long)]
+        seconds: Option<u64>,
+        #[arg(long)]
+        max_mb: Option<u64>,
+        #[arg(long)]
+        upload_mb: Option<u64>,
+    },
     /// Sample the router into a recording file (.rwr, one frame per line)
     Record {
         /// Destination file (default: $XDG_DATA_HOME/routwatch/recordings/<date>.rwr)
@@ -309,7 +333,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
     // to the router keeps the strict loader (and its 0600 check).
     let offline = matches!(
         cli.cmd,
-        Some(Cmd::Preview { .. }) | Some(Cmd::Replay { .. })
+        Some(Cmd::Preview { .. }) | Some(Cmd::Replay { .. }) | Some(Cmd::Speedtest { .. })
     );
     let cfg = if offline {
         config::load_or_default(cli.config.clone())?
@@ -912,6 +936,83 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 Err(e) => Err(e),
             }
         }
+        Some(Cmd::Speedtest {
+            json,
+            dry_run,
+            allow_data,
+            download_only,
+            download_url,
+            upload_url,
+            seconds,
+            max_mb,
+            upload_mb,
+        }) => {
+            let mut plan = cfg.app.speedtest.clone();
+            if let Some(v) = download_url {
+                plan.download_url = v;
+            }
+            if let Some(v) = upload_url {
+                plan.upload_url = v;
+            }
+            if let Some(v) = seconds {
+                plan.duration_secs = v;
+            }
+            if let Some(v) = max_mb {
+                plan.max_mb = v;
+            }
+            if let Some(v) = upload_mb {
+                plan.upload_mb = v;
+            }
+            if download_only {
+                plan.download_only = true;
+            }
+            // The same clamp the TUI applies, so a CLI typo costs a retry.
+            let plan = plan.sanitised();
+            if dry_run {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&plan).unwrap());
+                } else {
+                    println!(
+                        "speedtest: {} s, max {} MB down, {} MB up (download only: {})\n  down {}\n  up   {}",
+                        plan.duration_secs,
+                        plan.max_mb,
+                        plan.upload_mb,
+                        plan.download_only,
+                        plan.download_url,
+                        plan.upload_url
+                    );
+                }
+                return Ok(());
+            }
+            if !allow_data {
+                // The same rule as a write: name the flag instead of spending
+                // data because the command was typed without thinking.
+                eprintln!(
+                    "speedtest spends data: pass --allow-data to run it, or --dry-run to see the plan"
+                );
+                return Err(ApiError::Quiet(3));
+            }
+            let r = routwatch::speedtest::run(
+                &plan,
+                &std::sync::atomic::AtomicBool::new(false),
+                |_| {},
+            )
+            .map_err(ApiError::Network)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                println!(
+                    "download {:.1} Mbps · upload {:.1} Mbps · ttfb {:.0} ms",
+                    r.download_bps / 1e6,
+                    r.upload_bps / 1e6,
+                    r.ttfb_ms
+                );
+                if let Some(note) = &r.note {
+                    println!("note: {note}");
+                }
+            }
+            Ok(())
+        }
         Some(Cmd::Ping { host, count, json }) => {
             let output = std::process::Command::new("ping")
                 .args(worker::ping_args(count, &host))
@@ -1157,6 +1258,8 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
         app.band_presets = presets.clone();
     }
     app.report_identity = cli.report_identity || cfg.app.report_identity;
+    // One clamp, read by both the confirmation modal and the run itself.
+    app.set_speed_cfg(cfg.app.speedtest.clone());
     app.config_path = cli.config.clone();
     Ok(app)
 }
@@ -1402,6 +1505,8 @@ fn drain(app: &mut App, rx: &Receiver<Ev>) {
             Ev::Error(e) => app.on_error(e),
             Ev::Write(state) => app.settle_write(state),
             Ev::Ping(outcome) => app.set_ping(outcome),
+            Ev::SpeedProgress(id, p) => app.on_speed_progress(id, p),
+            Ev::SpeedDone(id, res) => app.on_speed_done(id, res.map(|b| *b)),
             Ev::Extras(extras) => app.on_extras(*extras),
             Ev::Phase { phase, state } => app.on_phase(phase, state),
             Ev::Notice(msg) => {
@@ -1410,6 +1515,9 @@ fn drain(app: &mut App, rx: &Receiver<Ev>) {
             }
         }
     }
+    // Every frame checks the budget: a thread that died without answering must
+    // not leave the panel spinning.
+    app.speed_watchdog();
 }
 
 fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
@@ -1484,6 +1592,23 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
     }
 
     // A modal owns the keyboard: only its own answers are accepted.
+    // The speed test spends data, so it asks once. Placed before the budget
+    // reset so the two modals never read the same key.
+    if app.speed_confirm {
+        match k.code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let (id, cfg, cancel) = app.start_speed_test();
+                // The clamped copy the modal printed, and the flag the thread
+                // polls: no third source of truth.
+                let _ = tx.send(WorkerCmd::SpeedTest(cfg, id, cancel));
+                app.note("speed test started · its bytes count in the router's month total");
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => app.speed_confirm = false,
+            _ => {}
+        }
+        return;
+    }
+
     let confirming = matches!(app.write, WriteState::Confirming(_));
     // A write in flight owns the exit keys too: quitting mid-write leaves the
     // router with a change nobody read back.
@@ -1552,6 +1677,13 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         return;
     }
+    // `Esc` stops a running test. After every overlay block, so an open modal
+    // keeps its own Esc, and guarded on input so a typed name is not cancelled
+    // by the same key.
+    if app.speed_running && k.code == KeyCode::Esc && app.input.is_none() {
+        app.cancel_speed_test();
+        return;
+    }
     // `u` belongs to the verdict it undoes, so it is read before the banner that
     // swallows every other key while a write is settled.
     if app.tab == Tab::Bands && matches!(normalise_key(k.code), KeyCode::Char('u')) {
@@ -1617,6 +1749,10 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             app.events_open = true;
             app.events_paused = false;
             app.events_back = 0;
+        }
+        // `T` is a deliberate two-key gesture: the test spends the user's data.
+        KeyCode::Char('t') if shift && app.tab == Tab::Network => {
+            app.begin_speed_test();
         }
         // The theme is an appearance key: it answers from any section, and the
         // settings overlay keeps its own `t` so the row there still works.
@@ -2057,11 +2193,14 @@ mod key_tests {
     use super::handle_key;
     use super::normalise_key;
     use super::RestoreOnDrop;
+    use super::WorkerCmd;
     use super::TAB_HELP;
     use ratatui::crossterm::event::KeyCode;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
     use routwatch::app::{App, Tab, View};
     use routwatch::ui::tab_from_key;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc::channel;
 
     #[test]
     fn the_feed_key_owns_j_k_space_and_esc_only_while_it_is_open() {
@@ -2372,5 +2511,86 @@ mod key_tests {
 
         // the normalised form is what the tab lookup sees, so digits still map
         assert!(tab_from_key('9').is_some());
+    }
+
+    #[test]
+    fn shift_t_on_network_asks_before_spending_data() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        let before = app.theme.id.clone();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::SHIFT),
+            &tx,
+        );
+        assert!(app.speed_confirm, "T must ask first");
+        assert_eq!(app.theme.id, before, "T must not be read as the theme key");
+        assert!(app.input.is_none());
+    }
+
+    #[test]
+    fn shift_t_outside_network_still_cycles_the_theme() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        let before = app.theme.id.clone();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::SHIFT),
+            &tx,
+        );
+        assert_ne!(app.theme.id, before);
+    }
+
+    #[test]
+    fn escape_during_a_test_asks_the_thread_to_stop_and_sends_nothing_else() {
+        let (tx, rx) = channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        app.start_speed_test();
+        handle_key(&mut app, key(KeyCode::Esc), &tx);
+        assert!(app.speed_cancel.load(Ordering::Relaxed));
+        assert!(
+            app.speed_running,
+            "the panel waits for the thread's last event"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelling is a flag, not a command"
+        );
+    }
+
+    #[test]
+    fn escape_with_a_modal_open_closes_the_modal_not_the_test() {
+        // The cancel arm sits after every overlay, so an open modal keeps its Esc.
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        app.start_speed_test();
+        app.reset_confirm = true;
+        handle_key(&mut app, key(KeyCode::Esc), &tx);
+        assert!(!app.reset_confirm, "the modal took the key");
+        assert!(
+            !app.speed_cancel.load(Ordering::Relaxed),
+            "the test was not cancelled"
+        );
+    }
+
+    #[test]
+    fn enter_in_the_confirm_modal_sends_one_speed_command() {
+        let (tx, rx) = channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        app.begin_speed_test();
+        handle_key(&mut app, key(KeyCode::Enter), &tx);
+        assert!(!app.speed_confirm);
+        assert!(app.speed_running);
+        match rx.try_recv() {
+            Ok(WorkerCmd::SpeedTest(cfg, id, _)) => {
+                assert_eq!(id, app.speed_run);
+                assert_eq!(cfg.max_mb, app.speed_cfg.max_mb);
+            }
+            other => panic!("expected one SpeedTest command, got {other:?}"),
+        }
     }
 }
