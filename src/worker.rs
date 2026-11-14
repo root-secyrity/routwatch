@@ -12,7 +12,9 @@ use crate::model::Snapshot;
 use crate::router::bands::BandPayload;
 use crate::router::HuaweiClient;
 use crate::write::{apply_bands, apply_dns, WriteIntent, WriteState};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -39,6 +41,9 @@ pub enum Cmd {
     },
     /// Local `ping` - never HTTP, runs on its own short-lived thread.
     Ping(String),
+    /// A throughput test through this host: the config, its run id, and the
+    /// flag `Esc` sets. Runs on its own thread, never on the router thread.
+    SpeedTest(crate::config::Speedtest, u64, Arc<AtomicBool>),
     /// Lazily fetch PIN / mobile-data / SMS inbox for the SMS and Device tabs.
     Extras,
     /// Restart the router. Only sent after a typed confirmation.
@@ -58,6 +63,10 @@ pub enum Ev {
     /// Intermediate and final write states (Pending → Verifying → Success/Failed).
     Write(WriteState),
     Ping(PingOutcome),
+    /// Intermediate throughput while a test runs, tagged with its run id.
+    SpeedProgress(u64, crate::speedtest::SpeedProgress),
+    /// The finished test, or the reason it stopped.
+    SpeedDone(u64, Result<Box<crate::speedtest::SpeedResult>, String>),
     /// PIN / mobile-data / inbox, fetched on demand.
     Extras(Box<crate::model::DeviceExtras>),
     /// One endpoint read inside the current scan: what the header shows.
@@ -181,6 +190,31 @@ fn spawn_ping(host: String, ev_tx: Sender<Ev>) {
     });
 }
 
+/// Run the transfer off both the UI thread and the router thread: a test can
+/// last a minute and must not delay a poll or a redraw. `id` comes back on
+/// every event, so a late answer can be recognised and dropped.
+fn spawn_speed(cfg: crate::config::Speedtest, id: u64, ev_tx: Sender<Ev>, cancel: Arc<AtomicBool>) {
+    let tx = ev_tx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("routwatch-speed".into())
+        .spawn(move || {
+            // read_for and the upload meter already emit at most every 250 ms;
+            // throttling again here only discarded ticks.
+            let out = crate::speedtest::run(&cfg, &cancel, |p| {
+                let _ = tx.send(Ev::SpeedProgress(id, p));
+            });
+            let _ = tx.send(Ev::SpeedDone(id, out.map(Box::new)));
+        });
+    // A failed spawn must not take the router thread down with it; the UI gets
+    // an answer it can render instead of a silent forever-running test.
+    if let Err(e) = spawned {
+        let _ = ev_tx.send(Ev::SpeedDone(
+            id,
+            Err(format!("could not start the test thread: {e}")),
+        ));
+    }
+}
+
 /// Backoff ladder for a lost session (plan §4.1): 2/5/10/20s inside a 60s window.
 const BACKOFF: [u64; 4] = [2, 5, 10, 20];
 
@@ -253,6 +287,10 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             }
             Ok(Cmd::Ping(host)) => {
                 spawn_ping(host, ev_tx.clone());
+                continue;
+            }
+            Ok(Cmd::SpeedTest(cfg, id, cancel)) => {
+                spawn_speed(cfg, id, ev_tx.clone(), cancel);
                 continue;
             }
             Ok(Cmd::Extras) => {
@@ -475,5 +513,38 @@ rtt min/avg/max/mdev = 12.100/12.400/12.800/0.300 ms\n";
         let p = parse_ping("10.0.0.2", dead);
         assert!(!p.ok);
         assert_eq!(p.avg_ms, None);
+    }
+
+    /// The thread, the run id, the events and the result, driven against the
+    /// mock: a bare mpsc round-trip would pass even if `run` ignored the
+    /// command.
+    #[test]
+    fn a_speed_test_sends_its_result_through_the_event_channel() {
+        use crate::mock_cpe::{MockCpe, Profile};
+        let cpe = MockCpe::start(Profile::H122373);
+        let (tx, rx) = channel();
+        let cfg = crate::config::Speedtest {
+            download_url: format!("http://{}/__down?bytes={{bytes}}", cpe.addr()),
+            upload_url: format!("http://{}/__up", cpe.addr()),
+            duration_secs: 1,
+            max_mb: 5,
+            upload_mb: 1,
+            ..crate::config::Speedtest::default()
+        };
+        spawn_speed(cfg, 7, tx, Arc::new(AtomicBool::new(false)));
+        let mut seen = Vec::new();
+        loop {
+            let out = rx.recv_timeout(Duration::from_secs(15)).expect("an answer");
+            if let Ev::SpeedDone(id, res) = &out {
+                assert_eq!(*id, 7, "the answer carries the run it belongs to");
+                assert!(res.is_ok(), "{res:?}");
+                break;
+            }
+            seen.push(out);
+        }
+        assert!(
+            !seen.is_empty(),
+            "a five megabyte transfer through the mock emits progress"
+        );
     }
 }

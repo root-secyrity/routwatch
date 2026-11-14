@@ -1157,6 +1157,8 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
         app.band_presets = presets.clone();
     }
     app.report_identity = cli.report_identity || cfg.app.report_identity;
+    // One clamp, read by both the confirmation modal and the run itself.
+    app.set_speed_cfg(cfg.app.speedtest.clone());
     app.config_path = cli.config.clone();
     Ok(app)
 }
@@ -1402,6 +1404,8 @@ fn drain(app: &mut App, rx: &Receiver<Ev>) {
             Ev::Error(e) => app.on_error(e),
             Ev::Write(state) => app.settle_write(state),
             Ev::Ping(outcome) => app.set_ping(outcome),
+            Ev::SpeedProgress(id, p) => app.on_speed_progress(id, p),
+            Ev::SpeedDone(id, res) => app.on_speed_done(id, res.map(|b| *b)),
             Ev::Extras(extras) => app.on_extras(*extras),
             Ev::Phase { phase, state } => app.on_phase(phase, state),
             Ev::Notice(msg) => {
@@ -1410,6 +1414,9 @@ fn drain(app: &mut App, rx: &Receiver<Ev>) {
             }
         }
     }
+    // Every frame checks the budget: a thread that died without answering must
+    // not leave the panel spinning.
+    app.speed_watchdog();
 }
 
 fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
