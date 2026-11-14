@@ -9,6 +9,10 @@
 # When a new tag is cut, bump pkgver and refresh the checksum:
 #   updpkgsums
 #
+# 0.6.0: the checksum is pinned to the v0.6.0 tag archive, confirmed from two
+# endpoints (github.com archive and codeload, byte-identical) before the package
+# was built.
+#
 # 0.5.1: the checksum is pinned to the v0.5.1 tag archive, confirmed from two
 # endpoints (github.com archive and codeload, byte-identical) before the package
 # was built.
@@ -30,7 +34,7 @@
 # routwatch-git recipe) instead.
 
 pkgname=routwatch
-pkgver=0.5.1
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="Huawei LTE/5G CPE manager in the terminal - live signal, traffic, clients, bands and DNS"
 arch=('x86_64' 'aarch64')
