@@ -54,6 +54,11 @@ pub fn rows() -> Vec<KeyRow> {
             full: "ping a host from this machine, not through the router",
         },
         KeyRow {
+            keys: "T",
+            short: "speed test",
+            full: "download/upload test through this host (Network; spends data)",
+        },
+        KeyRow {
             keys: "P",
             short: "pause / resume polling",
             full: "pause / resume polling (capital P, from any section)",

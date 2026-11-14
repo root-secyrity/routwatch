@@ -1491,6 +1491,23 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
     }
 
     // A modal owns the keyboard: only its own answers are accepted.
+    // The speed test spends data, so it asks once. Placed before the budget
+    // reset so the two modals never read the same key.
+    if app.speed_confirm {
+        match k.code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let (id, cfg, cancel) = app.start_speed_test();
+                // The clamped copy the modal printed, and the flag the thread
+                // polls: no third source of truth.
+                let _ = tx.send(WorkerCmd::SpeedTest(cfg, id, cancel));
+                app.note("speed test started · its bytes count in the router's month total");
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => app.speed_confirm = false,
+            _ => {}
+        }
+        return;
+    }
+
     let confirming = matches!(app.write, WriteState::Confirming(_));
     // A write in flight owns the exit keys too: quitting mid-write leaves the
     // router with a change nobody read back.
@@ -1559,6 +1576,13 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         return;
     }
+    // `Esc` stops a running test. After every overlay block, so an open modal
+    // keeps its own Esc, and guarded on input so a typed name is not cancelled
+    // by the same key.
+    if app.speed_running && k.code == KeyCode::Esc && app.input.is_none() {
+        app.cancel_speed_test();
+        return;
+    }
     // `u` belongs to the verdict it undoes, so it is read before the banner that
     // swallows every other key while a write is settled.
     if app.tab == Tab::Bands && matches!(normalise_key(k.code), KeyCode::Char('u')) {
@@ -1624,6 +1648,10 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             app.events_open = true;
             app.events_paused = false;
             app.events_back = 0;
+        }
+        // `T` is a deliberate two-key gesture: the test spends the user's data.
+        KeyCode::Char('t') if shift && app.tab == Tab::Network => {
+            app.begin_speed_test();
         }
         // The theme is an appearance key: it answers from any section, and the
         // settings overlay keeps its own `t` so the row there still works.
@@ -2064,11 +2092,14 @@ mod key_tests {
     use super::handle_key;
     use super::normalise_key;
     use super::RestoreOnDrop;
+    use super::WorkerCmd;
     use super::TAB_HELP;
     use ratatui::crossterm::event::KeyCode;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
     use routwatch::app::{App, Tab, View};
     use routwatch::ui::tab_from_key;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc::channel;
 
     #[test]
     fn the_feed_key_owns_j_k_space_and_esc_only_while_it_is_open() {
@@ -2379,5 +2410,86 @@ mod key_tests {
 
         // the normalised form is what the tab lookup sees, so digits still map
         assert!(tab_from_key('9').is_some());
+    }
+
+    #[test]
+    fn shift_t_on_network_asks_before_spending_data() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        let before = app.theme.id.clone();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::SHIFT),
+            &tx,
+        );
+        assert!(app.speed_confirm, "T must ask first");
+        assert_eq!(app.theme.id, before, "T must not be read as the theme key");
+        assert!(app.input.is_none());
+    }
+
+    #[test]
+    fn shift_t_outside_network_still_cycles_the_theme() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        let before = app.theme.id.clone();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::SHIFT),
+            &tx,
+        );
+        assert_ne!(app.theme.id, before);
+    }
+
+    #[test]
+    fn escape_during_a_test_asks_the_thread_to_stop_and_sends_nothing_else() {
+        let (tx, rx) = channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        app.start_speed_test();
+        handle_key(&mut app, key(KeyCode::Esc), &tx);
+        assert!(app.speed_cancel.load(Ordering::Relaxed));
+        assert!(
+            app.speed_running,
+            "the panel waits for the thread's last event"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelling is a flag, not a command"
+        );
+    }
+
+    #[test]
+    fn escape_with_a_modal_open_closes_the_modal_not_the_test() {
+        // The cancel arm sits after every overlay, so an open modal keeps its Esc.
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        app.start_speed_test();
+        app.reset_confirm = true;
+        handle_key(&mut app, key(KeyCode::Esc), &tx);
+        assert!(!app.reset_confirm, "the modal took the key");
+        assert!(
+            !app.speed_cancel.load(Ordering::Relaxed),
+            "the test was not cancelled"
+        );
+    }
+
+    #[test]
+    fn enter_in_the_confirm_modal_sends_one_speed_command() {
+        let (tx, rx) = channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Network);
+        app.begin_speed_test();
+        handle_key(&mut app, key(KeyCode::Enter), &tx);
+        assert!(!app.speed_confirm);
+        assert!(app.speed_running);
+        match rx.try_recv() {
+            Ok(WorkerCmd::SpeedTest(cfg, id, _)) => {
+                assert_eq!(id, app.speed_run);
+                assert_eq!(cfg.max_mb, app.speed_cfg.max_mb);
+            }
+            other => panic!("expected one SpeedTest command, got {other:?}"),
+        }
     }
 }

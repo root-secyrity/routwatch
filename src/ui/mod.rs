@@ -139,6 +139,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.settings_open {
         draw_settings(f, area, app);
     }
+    if app.speed_confirm {
+        draw_speed_modal(f, area, app);
+    }
 
     // `sky` and `paper` own a panel fill. Applied last so it also covers the
     // modal's `Clear` cells, which otherwise fall back to the terminal default
@@ -274,6 +277,53 @@ fn draw_reset_modal(f: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(lines)
             .wrap(Wrap { trim: true })
             .block(tabs::panel("BUDGET".into(), t)),
+        rect,
+    );
+}
+
+/// The speed test spends data, so it asks first and names what it will spend.
+/// The numbers come from the same clamped config the run reads.
+fn draw_speed_modal(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let w = area.width.min(58);
+    let h = 7.min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let cfg = app.speed_cfg.clone().sanitised();
+    let spend = if cfg.download_only {
+        format!("up to {} MB down, no upload", cfg.max_mb)
+    } else {
+        format!("up to {} MB down + {} MB up", cfg.max_mb, cfg.upload_mb)
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            "run a speed test?",
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "through this host, not the router",
+            Style::default().fg(t.dim),
+        )),
+        Line::from(Span::styled(spend, Style::default().fg(t.dim))),
+        Line::from(Span::styled(
+            "counts in the router's month total",
+            Style::default().fg(t.dim),
+        )),
+        Line::from(Span::styled(
+            "Enter run   ·   Esc cancel",
+            Style::default().fg(t.dim),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(tabs::panel("SPEED TEST".into(), t)),
         rect,
     );
 }
@@ -2785,6 +2835,15 @@ mod tests {
         let text = render_to_string(&app, 130, 40);
         assert!(text.contains("test"), "{text}");
         assert!(text.contains("94.00 Mbps"), "{text}");
+    }
+
+    #[test]
+    fn the_help_lists_the_speed_key() {
+        let rows = crate::ui::help::rows();
+        assert!(
+            rows.iter().any(|r| r.keys == "T"),
+            "the help must name the key T opens"
+        );
     }
 
     #[test]
