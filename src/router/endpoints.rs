@@ -176,7 +176,9 @@ impl Cap {
     pub fn detail(&self) -> Option<String> {
         match self {
             Cap::Ok => None,
-            Cap::Unsupported(_) => Some("this firmware does not implement the endpoint".into()),
+            // The same sentence the UI shows for this error, so the report and the
+            // status bar cannot drift apart.
+            Cap::Unsupported(code) => Some(ApiError::Unsupported(*code).to_string()),
             Cap::Denied(_) => Some("reachable but refused for this session/user".into()),
             Cap::Failed(e) => Some(e.clone()),
         }
@@ -228,6 +230,20 @@ mod tests {
             Cap::from_err(&ApiError::Http(500)),
             Cap::Failed(_)
         ));
+    }
+
+    #[test]
+    fn detail_names_the_firmware_code() {
+        assert_eq!(
+            Cap::Unsupported(100003).detail().unwrap(),
+            "the firmware refused this request (100003 ERROR_NO_RIGHT)"
+        );
+        assert_eq!(
+            Cap::Unsupported(100002).detail().unwrap(),
+            "the firmware does not serve this request (100002 ERROR_NOT_SUPPORT)"
+        );
+        assert_eq!(Cap::Unsupported(100003).state(), "unsupported");
+        assert_eq!(Cap::Unsupported(100002).reason(), "firmware_error_100002");
     }
 
     #[test]

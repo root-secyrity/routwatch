@@ -1,39 +1,65 @@
-use thiserror::Error;
+use std::fmt;
 
 /// Every failure carries its class, so the UI can say what happened instead of
 /// showing an empty value. Derived from the router's own `<error><code>` bodies.
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+///
+/// 100003 means ERROR_NO_RIGHT, and this firmware also answers it for paths it
+/// does not serve (measured on WEBUI 11.0.2.1, 2026-11-10), so `classify` keeps
+/// it Unsupported and `Display` names the code without claiming a cause. That
+/// leaves `Denied` unreachable from `classify`; it stays for callers that know.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiError {
-    #[error("not supported by this firmware ({0})")]
     Unsupported(u32),
-    #[error("permission denied ({0})")]
     Denied(u32),
-    #[error("invalid request or session ({0})")]
     Invalid(u32),
-    #[error("router busy ({0})")]
     Busy(u32),
-    #[error("unknown router error ({0})")]
     Router(u32),
     /// A write the router did not accept, with the real reason (exit 1).
-    #[error("write failed: {0}")]
     WriteFailed(String),
-    #[error("http status {0}")]
     Http(u16),
-    #[error("network: {0}")]
     Network(String),
-    #[error("parse: {0}")]
     Parse(String),
-    #[error("authentication failed: {0}")]
     Auth(String),
-    #[error("config: {0}")]
     Config(String),
     /// Bad arguments or an unsupported value on the command line (exit 3).
-    #[error("{0}")]
     Usage(String),
     /// The command already printed its own verdict; only the exit code matters.
-    #[error("")]
     Quiet(i32),
 }
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiError::Unsupported(code) => match code_name(*code) {
+                Some("ERROR_NOT_SUPPORT") => write!(
+                    f,
+                    "the firmware does not serve this request ({} ERROR_NOT_SUPPORT)",
+                    code
+                ),
+                Some("ERROR_NO_RIGHT") => write!(
+                    f,
+                    "the firmware refused this request ({} ERROR_NO_RIGHT)",
+                    code
+                ),
+                _ => write!(f, "not supported by this firmware ({})", code),
+            },
+            ApiError::Denied(code) => write!(f, "permission denied ({})", code),
+            ApiError::Invalid(code) => write!(f, "invalid request or session ({})", code),
+            ApiError::Busy(code) => write!(f, "router busy ({})", code_with_name(*code)),
+            ApiError::Router(code) => write!(f, "unknown router error ({})", code),
+            ApiError::WriteFailed(reason) => write!(f, "write failed: {}", reason),
+            ApiError::Http(status) => write!(f, "http status {}", status),
+            ApiError::Network(reason) => write!(f, "network: {}", reason),
+            ApiError::Parse(reason) => write!(f, "parse: {}", reason),
+            ApiError::Auth(reason) => write!(f, "authentication failed: {}", reason),
+            ApiError::Config(reason) => write!(f, "config: {}", reason),
+            ApiError::Usage(text) => f.write_str(text),
+            ApiError::Quiet(_) => Ok(()),
+        }
+    }
+}
+
+impl std::error::Error for ApiError {}
 
 /// Map a Huawei `<code>` to a typed error.
 pub fn classify(code: u32) -> ApiError {
@@ -41,7 +67,8 @@ pub fn classify(code: u32) -> ApiError {
         100003 => ApiError::Unsupported(code),
         100005 => ApiError::Invalid(code), // ERROR_FORMAT_ERROR, not a denial
         125002 | 125003 => ApiError::Invalid(code),
-        100002 => ApiError::Busy(code),
+        100002 => ApiError::Unsupported(code), // ERROR_NOT_SUPPORT
+        100004 => ApiError::Busy(code),        // ERROR_BUSY
         _ => ApiError::Router(code),
     }
 }
@@ -69,6 +96,14 @@ pub fn code_name(code: u32) -> Option<&'static str> {
         .iter()
         .find(|(known, _)| *known == code)
         .map(|(_, name)| *name)
+}
+
+/// The code as the firmware numbers it, with its constant when one is published.
+fn code_with_name(code: u32) -> String {
+    match code_name(code) {
+        Some(name) => format!("{code} {name}"),
+        None => code.to_string(),
+    }
 }
 
 impl ApiError {
@@ -116,6 +151,86 @@ mod tests {
             ApiError::Invalid(100005),
             "100005 is ERROR_FORMAT_ERROR, not a denial"
         );
+        assert_eq!(
+            classify(100002),
+            ApiError::Unsupported(100002),
+            "100002 is ERROR_NOT_SUPPORT, not a busy router"
+        );
+        assert_eq!(
+            classify(100004),
+            ApiError::Busy(100004),
+            "100004 is ERROR_BUSY"
+        );
+        // 100003 means NO_RIGHT, but this firmware also answers it for paths it
+        // does not serve (measured 2026-11-10), so no single class is honest and
+        // it stays Unsupported until a measurement separates the two.
+        assert_eq!(classify(100003), ApiError::Unsupported(100003));
+    }
+
+    #[test]
+    fn display_names_the_code_beside_its_meaning() {
+        assert_eq!(
+            ApiError::Unsupported(100002).to_string(),
+            "the firmware does not serve this request (100002 ERROR_NOT_SUPPORT)"
+        );
+        assert_eq!(
+            ApiError::Unsupported(100003).to_string(),
+            "the firmware refused this request (100003 ERROR_NO_RIGHT)"
+        );
+        assert_eq!(
+            ApiError::Busy(100004).to_string(),
+            "router busy (100004 ERROR_BUSY)"
+        );
+    }
+
+    #[test]
+    fn display_stays_numeric_for_codes_without_a_name() {
+        assert_eq!(
+            ApiError::Router(999999).to_string(),
+            "unknown router error (999999)"
+        );
+        assert_eq!(
+            ApiError::Unsupported(404).to_string(),
+            "not supported by this firmware (404)"
+        );
+        assert_eq!(
+            ApiError::Invalid(125002).to_string(),
+            "invalid request or session (125002)"
+        );
+    }
+
+    #[test]
+    fn display_keeps_the_text_of_every_other_variant() {
+        assert_eq!(
+            ApiError::Denied(100003).to_string(),
+            "permission denied (100003)"
+        );
+        assert_eq!(
+            ApiError::WriteFailed("no read-back".into()).to_string(),
+            "write failed: no read-back"
+        );
+        assert_eq!(ApiError::Http(500).to_string(), "http status 500");
+        assert_eq!(
+            ApiError::Network("timeout".into()).to_string(),
+            "network: timeout"
+        );
+        assert_eq!(
+            ApiError::Parse("bad xml".into()).to_string(),
+            "parse: bad xml"
+        );
+        assert_eq!(
+            ApiError::Auth("wrong password".into()).to_string(),
+            "authentication failed: wrong password"
+        );
+        assert_eq!(
+            ApiError::Config("mode 0644".into()).to_string(),
+            "config: mode 0644"
+        );
+        assert_eq!(
+            ApiError::Usage("no such flag".into()).to_string(),
+            "no such flag"
+        );
+        assert_eq!(ApiError::Quiet(0).to_string(), "");
     }
 
     #[test]
