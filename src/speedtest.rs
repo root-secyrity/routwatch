@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use ureq::Agent;
 
 pub const CHUNK: usize = 64 * 1024;
 
@@ -163,6 +164,230 @@ pub fn read_for<R: Read>(
     ReadOutcome { bytes, secs, error }
 }
 
+/// Replace the `{bytes}` placeholder with the byte cap, so the server is asked
+/// for exactly what the reader will take. A URL without the placeholder is used
+/// as written.
+pub fn download_target(cfg: &Speedtest) -> String {
+    cfg.download_url
+        .replace("{bytes}", &(cfg.max_mb * 1_000_000).to_string())
+}
+
+/// The upload body, metered. It counts what left this host, stops when `Esc`
+/// asks, and times itself from the first byte written to the last, so connect,
+/// headers and the server's think time are not charged to the uplink.
+pub struct UploadMeter<'a> {
+    left: u64,
+    sent: u64,
+    cancel: &'a AtomicBool,
+    first: Option<Instant>,
+    last: Instant,
+    last_tick: Instant,
+    progress: &'a mut dyn FnMut(SpeedProgress),
+}
+
+impl<'a> UploadMeter<'a> {
+    pub fn new(
+        bytes: u64,
+        cancel: &'a AtomicBool,
+        progress: &'a mut dyn FnMut(SpeedProgress),
+    ) -> Self {
+        let now = Instant::now();
+        UploadMeter {
+            left: bytes,
+            sent: 0,
+            cancel,
+            first: None,
+            last: now,
+            last_tick: now,
+            progress,
+        }
+    }
+
+    pub fn sent(&self) -> u64 {
+        self.sent
+    }
+
+    /// The measured window, not the time `send` took.
+    pub fn secs(&self) -> f64 {
+        self.first
+            .map(|f| self.last.duration_since(f).as_secs_f64())
+            .unwrap_or(0.0)
+    }
+}
+
+impl Read for UploadMeter<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) || self.left == 0 {
+            return Ok(0);
+        }
+        let n = ((buf.len() as u64).min(self.left).min(CHUNK as u64)) as usize;
+        buf[..n].fill(0);
+        let now = Instant::now();
+        let start = *self.first.get_or_insert(now);
+        self.last = now;
+        self.left -= n as u64;
+        self.sent += n as u64;
+        if self.last_tick.elapsed() >= Duration::from_millis(250) {
+            self.last_tick = now;
+            (self.progress)(SpeedProgress {
+                phase: Phase::Upload,
+                bytes: self.sent,
+                rate_bps: rate_bps(self.sent, now.duration_since(start)),
+            });
+        }
+        Ok(n)
+    }
+}
+
+/// One full test: download to the byte cap or the time budget, then one upload
+/// unless the config skips it. Runs on a worker thread; `progress` is called
+/// from this thread. A transfer that fails after some bytes returns `Ok` with
+/// `partial: true` and the reason in `note`, because a fifteen second
+/// measurement is still a measurement.
+pub fn run(
+    cfg: &Speedtest,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(SpeedProgress),
+) -> Result<SpeedResult, String> {
+    let cfg = cfg.sanitised();
+    let at_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let agent: Agent = Agent::config_builder()
+        .timeout_resolve(Some(Duration::from_secs(CONNECT_SECS)))
+        .timeout_connect(Some(Duration::from_secs(CONNECT_SECS)))
+        .timeout_recv_response(Some(Duration::from_secs(RESPONSE_SECS)))
+        .timeout_recv_body(Some(Duration::from_secs(
+            cfg.duration_secs + READ_SLACK_SECS,
+        )))
+        .timeout_send_body(Some(upload_budget(&cfg)))
+        // A dead socket must not hold the whole window: this is the per-read
+        // cut, and the totals above are the outer bound.
+        .timeout_per_read(Some(Duration::from_secs(3)))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .into();
+
+    let target = download_target(&cfg);
+    let wanted = cfg.max_mb * 1_000_000;
+    let started = Instant::now();
+    let res = agent.get(&target).call().map_err(|e| {
+        format!("download request failed: {e} (redirects and TLS are refused; plain HTTP only)")
+    })?;
+    let status = res.status();
+    if !status.is_success() {
+        return Err(format!(
+            "download answered {status}; a 3xx means the endpoint moved, and this binary refuses redirects"
+        ));
+    }
+    // A captive portal or an out-of-credit proxy answers 200 with a small page.
+    // Without this check such a page reads in a millisecond and reports a
+    // spectacular speed that never crossed the link.
+    if let Some(declared) = res
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if declared < wanted {
+            return Err(format!(
+                "download answered with {declared} bytes, {wanted} were asked: a portal or a proxy answered instead"
+            ));
+        }
+    }
+    if res.headers().get("content-encoding").is_some() {
+        return Err(
+            "download is content-encoded: the byte count would not be the wire cost".into(),
+        );
+    }
+    let ttfb = started.elapsed();
+    let mut body = res.into_body();
+    let mut reader = body.as_reader();
+    let out = read_for(
+        &mut reader,
+        Duration::from_secs(cfg.duration_secs),
+        wanted,
+        cancel,
+        &mut progress,
+    );
+    drop(reader);
+    drop(body);
+    let down_bytes = out.bytes;
+    let down_secs = out.secs;
+    if down_bytes == 0 || down_secs <= 0.0 {
+        return Err(match out.error {
+            Some(e) => format!("download read failed: {e}"),
+            None => "download produced no bytes".into(),
+        });
+    }
+    let download_bps = rate_bps(down_bytes, Duration::from_secs_f64(down_secs));
+    let mut result = SpeedResult {
+        download_bps,
+        upload_bps: 0.0,
+        ttfb_ms: ttfb.as_secs_f64() * 1000.0,
+        down_bytes,
+        up_bytes: 0,
+        down_secs,
+        up_secs: 0.0,
+        download_url: target,
+        upload_url: cfg.upload_url.clone(),
+        partial: false,
+        short_window: down_secs < 3.0,
+        note: None,
+        at_unix,
+    };
+    if out.error.is_some() {
+        result.partial = true;
+        result.note = out.error.map(|e| format!("download stopped: {e}"));
+        return Ok(result);
+    }
+    if cfg.download_only || cancel.load(Ordering::Relaxed) {
+        return Ok(result);
+    }
+
+    let upload_bytes = cfg.upload_mb * 1_000_000;
+    let (up, sent, up_secs) = {
+        let mut meter = UploadMeter::new(upload_bytes, cancel, &mut progress);
+        // A reader body has no known size, so ureq frames it chunked
+        // (ureq-3.5.1/src/run.rs:339). Both the mock and the default endpoint
+        // accept that; measured 2026-11-15 on speed.cloudflare.com/__up.
+        let body = ureq::SendBody::from_reader(&mut meter);
+        let res = agent.post(&cfg.upload_url).send(body);
+        (res, meter.sent(), meter.secs())
+    };
+    result.up_bytes = sent;
+    result.up_secs = up_secs;
+    let up = match up {
+        Ok(up) => up,
+        Err(e) => {
+            result.partial = true;
+            result.note = Some(format!("upload stopped after {sent}: {e}"));
+            return Ok(result);
+        }
+    };
+    if !up.status().is_success() {
+        result.partial = true;
+        result.note = Some(format!("upload answered {}", up.status()));
+        return Ok(result);
+    }
+    if up_secs <= 0.0 || sent == 0 {
+        result.partial = true;
+        result.note = Some("upload finished too fast to measure".into());
+        return Ok(result);
+    }
+    result.upload_bps = rate_bps(sent, Duration::from_secs_f64(up_secs));
+    if cancel.load(Ordering::Relaxed) && sent < upload_bytes {
+        // The reader stopped early on `Esc`; the number is real but it covers
+        // part of the body, and saying so is the difference between a
+        // measurement and a guess.
+        result.partial = true;
+        result.note = Some(format!("cancelled after {sent} bytes up"));
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +496,44 @@ mod tests {
             worst_case_secs(&cfg),
             floor
         );
+    }
+
+    /// Loopback, so it costs no data and runs in CI: the mock answers
+    /// `/__down` and counts a chunked `/__up`, and both numbers come back.
+    #[test]
+    fn run_measures_a_download_and_an_upload_against_the_mock() {
+        use crate::mock_cpe::{MockCpe, Profile};
+        let cpe = MockCpe::start(Profile::H122373);
+        let cfg = Speedtest {
+            download_url: format!("http://{}/__down?bytes={{bytes}}", cpe.addr()),
+            upload_url: format!("http://{}/__up", cpe.addr()),
+            duration_secs: 1,
+            max_mb: 5,
+            upload_mb: 1,
+            ..Speedtest::default()
+        };
+        let out = run(&cfg, &AtomicBool::new(false), |_| {}).expect("a result");
+        assert!(out.download_bps > 0.0);
+        assert!(out.upload_bps > 0.0, "the metered upload reports itself");
+        assert_eq!(out.up_bytes, 1_000_000, "the whole body was read back");
+        assert!(!out.partial, "{:?}", out.note);
+    }
+
+    #[test]
+    #[ignore = "needs the network and spends data"]
+    fn a_real_test_reports_both_directions() {
+        let r = run(
+            &Speedtest {
+                max_mb: 5,
+                upload_mb: 1,
+                duration_secs: 3,
+                ..Speedtest::default()
+            },
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .expect("network");
+        assert!(r.download_bps > 0.0);
+        assert!(r.upload_bps > 0.0);
     }
 }
