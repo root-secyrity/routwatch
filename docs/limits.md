@@ -92,6 +92,12 @@ why each one is stated instead of hidden.
   `editable: false`, so the DNS tab, the dashboard panel and the confirm modal say
   the setting is absent instead of offering it. A router that does not answer the
   endpoint at all is still attempted: a missing flag is not a no.
+- **No router-side throughput endpoint**: the H122-373 (HUAWEI 5G CPE Pro 2) WebUI
+  `6.0`, whose `/js` bundles are dated 2024-04-02, carries no speed or bandwidth
+  test (checked 2026-11-15: the four bundles mention only Wi-Fi channel width and
+  VOIP speed dial, and `/api/device/information` is still `100003` from a bridge
+  without a session). The speed test is host-side by necessity: it measures the
+  path through this machine, never the WAN link on its own.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
