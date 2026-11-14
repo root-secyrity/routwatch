@@ -481,6 +481,58 @@ fn serve(
         payload = String::from_utf8_lossy(&body).to_string();
     }
 
+    // The speed test needs a peer that answers with a known number of bytes and
+    // accepts an upload; without it run() has no coverage that costs no data.
+    if path.starts_with("/__down") {
+        let bytes: u64 = path
+            .split_once("bytes=")
+            .and_then(|(_, v)| v.split('&').next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1024);
+        let mut out = stream.try_clone()?;
+        write!(
+            out,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+             Content-Length: {bytes}\r\nConnection: close\r\n\r\n"
+        )?;
+        let chunk = [0u8; 64 * 1024];
+        let mut left = bytes;
+        while left > 0 {
+            let n = left.min(chunk.len() as u64) as usize;
+            out.write_all(&chunk[..n])?;
+            left -= n as u64;
+        }
+        return Ok(());
+    }
+
+    if path.starts_with("/__up") {
+        // ureq streams a reader body chunked, so the peer reads chunk framing
+        // and counts what arrived. Nothing is stored.
+        let mut total: u64 = 0;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            let size =
+                u64::from_str_radix(line.trim().split(';').next().unwrap_or("0"), 16).unwrap_or(0);
+            if size == 0 {
+                let mut trailer = String::new();
+                reader.read_line(&mut trailer)?;
+                break;
+            }
+            total += std::io::copy(&mut (&mut reader).take(size), &mut std::io::sink())?;
+            let mut crlf = String::new();
+            reader.read_line(&mut crlf)?;
+        }
+        let mut out = stream.try_clone()?;
+        write!(
+            out,
+            "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n{total}"
+        )?;
+        return Ok(());
+    }
+
     // The three switch profiles keep their band state across requests: the POST
     // answer and the later GET have to be able to disagree, which is the whole
     // point of the case.
@@ -835,5 +887,43 @@ mod tests {
         let month = cap("monitoring/month_statistics");
         assert_eq!(month.state, "failed");
         assert!(month.detail.contains("100004 ERROR_BUSY"), "{month:?}");
+    }
+
+    /// Raw HTTP against the two speed-test routes: the byte count is the
+    /// contract, so a partial body fails here rather than in a rate assertion.
+    #[test]
+    fn the_mock_serves_a_sized_download_and_counts_a_chunked_upload() {
+        use std::io::{Read as _, Write as _};
+
+        let mock = MockCpe::start(Profile::H122373);
+
+        let mut down = TcpStream::connect(mock.addr()).expect("connect");
+        write!(
+            down,
+            "GET /__down?bytes=4096 HTTP/1.1\r\nHost: mock\r\nConnection: close\r\n\r\n"
+        )
+        .expect("request");
+        let mut raw = Vec::new();
+        down.read_to_end(&mut raw).expect("read");
+        let text = String::from_utf8_lossy(&raw).to_string();
+        let (head, body) = text.split_once("\r\n\r\n").expect("a response head");
+        assert!(head.contains("Content-Length: 4096"), "{head}");
+        assert_eq!(body.len(), 4096, "the body is the size the URL asked for");
+
+        let mut up = TcpStream::connect(mock.addr()).expect("connect");
+        write!(
+            up,
+            "POST /__up HTTP/1.1\r\nHost: mock\r\nTransfer-Encoding: chunked\r\n\
+             Connection: close\r\n\r\n400\r\n"
+        )
+        .expect("head");
+        up.write_all(&[0u8; 1024]).expect("body");
+        up.write_all(b"\r\n0\r\n\r\n").expect("last chunk");
+        let mut raw = Vec::new();
+        up.read_to_end(&mut raw).expect("read");
+        let text = String::from_utf8_lossy(&raw).to_string();
+        let (head, body) = text.split_once("\r\n\r\n").expect("a response head");
+        assert!(head.contains("200 OK"), "{head}");
+        assert_eq!(body, "1024", "the peer reports exactly what it consumed");
     }
 }
