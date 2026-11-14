@@ -6,7 +6,7 @@
 use crate::app::{App, View};
 use crate::theme::Theme;
 use crate::ui::active_text_colour;
-use crate::ui::widgets::{bar, bps, bytes, dur, kv, opt_f, opt_s, pad, title_style};
+use crate::ui::widgets::{bar, bitrate, bps, bytes, dur, kv, opt_f, opt_s, pad, title_style};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -567,13 +567,23 @@ fn signal_lines(app: &App) -> Vec<Line<'static>> {
     v
 }
 
+/// How old a result is, from two unix seconds. Pure, so a test passes `now`.
+pub fn age_label(at_unix: u64, now_unix: u64) -> String {
+    let secs = now_unix.saturating_sub(at_unix);
+    match secs {
+        0..=59 => format!("{secs}s ago"),
+        60..=3599 => format!("{}m ago", secs / 60),
+        _ => format!("{}h ago", secs / 3600),
+    }
+}
+
 fn speed_lines(app: &App) -> Vec<Line<'static>> {
     let t = &app.theme;
     let Some(s) = &app.snap else {
         return vec![Line::from("waiting…")];
     };
     let tr = &s.traffic;
-    vec![
+    let mut v = vec![
         Line::from(vec![
             Span::styled("↓ ", Style::default().fg(t.ok)),
             Span::styled(
@@ -611,7 +621,24 @@ fn speed_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(t.fg),
             t.dim,
         ),
-    ]
+    ];
+    // One line only: the LINK panel is seven rows, and a second line either
+    // clips or pushes the whole column taller.
+    if let Some(r) = &app.speed {
+        v.push(kv(
+            "test",
+            format!(
+                "↓ {} · ↑ {} · {:.1} s · {}",
+                bitrate(r.download_bps),
+                bitrate(r.upload_bps),
+                r.down_secs,
+                age_label(r.at_unix, crate::app::unix_now())
+            ),
+            Style::default().fg(t.fg),
+            t.dim,
+        ));
+    }
+    v
 }
 
 fn nr_lines(app: &App) -> Vec<Line<'static>> {
@@ -1495,8 +1522,14 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
 
 pub fn network_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
+    // 11 rows carry the ping block plus the test block; anything shorter loses
+    // the tail rather than the whole panel.
+    let panel_rows = if area.height >= 22 { 11 } else { 7 };
     let [top, ping_area] =
-        Layout::vertical([Constraint::Min(8), Constraint::Length(7)]).areas(area);
+        Layout::vertical([Constraint::Min(6), Constraint::Length(panel_rows)]).areas(area);
+    // Drawn before the `snap` guard: a finished test is the user's, not the
+    // router's, and must survive a poll that failed.
+    ping_speed_panel(f, ping_area, app);
     let Some(s) = &app.snap else {
         f.render_widget(
             Paragraph::new("waiting…").block(panel("NETWORK".into(), t)),
@@ -1593,11 +1626,16 @@ pub fn network_tab(f: &mut Frame, area: Rect, app: &App) {
         ),
     ];
     f.render_widget(Paragraph::new(link).block(panel("LINK".into(), t)), right);
+}
 
-    let mut ping_lines = Vec::new();
+/// The ping block and the speed test share one panel: both measure the path
+/// through this machine, and a reader needs them side by side.
+fn ping_speed_panel(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let mut lines = Vec::new();
     match &app.ping {
         Some(p) => {
-            ping_lines.push(Line::from(vec![
+            lines.push(Line::from(vec![
                 Span::styled(format!("{:<16}", p.host), Style::default().fg(t.fg)),
                 Span::styled(
                     p.detail.clone(),
@@ -1605,24 +1643,113 @@ pub fn network_tab(f: &mut Frame, area: Rect, app: &App) {
                 ),
             ]));
             if let Some(avg) = p.avg_ms {
-                ping_lines.push(Line::from(Span::styled(
+                lines.push(Line::from(Span::styled(
                     format!("rtt avg {avg:.1} ms · packets {}/{}", p.received, p.sent),
                     Style::default().fg(t.dim),
                 )));
             }
         }
-        None => ping_lines.push(Line::from(Span::styled(
+        None => lines.push(Line::from(Span::styled(
             "no test yet",
             Style::default().fg(t.dim),
         ))),
     }
-    ping_lines.push(Line::from(Span::styled(
-        "p ping a host from THIS machine (not through the router)",
+    match (&app.speed_running, &app.speed_progress) {
+        (true, Some(p)) => {
+            let phase = match p.phase {
+                crate::speedtest::Phase::Download => "downloading",
+                crate::speedtest::Phase::Upload => "uploading",
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{phase} · {} · {}", bytes(p.bytes), bitrate(p.rate_bps)),
+                Style::default().fg(t.accent),
+            )));
+            // While the link is saturated the router polls may time out; say it
+            // during the run instead of letting a stale header look broken.
+            lines.push(Line::from(Span::styled(
+                "router polls may fail while the link is busy",
+                Style::default().fg(t.dim),
+            )));
+        }
+        _ => {
+            if let Some(r) = &app.speed {
+                let mut spans = vec![
+                    Span::styled("test ", Style::default().fg(t.dim)),
+                    Span::styled(
+                        format!(
+                            "↓ {} · ↑ {}",
+                            bitrate(r.download_bps),
+                            bitrate(r.upload_bps)
+                        ),
+                        Style::default().fg(t.ok).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(
+                            " · {:.1} s · {} down · ttfb {:.0} ms · {}",
+                            r.down_secs,
+                            bytes(r.down_bytes),
+                            r.ttfb_ms,
+                            age_label(r.at_unix, crate::app::unix_now())
+                        ),
+                        Style::default().fg(t.dim),
+                    ),
+                ];
+                if r.short_window {
+                    spans.push(Span::styled(
+                        " · ramp-limited estimate",
+                        Style::default().fg(t.warn),
+                    ));
+                }
+                if r.partial {
+                    spans.push(Span::styled(" · partial", Style::default().fg(t.warn)));
+                }
+                lines.push(Line::from(spans));
+                if let Some(note) = &r.note {
+                    lines.push(Line::from(Span::styled(
+                        note.clone(),
+                        Style::default().fg(t.warn),
+                    )));
+                }
+                if let Some(c) = &app.speed_context {
+                    // A test can cross a band change on a 5G CPE; both ends are
+                    // shown when they differ, never just the last one.
+                    let band = match (&c.band_at_start, &c.band) {
+                        (Some(a), b) if a != b => format!("{a} → {b}"),
+                        _ => c.band.clone(),
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "through this host · {} · {} · peak device ↓ {} ↑ {}",
+                            c.net_type,
+                            band,
+                            // Byte counters, so `bps`, not `bitrate`.
+                            bps(c.router_peak_dl as f64),
+                            bps(c.router_peak_ul as f64)
+                        ),
+                        Style::default().fg(t.dim),
+                    )));
+                }
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "no speed test yet · T on this tab measures the path through this host",
+                    Style::default().fg(t.dim),
+                )));
+            }
+        }
+    }
+    if let Some(e) = &app.speed_error {
+        lines.push(Line::from(Span::styled(
+            format!("speed test: {e}"),
+            Style::default().fg(t.danger),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "p ping · T speed test (both from THIS machine, not from the router)",
         Style::default().fg(t.dim),
     )));
     f.render_widget(
-        Paragraph::new(ping_lines).block(panel("PING".into(), t)),
-        ping_area,
+        Paragraph::new(lines).block(panel("PING · SPEED".into(), t)),
+        area,
     );
 }
 

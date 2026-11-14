@@ -1424,13 +1424,24 @@ fn ip_key(ip: &str) -> (u32, u32, u32, u32) {
     )
 }
 
+/// Seconds since the epoch, for a result's age. Clock jumps are not an error.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The frozen snapshot every render and state test starts from. Public so the
+/// UI tests draw the same app the state tests build.
+#[cfg(test)]
+pub(crate) fn fixture_snap() -> crate::model::Snapshot {
+    serde_json::from_str(include_str!("../fixtures/sample-snapshot.json")).expect("fixture")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn fixture_snap() -> crate::model::Snapshot {
-        serde_json::from_str(include_str!("../fixtures/sample-snapshot.json")).expect("fixture")
-    }
 
     #[test]
     fn a_successful_apply_remembers_the_mask_it_replaced() {

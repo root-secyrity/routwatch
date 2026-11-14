@@ -33,6 +33,20 @@ pub fn bps(v: f64) -> String {
     }
 }
 
+/// `bps` is for byte counters: it multiplies by eight. A measured rate is
+/// already in bits, so it needs this one instead.
+pub fn bitrate(bits: f64) -> String {
+    if bits >= 1e9 {
+        format!("{:.2} Gbps", bits / 1e9)
+    } else if bits >= 1e6 {
+        format!("{:.2} Mbps", bits / 1e6)
+    } else if bits >= 1e3 {
+        format!("{:.1} Kbps", bits / 1e3)
+    } else {
+        format!("{bits:.0} bps")
+    }
+}
+
 pub fn dur(secs: u64) -> String {
     if secs >= 30 * 86_400 {
         format!("{}d", secs / 86_400)
@@ -284,5 +298,13 @@ mod tests {
         assert_eq!(width_of(&pad("tv", 20)), 20);
         assert_eq!(pad("abcdef", 3), "abc");
         assert_eq!(width_of(&pad("غرفة المعيشة", 12)), 12);
+    }
+
+    #[test]
+    fn bitrate_takes_bits_and_bps_takes_bytes() {
+        // `bps` multiplies by eight (src/ui/widgets.rs:23) and is fed byte
+        // counters. A measured rate is already bits; through `bps` it showed 8x.
+        assert_eq!(bitrate(94_000_000.0), "94.00 Mbps");
+        assert_eq!(bps(94_000_000.0 / 8.0), "94.00 Mbps");
     }
 }
