@@ -207,6 +207,30 @@ enum Cmd {
         #[arg(long)]
         waybar: bool,
     },
+    /// Download/upload test from this host through the CPE (plain HTTP)
+    Speedtest {
+        #[arg(long)]
+        json: bool,
+        /// Print the plan and exit without sending a byte
+        #[arg(long)]
+        dry_run: bool,
+        /// Confirm the data this run will spend
+        #[arg(long)]
+        allow_data: bool,
+        /// Skip the upload
+        #[arg(long)]
+        download_only: bool,
+        #[arg(long, value_name = "URL")]
+        download_url: Option<String>,
+        #[arg(long, value_name = "URL")]
+        upload_url: Option<String>,
+        #[arg(long)]
+        seconds: Option<u64>,
+        #[arg(long)]
+        max_mb: Option<u64>,
+        #[arg(long)]
+        upload_mb: Option<u64>,
+    },
     /// Sample the router into a recording file (.rwr, one frame per line)
     Record {
         /// Destination file (default: $XDG_DATA_HOME/routwatch/recordings/<date>.rwr)
@@ -309,7 +333,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
     // to the router keeps the strict loader (and its 0600 check).
     let offline = matches!(
         cli.cmd,
-        Some(Cmd::Preview { .. }) | Some(Cmd::Replay { .. })
+        Some(Cmd::Preview { .. }) | Some(Cmd::Replay { .. }) | Some(Cmd::Speedtest { .. })
     );
     let cfg = if offline {
         config::load_or_default(cli.config.clone())?
@@ -911,6 +935,83 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 }
                 Err(e) => Err(e),
             }
+        }
+        Some(Cmd::Speedtest {
+            json,
+            dry_run,
+            allow_data,
+            download_only,
+            download_url,
+            upload_url,
+            seconds,
+            max_mb,
+            upload_mb,
+        }) => {
+            let mut plan = cfg.app.speedtest.clone();
+            if let Some(v) = download_url {
+                plan.download_url = v;
+            }
+            if let Some(v) = upload_url {
+                plan.upload_url = v;
+            }
+            if let Some(v) = seconds {
+                plan.duration_secs = v;
+            }
+            if let Some(v) = max_mb {
+                plan.max_mb = v;
+            }
+            if let Some(v) = upload_mb {
+                plan.upload_mb = v;
+            }
+            if download_only {
+                plan.download_only = true;
+            }
+            // The same clamp the TUI applies, so a CLI typo costs a retry.
+            let plan = plan.sanitised();
+            if dry_run {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&plan).unwrap());
+                } else {
+                    println!(
+                        "speedtest: {} s, max {} MB down, {} MB up (download only: {})\n  down {}\n  up   {}",
+                        plan.duration_secs,
+                        plan.max_mb,
+                        plan.upload_mb,
+                        plan.download_only,
+                        plan.download_url,
+                        plan.upload_url
+                    );
+                }
+                return Ok(());
+            }
+            if !allow_data {
+                // The same rule as a write: name the flag instead of spending
+                // data because the command was typed without thinking.
+                eprintln!(
+                    "speedtest spends data: pass --allow-data to run it, or --dry-run to see the plan"
+                );
+                return Err(ApiError::Quiet(3));
+            }
+            let r = routwatch::speedtest::run(
+                &plan,
+                &std::sync::atomic::AtomicBool::new(false),
+                |_| {},
+            )
+            .map_err(ApiError::Network)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap());
+            } else {
+                println!(
+                    "download {:.1} Mbps · upload {:.1} Mbps · ttfb {:.0} ms",
+                    r.download_bps / 1e6,
+                    r.upload_bps / 1e6,
+                    r.ttfb_ms
+                );
+                if let Some(note) = &r.note {
+                    println!("note: {note}");
+                }
+            }
+            Ok(())
         }
         Some(Cmd::Ping { host, count, json }) => {
             let output = std::process::Command::new("ping")

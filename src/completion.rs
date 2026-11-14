@@ -7,8 +7,21 @@ use crate::error::ApiError;
 /// Every subcommand the CLI exposes. `restart` is spelled out here because the
 /// completion must match `--help`, not the historical word.
 pub const SUBCOMMANDS: &[&str] = &[
-    "snapshot", "doctor", "bands", "dns", "sms", "device", "restart", "ping", "dump", "share",
-    "status", "record", "replay", "preview",
+    "snapshot",
+    "doctor",
+    "bands",
+    "dns",
+    "sms",
+    "device",
+    "restart",
+    "ping",
+    "speedtest",
+    "dump",
+    "share",
+    "status",
+    "record",
+    "replay",
+    "preview",
 ];
 
 pub const GLOBAL_FLAGS: &[&str] = &[
