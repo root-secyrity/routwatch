@@ -43,7 +43,7 @@ fn build_agent(timeout_ms: u64) -> Agent {
 }
 
 /// The `sms/sms-list` body. `Ascending` is mandatory: without it the firmware
-/// answers 100005 (ERROR_FORMAT_ERROR), which looked like a denial.
+/// answers 100005 (ERROR_FORMAT_ERROR) and the inbox reads as refused.
 pub(crate) fn sms_list_body(page: u32) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><PageIndex>{page}</PageIndex><ReadCount>20</ReadCount><BoxType>1</BoxType><SortType>0</SortType><Ascending>0</Ascending><UnreadPreferred>0</UnreadPreferred></request>"

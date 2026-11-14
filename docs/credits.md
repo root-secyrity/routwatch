@@ -15,6 +15,14 @@ stating a limitation instead of showing a plausible zero. The eight palettes in
 are ours, the colour values are not), so a theme looks identical whichever of the
 four tools you open.
 
+The firmware error names in `src/error.rs` follow the table published with
+[Huawei-Hilink-API](https://github.com/if0xx/Huawei-Hilink-API) by Henrik
+Sylvester Pedersen (MIT): the constants are re-stated as data, one test each, and
+what a code means on this firmware is decided by measurement. Endpoint names were
+cross-checked against [huawei-lte-api](https://github.com/Salamek/huawei-lte-api)
+by Salamek (LGPL-3.0), facts only, no code. See [`../NOTICE`](../NOTICE) for the
+reproduced MIT text.
+
 The feature set and the router knowledge come from **HManagerPy 2.1.0**, the
 Electron application this replaces, written by RoOt-SeC. See [`../NOTICE`](../NOTICE) for
 the complete attribution and the reproduced MIT text.

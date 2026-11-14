@@ -166,7 +166,7 @@ pub struct DeviceExtras {
     pub pin: Option<PinStatus>,
     pub mobile_data: Option<bool>,
     pub sms_inbox: Vec<SmsMessage>,
-    /// Why the inbox could not be read (e.g. "permission denied (100005)").
+    /// Why the inbox could not be read (e.g. "invalid request or session (100005)").
     pub sms_error: Option<String>,
 }
 

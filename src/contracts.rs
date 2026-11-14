@@ -10,6 +10,7 @@
 /// lives in another file has to be added here, which is the point: the table
 /// cannot cite a file nobody checked.
 const SOURCES: &[(&str, &str)] = &[
+    ("src/error.rs", include_str!("error.rs")),
     ("src/preflight.rs", include_str!("preflight.rs")),
     ("src/report.rs", include_str!("report.rs")),
     ("src/app.rs", include_str!("app.rs")),

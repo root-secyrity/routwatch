@@ -7,6 +7,16 @@ why each one is stated instead of hidden.
   `Ascending` (it did not before). A firmware that still answers `100005` is
   reporting a format error; the tab says the request was rejected, not that SMS
   is blocked.
+- **`100003` carries two meanings on the H122-373**: Huawei's table names it
+  `ERROR_NO_RIGHT`, and this firmware also answers it for paths it does not serve
+  (measured 2026-11-10: 45 candidate NR paths, every one of them 100003, in a
+  logged-in session). routwatch keeps the state unsupported and prints "the
+  firmware refused this request (100003 ERROR_NO_RIGHT)" instead of naming a
+  cause; telling a session refusal from a missing path needs a measurement the two
+  do not share.
+- **`100002` is not a busy router**: Huawei's table names it `ERROR_NOT_SUPPORT`
+  and it is reported as unsupported. `100004` (`ERROR_BUSY`) is the one reported
+  as busy, unverified on this firmware: no probed path has answered it.
 - **Band writes can answer `100006` after they land**: on H122-373 the radio
   accepts the payload and the POST still returns an undefined code. The verdict
   comes from reading `net/net-mode` back, never from the code; routwatch waits

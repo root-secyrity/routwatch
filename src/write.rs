@@ -211,11 +211,11 @@ fn write_cause(e: &ApiError) -> String {
 
 /// The one code this firmware answers next to a band write that did land.
 ///
-/// Huawei's public WebAPI list defines 100002 (busy), 100003 (unsupported) and
-/// 100005 (format), and leaves 100006 undefined; on the H122-373 it arrives on
-/// `POST net/net-mode` after the radio accepted the payload. So it is a note,
-/// never a verdict: only the read-back decides. Three device runs in this repo's
-/// log agree, and every one of them applied.
+/// Huawei's published table names 100002 ERROR_NOT_SUPPORT, 100003 ERROR_NO_RIGHT,
+/// 100005 ERROR_FORMAT_ERROR and 100006 ERROR_PARAMETER_ERROR; on the H122-373
+/// 100006 arrives on `POST net/net-mode` after the radio accepted the payload. So
+/// it is a note, never a verdict: only the read-back decides. Three device runs in
+/// this repo's log agree, and every one of them applied.
 const SWITCH_WARNING: u32 = 100006;
 
 /// How long the radio gets, after a 100006, before the read-back is believed.
