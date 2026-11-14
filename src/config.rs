@@ -62,6 +62,51 @@ pub fn default_presets() -> Vec<BandPreset> {
     .collect()
 }
 
+/// A throughput test spends the user's data, so every bound is explicit and
+/// clamped: a typo costs a retry, never a gigabyte.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Speedtest {
+    /// Seconds the download loop runs. The byte cap can stop it earlier.
+    pub duration_secs: u64,
+    /// Hard cap on download bytes.
+    pub max_mb: u64,
+    /// Upload payload size, streamed in one request.
+    pub upload_mb: u64,
+    /// Skip the upload: the answer arrives sooner and costs a tenth of the data.
+    pub download_only: bool,
+    /// Plain HTTP only: this binary carries no TLS stack.
+    pub download_url: String,
+    pub upload_url: String,
+}
+
+impl Default for Speedtest {
+    fn default() -> Self {
+        Speedtest {
+            duration_secs: 8,
+            max_mb: 60,
+            upload_mb: 10,
+            download_only: false,
+            // `{bytes}` is replaced per run with `max_mb * 1_000_000`, so the
+            // server is never asked for more than the byte cap will read.
+            download_url: "http://speed.cloudflare.com/__down?bytes={bytes}".into(),
+            upload_url: "http://speed.cloudflare.com/__up".into(),
+        }
+    }
+}
+
+impl Speedtest {
+    pub fn sanitised(&self) -> Speedtest {
+        Speedtest {
+            duration_secs: self.duration_secs.clamp(1, 30),
+            max_mb: self.max_mb.clamp(5, 500),
+            upload_mb: self.upload_mb.clamp(1, 100),
+            download_only: self.download_only,
+            download_url: self.download_url.clone(),
+            upload_url: self.upload_url.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct App {
     pub refresh_ms: u64,
@@ -77,6 +122,8 @@ pub struct App {
     /// `Some([])` = the user deleted every preset and means it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presets: Option<Vec<BandPreset>>,
+    #[serde(default)]
+    pub speedtest: Speedtest,
 }
 
 impl Default for App {
@@ -90,6 +137,7 @@ impl Default for App {
             budget_gb: 100,
             report_identity: false,
             presets: None,
+            speedtest: Speedtest::default(),
         }
     }
 }
@@ -440,5 +488,40 @@ budget_gb = 100
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("secure_trust"), "dead key came back: {text}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_old_config_without_a_speedtest_block_still_loads() {
+        let cfg: Config = toml::from_str(MINIMAL).expect("old config");
+        assert_eq!(cfg.app.speedtest.max_mb, 60);
+        assert_eq!(cfg.app.speedtest.upload_mb, 10);
+        assert!(!cfg.app.speedtest.download_only);
+        assert!(cfg.app.speedtest.download_url.starts_with("http://"));
+    }
+
+    #[test]
+    fn a_hand_edited_speedtest_block_is_clamped() {
+        let s = Speedtest {
+            duration_secs: 0,
+            max_mb: 100_000,
+            upload_mb: 0,
+            ..Speedtest::default()
+        };
+        let s = s.sanitised();
+        assert_eq!(s.duration_secs, 1);
+        assert_eq!(s.max_mb, 500);
+        assert_eq!(s.upload_mb, 1);
+    }
+
+    #[test]
+    fn the_upload_payload_is_bounded_before_it_is_allocated() {
+        // The meter writes zeros into a fixed buffer; nothing allocates the body
+        // whole, so this clamp bounds what can leave the machine per press.
+        let s = Speedtest {
+            upload_mb: 100_000,
+            ..Speedtest::default()
+        }
+        .sanitised();
+        assert_eq!(s.upload_mb, 100);
     }
 }
