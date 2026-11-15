@@ -1600,7 +1600,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 let (id, cfg, cancel) = app.start_speed_test();
                 // The clamped copy the modal printed, and the flag the thread
                 // polls: no third source of truth.
-                let _ = tx.send(WorkerCmd::SpeedTest(cfg, id, cancel));
+                let host = cfg.ping_host.clone();
+                let _ = tx.send(WorkerCmd::SpeedTest(cfg, host, id, cancel));
                 app.note("speed test started · its bytes count in the router's month total");
             }
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => app.speed_confirm = false,
@@ -2586,9 +2587,10 @@ mod key_tests {
         assert!(!app.speed_confirm);
         assert!(app.speed_running);
         match rx.try_recv() {
-            Ok(WorkerCmd::SpeedTest(cfg, id, _)) => {
+            Ok(WorkerCmd::SpeedTest(cfg, host, id, _)) => {
                 assert_eq!(id, app.speed_run);
                 assert_eq!(cfg.max_mb, app.speed_cfg.max_mb);
+                assert_eq!(host, app.speed_cfg.ping_host, "the host the run pings");
             }
             other => panic!("expected one SpeedTest command, got {other:?}"),
         }

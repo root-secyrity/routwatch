@@ -6,7 +6,7 @@ use crate::headless::{Phase, PhaseState};
 use crate::model::{Client, DeviceExtras, Snapshot};
 use crate::router::bands;
 use crate::theme::{GraphStyle, Theme};
-use crate::worker::PingOutcome;
+use crate::worker::{PingOutcome, SpeedRun};
 use crate::write::{parse_dns_pair, WriteIntent, WriteState};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -432,7 +432,7 @@ pub struct App {
 
 /// The radio values around a test, so a number is never shown without the
 /// signal that carried it, and a band change mid-test cannot hide.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SpeedContext {
     pub net_type: String,
     /// The band when the test started, and the band when it finished. They
@@ -440,6 +440,7 @@ pub struct SpeedContext {
     pub band_at_start: Option<String>,
     pub band: String,
     pub rsrp_dbm: Option<f32>,
+    pub rsrq_db: Option<f32>,
     pub sinr_db: Option<f32>,
     /// Peak rates the device itself reported while the test ran, in bytes per
     /// second (`src/model.rs:74`). A consistency check, not proof.
@@ -1227,7 +1228,7 @@ impl App {
         }
     }
 
-    pub fn on_speed_done(&mut self, run: u64, out: Result<crate::speedtest::SpeedResult, String>) {
+    pub fn on_speed_done(&mut self, run: u64, out: Result<SpeedRun, String>) {
         if run != self.speed_run {
             // A run that was replaced by the watchdog still reports; its
             // numbers are stale by definition.
@@ -1237,7 +1238,11 @@ impl App {
         self.speed_started = None;
         self.speed_progress = None;
         match out {
-            Ok(mut r) => {
+            Ok(SpeedRun {
+                result: mut r,
+                elapsed: _elapsed,
+                pings: _pings,
+            }) => {
                 if self.speed_peak_dl > 0 {
                     let seen =
                         crate::speedtest::rate_bps(self.speed_peak_dl, Duration::from_secs(1));
@@ -1283,6 +1288,7 @@ impl App {
             band_at_start: self.speed_band_at_start.clone(),
             band: s.signal.band.clone().unwrap_or_else(|| "-".into()),
             rsrp_dbm: s.signal.rsrp_dbm,
+            rsrq_db: s.signal.rsrq_db,
             sinr_db: s.signal.sinr_db,
             router_peak_dl: self.speed_peak_dl,
             router_peak_ul: self.speed_peak_ul,
@@ -2432,6 +2438,16 @@ mod tests {
         )
     }
 
+    /// `on_speed_done` takes the whole run, so a test builds one from the
+    /// numbers it cares about.
+    fn done(r: crate::speedtest::SpeedResult) -> SpeedRun {
+        SpeedRun {
+            result: r,
+            elapsed: Duration::from_secs(1),
+            pings: crate::history::Pings::default(),
+        }
+    }
+
     #[test]
     fn a_finished_test_keeps_the_radio_it_ran_on() {
         let mut app = fixture_app();
@@ -2440,7 +2456,7 @@ mod tests {
         assert!(app.speed_running);
         app.on_speed_done(
             run,
-            Ok(crate::speedtest::SpeedResult {
+            Ok(done(crate::speedtest::SpeedResult {
                 download_bps: 94_000_000.0,
                 upload_bps: 12_000_000.0,
                 ttfb_ms: 18.0,
@@ -2454,7 +2470,7 @@ mod tests {
                 short_window: false,
                 note: None,
                 at_unix: 1_700_000_000,
-            }),
+            })),
         );
         assert!(!app.speed_running);
         assert_eq!(app.speed.as_ref().unwrap().download_bps, 94_000_000.0);
@@ -2541,11 +2557,11 @@ mod tests {
         app.speed_peak_dl = 100_000;
         app.on_speed_done(
             run,
-            Ok(crate::speedtest::SpeedResult {
+            Ok(done(crate::speedtest::SpeedResult {
                 download_bps: 94_000_000.0,
                 down_secs: 4.2,
                 ..crate::speedtest::SpeedResult::default()
-            }),
+            })),
         );
         let note = app.speed.as_ref().unwrap().note.clone().unwrap_or_default();
         assert!(note.contains("did not see"), "{note}");
