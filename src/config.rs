@@ -77,6 +77,13 @@ pub struct Speedtest {
     /// Plain HTTP only: this binary carries no TLS stack.
     pub download_url: String,
     pub upload_url: String,
+    /// Host the run pings twice, once quiet and once while bytes move. ICMP.
+    #[serde(default = "default_ping_host")]
+    pub ping_host: String,
+}
+
+fn default_ping_host() -> String {
+    "1.1.1.1".into()
 }
 
 impl Default for Speedtest {
@@ -90,6 +97,7 @@ impl Default for Speedtest {
             // server is never asked for more than the byte cap will read.
             download_url: "http://speed.cloudflare.com/__down?bytes={bytes}".into(),
             upload_url: "http://speed.cloudflare.com/__up".into(),
+            ping_host: default_ping_host(),
         }
     }
 }
@@ -103,6 +111,7 @@ impl Speedtest {
             download_only: self.download_only,
             download_url: self.download_url.clone(),
             upload_url: self.upload_url.clone(),
+            ping_host: self.ping_host.clone(),
         }
     }
 }
@@ -497,6 +506,20 @@ budget_gb = 100
         assert_eq!(cfg.app.speedtest.upload_mb, 10);
         assert!(!cfg.app.speedtest.download_only);
         assert!(cfg.app.speedtest.download_url.starts_with("http://"));
+        assert_eq!(cfg.app.speedtest.ping_host, "1.1.1.1");
+    }
+
+    #[test]
+    fn a_speedtest_block_without_ping_host_keeps_the_default() {
+        // The block is complete except for `ping_host`, so the default is what the
+        // field's serde attribute supplies, not the absence of the table.
+        let raw = format!(
+            "{MINIMAL}\n[app.speedtest]\nduration_secs = 4\nmax_mb = 10\nupload_mb = 2\n\
+             download_only = true\ndownload_url = \"http://x/d\"\nupload_url = \"http://x/u\"\n"
+        );
+        let cfg: Config = toml::from_str(&raw).expect("speedtest block");
+        assert_eq!(cfg.app.speedtest.ping_host, "1.1.1.1");
+        assert_eq!(cfg.app.speedtest.duration_secs, 4);
     }
 
     #[test]

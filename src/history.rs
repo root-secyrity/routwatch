@@ -496,6 +496,7 @@ mod tests {
             max_mb: 60,
             upload_mb: 10,
             download_only: false,
+            ping_host: "1.1.1.1".into(),
             ..Default::default()
         }
     }
