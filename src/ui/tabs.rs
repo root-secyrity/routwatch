@@ -1851,7 +1851,9 @@ fn speed_history_panel(f: &mut Frame, area: Rect, app: &App) {
             app.history_total
         )
     } else {
-        let median = crate::history::median_down(&app.history);
+        // The median is over the rows on screen, so the number beside it is
+        // one a reader can check against the lines below.
+        let median = crate::history::median_down(&app.history[..shown]);
         format!(
             "SPEED · {shown} of {} · med {:.1} Mbps · ms idle/loaded, * partial, ~band",
             app.history_total,
@@ -3138,6 +3140,32 @@ mod tests {
         a.history.truncate(3);
         let screen = draw_network(&a, 100, 30);
         assert!(screen.contains("3 of 10"));
+    }
+
+    /// Four rows on screen must not carry the median of ten: the number is
+    /// checkable against the lines below it, or it is noise.
+    #[test]
+    fn the_median_covers_only_the_rows_on_screen() {
+        let a = app_with_history(10);
+        let full = draw_network(&a, 100, 30);
+        let narrow = draw_network(&a, 80, 24);
+        assert!(narrow.contains("4 of 10"));
+        let med = |screen: &str| -> f64 {
+            let at = screen.find("med ").expect("a median") + 4;
+            screen[at..]
+                .split(' ')
+                .next()
+                .expect("a number")
+                .parse()
+                .expect("a float")
+        };
+        let first_four = a.history[..4].iter().map(|e| e.download_bps).sum::<f64>() / 4.0;
+        assert!(
+            (med(&narrow) - first_four / 1e6).abs() < 0.2,
+            "narrow median {} must be the four drawn rows, not {}",
+            med(&narrow),
+            med(&full)
+        );
     }
 
     /// A measurement and the key that starts the next one outrank prose. At

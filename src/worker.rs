@@ -655,7 +655,15 @@ rtt min/avg/max/mdev = 12.100/12.400/12.800/0.300 ms\n";
             let out = rx.recv_timeout(Duration::from_secs(15)).expect("an answer");
             if let Ev::SpeedDone(id, res) = &out {
                 assert_eq!(*id, 7, "the answer carries the run it belongs to");
-                assert!(res.is_ok(), "{res:?}");
+                let run = res.as_ref().expect("a completed run");
+                // The idle ping is measured before the first byte, so it is
+                // always there; the loaded one is dropped when the transfer
+                // ended before it could start, which this mock may do.
+                assert_eq!(run.pings.host.as_deref(), Some("127.0.0.1"));
+                assert!(
+                    run.pings.idle.is_some(),
+                    "the quiet ping runs before the transfer"
+                );
                 break;
             }
             seen.push(out);
