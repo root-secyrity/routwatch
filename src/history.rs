@@ -475,11 +475,49 @@ pub fn median_down(rows: &[Entry]) -> f64 {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rw-hist-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d.join("speed-history.jsonl")
+    /// A scratch ledger whose directory removes itself, so a test run leaves
+    /// nothing behind in `$TMPDIR`. It derefs to the file, not the directory.
+    struct Scratch {
+        dir: PathBuf,
+        file: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("rw-hist-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("speed-history.jsonl");
+            Scratch { dir, file }
+        }
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &std::path::Path {
+            &self.file
+        }
+    }
+
+    impl AsRef<std::path::Path> for Scratch {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.file
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            // A test may have made the directory read-only to prove a failure
+            // path; an owner can always chmod its own directory back.
+            let _ = std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
+        Scratch::new(name)
     }
 
     fn entry(ended: u64, down: f64) -> Entry {
