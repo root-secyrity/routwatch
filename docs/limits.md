@@ -110,6 +110,14 @@ why each one is stated instead of hidden.
   can time out while the link is saturated; `P` pauses them, and a poll that fails
   during a test is backoff, not a gap in the history.
 
+- **An unmeasured field stays empty in a saved run**: the loaded ping competes with
+  the transfer it is measuring, so the rate it sits beside is a floor, not a
+  ceiling. A run that spent bytes and then failed is saved with `status: partial`
+  and marked `*` in the panel: the numbers are real, the window is short. A row
+  from the CLI has no ping columns (`-`), and no row is written for a run that
+  spent nothing. The panel shows ten rows and the file keeps two hundred; at
+  `100x30` all ten fit, and at `80x24` it says `4 of 10` rather than pretending.
+
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
 README's Safety list, and the guard that enforces them is in
