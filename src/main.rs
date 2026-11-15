@@ -263,6 +263,10 @@ enum Cmd {
         /// Render from a saved snapshot JSON instead of contacting the router
         #[arg(long, value_name = "FILE")]
         fixture: Option<PathBuf>,
+        /// Render the speed history panel from a saved JSONL ledger (review
+        /// only: nothing is written back)
+        #[arg(long, value_name = "FILE")]
+        history_fixture: Option<PathBuf>,
         /// Layout review: open the apply-confirm modal (sends nothing)
         #[arg(long, hide = true)]
         demo_confirm: bool,
@@ -1139,6 +1143,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
         Some(Cmd::Preview {
             ref size,
             ref fixture,
+            ref history_fixture,
             demo_confirm,
             demo_settings,
             ansi,
@@ -1167,6 +1172,17 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 snap = routwatch::report::redacted(&snap);
             }
             app.on_snapshot(snap, 0);
+            if let Some(p) = history_fixture {
+                let text = std::fs::read_to_string(p)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
+                let loaded = routwatch::history::load_from_str(&text);
+                app.history = loaded
+                    .rows
+                    .into_iter()
+                    .take(routwatch::history::SHOWN)
+                    .collect();
+                app.history_total = loaded.total;
+            }
             if demo_confirm {
                 app.begin_confirm();
             }
