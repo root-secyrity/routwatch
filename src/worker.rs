@@ -285,6 +285,13 @@ pub fn run_measured(
     })
 }
 
+/// True while a measured run holds the poll loop. The pause is an instant, not
+/// a flag, so a thread that dies mid-run still lets polling resume on its own;
+/// a restore message would never arrive from a dead sender.
+fn pausing(pause_until: Option<Instant>, now: Instant) -> bool {
+    pause_until.is_some_and(|t| now < t)
+}
+
 /// Run the transfer off both the UI thread and the router thread: a test can
 /// last a minute and must not delay a poll or a redraw. `id` comes back on
 /// every event, so a late answer can be recognised and dropped.
@@ -462,8 +469,7 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        let measuring = pause_until.is_some_and(|t| Instant::now() < t);
-        if paused || measuring {
+        if paused || pausing(pause_until, Instant::now()) {
             continue;
         }
 
@@ -671,6 +677,22 @@ rtt min/avg/max/mdev = 12.100/12.400/12.800/0.300 ms\n";
         assert!(
             !seen.is_empty(),
             "a five megabyte transfer through the mock emits progress"
+        );
+    }
+
+    /// The poll pause expires on its own: nothing has to be sent back from the
+    /// measuring thread for polling to resume.
+    #[test]
+    fn the_pause_expires_without_a_restore_message() {
+        let now = Instant::now();
+        assert!(!pausing(None, now), "no run, no pause");
+        assert!(pausing(Some(now + Duration::from_secs(5)), now));
+        assert!(
+            !pausing(
+                Some(now + Duration::from_secs(5)),
+                now + Duration::from_secs(6)
+            ),
+            "past the budget the loop polls again"
         );
     }
 }
