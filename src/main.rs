@@ -1356,6 +1356,8 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
         Ok(None) => app.note("another routwatch is using the ledger: read-only this session"),
         Err(e) => app.note(format!("usage ledger not locked: {e}")),
     }
+    // Read once at start; the panel stays current by appending what it records.
+    app.load_history();
     let (tx, rx) = worker::spawn(cfg, password);
 
     install_restore_hook();

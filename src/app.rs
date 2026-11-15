@@ -427,6 +427,13 @@ pub struct App {
     speed_band_at_start: Option<String>,
     speed_peak_dl: u64,
     speed_peak_ul: u64,
+    // --- speed history ---
+    /// Newest first, capped at `history::SHOWN`.
+    pub history: Vec<crate::history::Entry>,
+    pub history_total: usize,
+    pub history_warn: Option<String>,
+    pub history_writable: bool,
+    pub history_path: Option<std::path::PathBuf>,
     started: Instant,
 }
 
@@ -574,6 +581,11 @@ impl App {
             speed_band_at_start: None,
             speed_peak_dl: 0,
             speed_peak_ul: 0,
+            history: Vec::new(),
+            history_total: 0,
+            history_warn: None,
+            history_writable: false,
+            history_path: crate::history::path(),
             started: Instant::now(),
         }
     }
@@ -1240,8 +1252,8 @@ impl App {
         match out {
             Ok(SpeedRun {
                 result: mut r,
-                elapsed: _elapsed,
-                pings: _pings,
+                elapsed,
+                pings,
             }) => {
                 if self.speed_peak_dl > 0 {
                     let seen =
@@ -1268,13 +1280,86 @@ impl App {
                     r.upload_bps / 1e6
                 ));
                 self.log(LogLevel::Info, "speed test finished");
-                self.speed = Some(r);
+                // The context first: the row records the radio this run saw,
+                // and `record_speed` reads it from the same place the UI does.
                 self.speed_context = self.radio_now();
+                self.record_speed(&r, elapsed, &pings);
+                self.speed = Some(r);
             }
             Err(e) => {
                 self.speed_error = Some(e.clone());
                 self.log(LogLevel::Warn, format!("speed test failed: {e}"));
                 self.note(format!("speed test failed: {e}"));
+            }
+        }
+    }
+
+    /// Read the ledger and trim it. Called by the TUI only, never by `App::new`,
+    /// so unit tests touch no disk.
+    pub fn load_history(&mut self) {
+        let Some(path) = self.history_path.clone() else {
+            self.history_warn = Some("no data dir; speed history is off".into());
+            return;
+        };
+        let loaded = crate::history::load(&path);
+        if loaded.total > crate::history::KEEP {
+            if let Err(e) = crate::history::compact_if_needed(&path, crate::history::KEEP) {
+                self.log(LogLevel::Warn, format!("speed history not trimmed: {e}"));
+            }
+        }
+        self.history_total = loaded.total;
+        self.history = loaded
+            .rows
+            .into_iter()
+            .take(crate::history::SHOWN)
+            .collect();
+        if let Some(w) = &loaded.warn {
+            self.log(LogLevel::Warn, w.clone());
+        }
+        self.history_warn = loaded.warn;
+        self.history_writable = loaded.writable;
+    }
+
+    /// One row per finished run. A run that failed spent no bytes of its own,
+    /// so it is not a measurement and is not stored.
+    fn record_speed(
+        &mut self,
+        result: &crate::speedtest::SpeedResult,
+        elapsed: Duration,
+        pings: &crate::history::Pings,
+    ) {
+        let (Some(path), true) = (self.history_path.clone(), self.history_writable) else {
+            return;
+        };
+        let ctx = self.speed_context.clone().unwrap_or_default();
+        let radio = crate::history::Radio {
+            net_type: Some(ctx.net_type.clone()).filter(|s| !s.is_empty()),
+            band: Some(ctx.band.clone()).filter(|s| !s.is_empty() && s != "-"),
+            band_at_start: ctx.band_at_start.clone(),
+            rsrp_dbm: ctx.rsrp_dbm,
+            rsrq_db: ctx.rsrq_db,
+            sinr_db: ctx.sinr_db,
+        };
+        let entry = crate::history::Entry::from_result(
+            result,
+            &self.speed_cfg,
+            crate::history::Source::Tui,
+            Some(&radio),
+            pings.clone(),
+            elapsed.as_millis() as u64,
+            unix_now(),
+        );
+        match crate::history::append(&path, &entry) {
+            Ok(()) => {
+                self.history_total += 1;
+                self.history.insert(0, entry);
+                self.history.truncate(crate::history::SHOWN);
+                self.history_warn = None;
+            }
+            Err(e) => {
+                let msg = format!("speed history not saved: {e}");
+                self.log(LogLevel::Warn, msg.clone());
+                self.history_warn = Some(msg);
             }
         }
     }
@@ -2446,6 +2531,71 @@ mod tests {
             elapsed: Duration::from_secs(1),
             pings: crate::history::Pings::default(),
         }
+    }
+
+    fn scratch_history(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("rw-app-hist-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.join("speed-history.jsonl")
+    }
+
+    #[test]
+    fn a_finished_run_is_saved_once_and_capped_at_ten() {
+        let mut a = fixture_app();
+        a.history_writable = true;
+        a.history_path = Some(scratch_history("once"));
+        a.speed_context = Some(crate::app::SpeedContext::default());
+        for _ in 0..12 {
+            let r = crate::speedtest::SpeedResult {
+                download_bps: 1.0,
+                at_unix: unix_now(),
+                ..crate::speedtest::SpeedResult::default()
+            };
+            a.speed_run += 1;
+            a.on_speed_done(a.speed_run, Ok(done(r)));
+        }
+        assert_eq!(a.history.len(), crate::history::SHOWN);
+        assert_eq!(a.history_total, 12);
+        let p = a.history_path.clone().unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), 12);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn a_failed_run_is_not_saved() {
+        let mut a = fixture_app();
+        a.history_writable = true;
+        a.history_path = Some(scratch_history("failed"));
+        a.speed_run += 1;
+        a.on_speed_done(a.speed_run, Err("offline".into()));
+        assert!(a.history.is_empty());
+        assert!(!a.history_path.clone().unwrap().exists());
+        let _ = std::fs::remove_dir_all(a.history_path.unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_write_failure_is_logged_and_shown() {
+        let mut a = fixture_app();
+        a.history_writable = true;
+        let dir = std::env::temp_dir().join(format!("rw-app-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        // Parent is a regular file: create_dir_all fails for every user, root too.
+        a.history_path = Some(blocker.join("speed-history.jsonl"));
+        let r = crate::speedtest::SpeedResult {
+            at_unix: unix_now(),
+            ..crate::speedtest::SpeedResult::default()
+        };
+        a.speed_run += 1;
+        a.on_speed_done(a.speed_run, Ok(done(r)));
+        assert!(a
+            .history_warn
+            .clone()
+            .unwrap_or_default()
+            .contains("not saved"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
