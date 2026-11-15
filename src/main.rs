@@ -230,6 +230,12 @@ enum Cmd {
         max_mb: Option<u64>,
         #[arg(long)]
         upload_mb: Option<u64>,
+        /// Do not add this run to the saved speed history
+        #[arg(long)]
+        no_save: bool,
+        /// List the saved speed runs and exit (no network)
+        #[arg(long)]
+        history: bool,
     },
     /// Sample the router into a recording file (.rwr, one frame per line)
     Record {
@@ -950,7 +956,45 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             seconds,
             max_mb,
             upload_mb,
+            no_save,
+            history,
         }) => {
+            if history {
+                let Some(p) = routwatch::history::path() else {
+                    eprintln!("no data dir; nothing to list");
+                    return Ok(());
+                };
+                let l = routwatch::history::load(&p);
+                if let Some(w) = &l.warn {
+                    eprintln!("{w}");
+                }
+                if l.rows.is_empty() {
+                    println!("no saved speed runs");
+                    return Ok(());
+                }
+                println!(
+                    "{:<10} {:>12} {:>12} {:>6} {:>7} {:<9} host",
+                    "age", "down", "up", "idle", "loaded", "status"
+                );
+                let now = routwatch::app::unix_now();
+                for e in &l.rows {
+                    println!(
+                        "{:<10} {:>12} {:>12} {:>6} {:>7} {:<9} {}",
+                        routwatch::ui::widgets::dur(now.saturating_sub(e.ended_unix)),
+                        routwatch::ui::widgets::bitrate(e.download_bps),
+                        routwatch::ui::widgets::bitrate(e.upload_bps),
+                        e.ping_idle_ms
+                            .map(|v| format!("{v:.0}"))
+                            .unwrap_or_else(|| "-".into()),
+                        e.ping_loaded_ms
+                            .map(|v| format!("{v:.0}"))
+                            .unwrap_or_else(|| "-".into()),
+                        e.status.label(),
+                        e.ping_host.as_deref().unwrap_or("-"),
+                    );
+                }
+                return Ok(());
+            }
             let mut plan = cfg.app.speedtest.clone();
             if let Some(v) = download_url {
                 plan.download_url = v;
@@ -996,12 +1040,32 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 );
                 return Err(ApiError::Quiet(3));
             }
+            let started = std::time::Instant::now();
             let r = routwatch::speedtest::run(
                 &plan,
                 &std::sync::atomic::AtomicBool::new(false),
                 |_| {},
             )
             .map_err(ApiError::Network)?;
+            if !no_save {
+                if let Some(p) = routwatch::history::path() {
+                    // The CLI does not ping, so the row carries no ping figures:
+                    // a saved row describes what was actually measured.
+                    let entry = routwatch::history::Entry::from_result(
+                        &r,
+                        &plan,
+                        routwatch::history::Source::Cli,
+                        None,
+                        routwatch::history::Pings::default(),
+                        started.elapsed().as_millis() as u64,
+                        routwatch::app::unix_now(),
+                    );
+                    match routwatch::history::append(&p, &entry) {
+                        Ok(()) => eprintln!("saved to {}", p.display()),
+                        Err(e) => eprintln!("not saved: {e}"),
+                    }
+                }
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap());
             } else {
