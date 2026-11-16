@@ -25,6 +25,8 @@ jobs:
       # catch it: release.yml runs on no PR. Pinned to a tag so the linter and
       # its install script cannot change under us.
       - name: Lint workflows (actionlint 1.7.12)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           v=1.7.12
@@ -33,10 +35,14 @@ jobs:
           # 504 with a 92-byte HTML page. curl follows it happily and tar then
           # dies with "not in gzip format", which reds a build over a network
           # fault. The API asset endpoint serves the same bytes, and -f makes a
-          # bad response fail here rather than inside tar.
-          id=$(curl -fsSL "https://api.github.com/repos/rhysd/actionlint/releases/tags/v$v" |
+          # bad response fail here rather than inside tar. api.github.com
+          # answers 403 once an IP spends its unauthenticated hourly quota,
+          # and runner IPs are shared, so both calls carry the job token.
+          scheme=Bearer
+          auth=(-H "Authorization: ${scheme} $GH_TOKEN")
+          id=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/rhysd/actionlint/releases/tags/v$v" |
             python3 -c 'import sys,json; n=sys.argv[1]; print(next(a["id"] for a in json.load(sys.stdin)["assets"] if a["name"]==n))' "$a")
-          curl -fsSL --retry 3 --retry-delay 2 -H "Accept: application/octet-stream" \
+          curl -fsSL --retry 3 --retry-delay 2 "${auth[@]}" -H "Accept: application/octet-stream" \
             -o "$a" "https://api.github.com/repos/rhysd/actionlint/releases/assets/$id"
           tar xzf "$a"
           ./actionlint -color
