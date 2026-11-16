@@ -16,6 +16,10 @@ pub const CHUNK: usize = 64 * 1024;
 pub const CONNECT_SECS: u64 = 5;
 pub const RESPONSE_SECS: u64 = 10;
 pub const READ_SLACK_SECS: u64 = 5;
+/// Worst case for the two ping sets, the quiet window before them and the pause
+/// around them. Added to the transfer budget so the watchdog never kills a live
+/// run: four pings at `-w 6` plus the warm window fit inside this.
+pub const PING_BUDGET_SECS: u64 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -84,7 +88,7 @@ pub fn worst_case_secs(cfg: &Speedtest) -> u64 {
     } else {
         CONNECT_SECS + upload_budget(cfg).as_secs() + RESPONSE_SECS
     };
-    down + up + 10
+    down + up + 10 + PING_BUDGET_SECS
 }
 
 /// What one read window measured: the bytes, the window they arrived in, and
@@ -482,6 +486,12 @@ mod tests {
             "the 200 ms tail entered the window: {}",
             out.secs
         );
+    }
+
+    #[test]
+    fn the_watchdog_budget_covers_the_pings() {
+        let cfg = Speedtest::default();
+        assert!(worst_case_secs(&cfg) >= cfg.duration_secs + PING_BUDGET_SECS);
     }
 
     #[test]

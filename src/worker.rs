@@ -41,9 +41,10 @@ pub enum Cmd {
     },
     /// Local `ping` - never HTTP, runs on its own short-lived thread.
     Ping(String),
-    /// A throughput test through this host: the config, its run id, and the
-    /// flag `Esc` sets. Runs on its own thread, never on the router thread.
-    SpeedTest(crate::config::Speedtest, u64, Arc<AtomicBool>),
+    /// A throughput test through this host: the config, the ping host, its run
+    /// id, and the flag `Esc` sets. Runs on its own thread, never on the router
+    /// thread.
+    SpeedTest(crate::config::Speedtest, String, u64, Arc<AtomicBool>),
     /// Lazily fetch PIN / mobile-data / SMS inbox for the SMS and Device tabs.
     Extras,
     /// Restart the router. Only sent after a typed confirmation.
@@ -66,7 +67,7 @@ pub enum Ev {
     /// Intermediate throughput while a test runs, tagged with its run id.
     SpeedProgress(u64, crate::speedtest::SpeedProgress),
     /// The finished test, or the reason it stopped.
-    SpeedDone(u64, Result<Box<crate::speedtest::SpeedResult>, String>),
+    SpeedDone(u64, Result<Box<SpeedRun>, String>),
     /// PIN / mobile-data / inbox, fetched on demand.
     Extras(Box<crate::model::DeviceExtras>),
     /// One endpoint read inside the current scan: what the header shows.
@@ -190,17 +191,124 @@ fn spawn_ping(host: String, ev_tx: Sender<Ev>) {
     });
 }
 
+/// One measured run: the transfer, its two pings and its wall time.
+#[derive(Debug, Clone)]
+pub struct SpeedRun {
+    pub result: crate::speedtest::SpeedResult,
+    pub elapsed: Duration,
+    pub pings: crate::history::Pings,
+}
+
+/// Quiet window before the idle ping, so a poll already in flight can finish.
+const PING_WARM_SECS: u64 = 2;
+const PING_IDLE_COUNT: u32 = 4;
+const PING_LOADED_COUNT: u32 = 3;
+
+/// `-w` bounds the whole ping, so a rate-limited ICMP path cannot outlast the
+/// watchdog. Measured with iputils ping 20250625; busybox accepts `-w` too.
+fn run_ping(host: &str, count: u32) -> Option<PingOutcome> {
+    let args = [
+        "-c".to_string(),
+        count.to_string(),
+        "-W".to_string(),
+        "2".into(),
+        "-w".to_string(),
+        "6".into(),
+        host.to_string(),
+    ];
+    let out = std::process::Command::new("ping")
+        .args(&args)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    Some(parse_ping(host, &text))
+}
+
+/// Ping, transfer, ping. The loaded ping runs on its own scoped thread and only
+/// counts when it provably overlapped the transfer.
+pub fn run_measured(
+    cfg: &crate::config::Speedtest,
+    host: &str,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(crate::speedtest::SpeedProgress),
+) -> Result<SpeedRun, String> {
+    use std::sync::atomic::{AtomicBool as Flag, Ordering::Relaxed};
+    let start = Instant::now();
+    std::thread::sleep(Duration::from_secs(PING_WARM_SECS));
+    if cancel.load(Relaxed) {
+        return Err("cancelled".into());
+    }
+    let idle = run_ping(host, PING_IDLE_COUNT);
+    if cancel.load(Relaxed) {
+        return Err("cancelled".into());
+    }
+
+    let busy = Arc::new(Flag::new(false));
+    let seen = busy.clone();
+    let (result, loaded) = std::thread::scope(|s| {
+        let ping = s.spawn(move || {
+            // Wait for the first byte, but never past this deadline: a transfer
+            // that fails before it starts must not park the ping thread.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !seen.load(Relaxed) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let started = Instant::now();
+            let out = if seen.load(Relaxed) {
+                run_ping(host, PING_LOADED_COUNT)
+            } else {
+                None
+            };
+            (started, out)
+        });
+        let mut on_progress = |p: crate::speedtest::SpeedProgress| {
+            if p.bytes > 0 {
+                busy.store(true, Relaxed);
+            }
+            progress(p);
+        };
+        let r = crate::speedtest::run(cfg, cancel, &mut on_progress);
+        let transfer_end = Instant::now();
+        let (ping_started, out) = ping.join().unwrap_or((transfer_end, None));
+        let overlapped = ping_started < transfer_end;
+        (r, out.filter(|_| overlapped))
+    });
+    let result = result?;
+    Ok(SpeedRun {
+        result,
+        elapsed: start.elapsed(),
+        pings: crate::history::Pings {
+            host: Some(host.to_string()),
+            idle,
+            loaded,
+        },
+    })
+}
+
+/// True while a measured run holds the poll loop. The pause is an instant, not
+/// a flag, so a thread that dies mid-run still lets polling resume on its own;
+/// a restore message would never arrive from a dead sender.
+fn pausing(pause_until: Option<Instant>, now: Instant) -> bool {
+    pause_until.is_some_and(|t| now < t)
+}
+
 /// Run the transfer off both the UI thread and the router thread: a test can
 /// last a minute and must not delay a poll or a redraw. `id` comes back on
 /// every event, so a late answer can be recognised and dropped.
-fn spawn_speed(cfg: crate::config::Speedtest, id: u64, ev_tx: Sender<Ev>, cancel: Arc<AtomicBool>) {
+fn spawn_speed(
+    cfg: crate::config::Speedtest,
+    host: String,
+    id: u64,
+    ev_tx: Sender<Ev>,
+    cancel: Arc<AtomicBool>,
+) {
     let tx = ev_tx.clone();
     let spawned = std::thread::Builder::new()
         .name("routwatch-speed".into())
         .spawn(move || {
             // read_for and the upload meter already emit at most every 250 ms;
             // throttling again here only discarded ticks.
-            let out = crate::speedtest::run(&cfg, &cancel, |p| {
+            let out = run_measured(&cfg, &host, &cancel, &mut |p| {
                 let _ = tx.send(Ev::SpeedProgress(id, p));
             });
             let _ = tx.send(Ev::SpeedDone(id, out.map(Box::new)));
@@ -233,6 +341,9 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
     let mut client = HuaweiClient::new(&cfg.router.ip, cfg.app.timeout_ms);
     let mut authed = false;
     let mut paused = false;
+    // Set while a speed run measures the link; it lapses on its own so a dead
+    // speed thread cannot stop polling for good.
+    let mut pause_until: Option<Instant> = None;
     let mut attempt: usize = 0;
     let mut next_try = Instant::now();
 
@@ -289,8 +400,15 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 spawn_ping(host, ev_tx.clone());
                 continue;
             }
-            Ok(Cmd::SpeedTest(cfg, id, cancel)) => {
-                spawn_speed(cfg, id, ev_tx.clone(), cancel);
+            Ok(Cmd::SpeedTest(cfg, host, id, cancel)) => {
+                // While the run measures the link, polling would make the
+                // "idle" ping a lie. The pause expires by itself, so a dead
+                // speed thread cannot freeze the poller.
+                pause_until = Some(
+                    Instant::now()
+                        + Duration::from_secs(crate::speedtest::worst_case_secs(&cfg) + 5),
+                );
+                spawn_speed(cfg, host, id, ev_tx.clone(), cancel);
                 continue;
             }
             Ok(Cmd::Extras) => {
@@ -351,7 +469,7 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        if paused {
+        if paused || pausing(pause_until, Instant::now()) {
             continue;
         }
 
@@ -531,13 +649,27 @@ rtt min/avg/max/mdev = 12.100/12.400/12.800/0.300 ms\n";
             upload_mb: 1,
             ..crate::config::Speedtest::default()
         };
-        spawn_speed(cfg, 7, tx, Arc::new(AtomicBool::new(false)));
+        spawn_speed(
+            cfg,
+            "127.0.0.1".into(),
+            7,
+            tx,
+            Arc::new(AtomicBool::new(false)),
+        );
         let mut seen = Vec::new();
         loop {
             let out = rx.recv_timeout(Duration::from_secs(15)).expect("an answer");
             if let Ev::SpeedDone(id, res) = &out {
                 assert_eq!(*id, 7, "the answer carries the run it belongs to");
-                assert!(res.is_ok(), "{res:?}");
+                let run = res.as_ref().expect("a completed run");
+                // The idle ping is measured before the first byte, so it is
+                // always there; the loaded one is dropped when the transfer
+                // ended before it could start, which this mock may do.
+                assert_eq!(run.pings.host.as_deref(), Some("127.0.0.1"));
+                assert!(
+                    run.pings.idle.is_some(),
+                    "the quiet ping runs before the transfer"
+                );
                 break;
             }
             seen.push(out);
@@ -545,6 +677,22 @@ rtt min/avg/max/mdev = 12.100/12.400/12.800/0.300 ms\n";
         assert!(
             !seen.is_empty(),
             "a five megabyte transfer through the mock emits progress"
+        );
+    }
+
+    /// The poll pause expires on its own: nothing has to be sent back from the
+    /// measuring thread for polling to resume.
+    #[test]
+    fn the_pause_expires_without_a_restore_message() {
+        let now = Instant::now();
+        assert!(!pausing(None, now), "no run, no pause");
+        assert!(pausing(Some(now + Duration::from_secs(5)), now));
+        assert!(
+            !pausing(
+                Some(now + Duration::from_secs(5)),
+                now + Duration::from_secs(6)
+            ),
+            "past the budget the loop polls again"
         );
     }
 }

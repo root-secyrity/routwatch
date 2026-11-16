@@ -230,6 +230,12 @@ enum Cmd {
         max_mb: Option<u64>,
         #[arg(long)]
         upload_mb: Option<u64>,
+        /// Do not add this run to the saved speed history
+        #[arg(long)]
+        no_save: bool,
+        /// List the saved speed runs and exit (no network)
+        #[arg(long)]
+        history: bool,
     },
     /// Sample the router into a recording file (.rwr, one frame per line)
     Record {
@@ -263,6 +269,10 @@ enum Cmd {
         /// Render from a saved snapshot JSON instead of contacting the router
         #[arg(long, value_name = "FILE")]
         fixture: Option<PathBuf>,
+        /// Render the speed history panel from a saved JSONL ledger (review
+        /// only: nothing is written back)
+        #[arg(long, value_name = "FILE")]
+        history_fixture: Option<PathBuf>,
         /// Layout review: open the apply-confirm modal (sends nothing)
         #[arg(long, hide = true)]
         demo_confirm: bool,
@@ -946,7 +956,45 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             seconds,
             max_mb,
             upload_mb,
+            no_save,
+            history,
         }) => {
+            if history {
+                let Some(p) = routwatch::history::path() else {
+                    eprintln!("no data dir; nothing to list");
+                    return Ok(());
+                };
+                let l = routwatch::history::load(&p);
+                if let Some(w) = &l.warn {
+                    eprintln!("{w}");
+                }
+                if l.rows.is_empty() {
+                    println!("no saved speed runs");
+                    return Ok(());
+                }
+                println!(
+                    "{:<10} {:>12} {:>12} {:>6} {:>7} {:<9} host",
+                    "age", "down", "up", "idle", "loaded", "status"
+                );
+                let now = routwatch::app::unix_now();
+                for e in &l.rows {
+                    println!(
+                        "{:<10} {:>12} {:>12} {:>6} {:>7} {:<9} {}",
+                        routwatch::ui::widgets::dur(now.saturating_sub(e.ended_unix)),
+                        routwatch::ui::widgets::bitrate(e.download_bps),
+                        routwatch::ui::widgets::bitrate(e.upload_bps),
+                        e.ping_idle_ms
+                            .map(|v| format!("{v:.0}"))
+                            .unwrap_or_else(|| "-".into()),
+                        e.ping_loaded_ms
+                            .map(|v| format!("{v:.0}"))
+                            .unwrap_or_else(|| "-".into()),
+                        e.status.label(),
+                        e.ping_host.as_deref().unwrap_or("-"),
+                    );
+                }
+                return Ok(());
+            }
             let mut plan = cfg.app.speedtest.clone();
             if let Some(v) = download_url {
                 plan.download_url = v;
@@ -992,12 +1040,32 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 );
                 return Err(ApiError::Quiet(3));
             }
+            let started = std::time::Instant::now();
             let r = routwatch::speedtest::run(
                 &plan,
                 &std::sync::atomic::AtomicBool::new(false),
                 |_| {},
             )
             .map_err(ApiError::Network)?;
+            if !no_save {
+                if let Some(p) = routwatch::history::path() {
+                    // The CLI does not ping, so the row carries no ping figures:
+                    // a saved row describes what was actually measured.
+                    let entry = routwatch::history::Entry::from_result(
+                        &r,
+                        &plan,
+                        routwatch::history::Source::Cli,
+                        None,
+                        routwatch::history::Pings::default(),
+                        started.elapsed().as_millis() as u64,
+                        routwatch::app::unix_now(),
+                    );
+                    match routwatch::history::append(&p, &entry) {
+                        Ok(()) => eprintln!("saved to {}", p.display()),
+                        Err(e) => eprintln!("not saved: {e}"),
+                    }
+                }
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&r).unwrap());
             } else {
@@ -1139,6 +1207,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
         Some(Cmd::Preview {
             ref size,
             ref fixture,
+            ref history_fixture,
             demo_confirm,
             demo_settings,
             ansi,
@@ -1167,6 +1236,17 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 snap = routwatch::report::redacted(&snap);
             }
             app.on_snapshot(snap, 0);
+            if let Some(p) = history_fixture {
+                let text = std::fs::read_to_string(p)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
+                let loaded = routwatch::history::load_from_str(&text);
+                app.history = loaded
+                    .rows
+                    .into_iter()
+                    .take(routwatch::history::SHOWN)
+                    .collect();
+                app.history_total = loaded.total;
+            }
             if demo_confirm {
                 app.begin_confirm();
             }
@@ -1356,6 +1436,8 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
         Ok(None) => app.note("another routwatch is using the ledger: read-only this session"),
         Err(e) => app.note(format!("usage ledger not locked: {e}")),
     }
+    // Read once at start; the panel stays current by appending what it records.
+    app.load_history();
     let (tx, rx) = worker::spawn(cfg, password);
 
     install_restore_hook();
@@ -1600,7 +1682,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 let (id, cfg, cancel) = app.start_speed_test();
                 // The clamped copy the modal printed, and the flag the thread
                 // polls: no third source of truth.
-                let _ = tx.send(WorkerCmd::SpeedTest(cfg, id, cancel));
+                let host = cfg.ping_host.clone();
+                let _ = tx.send(WorkerCmd::SpeedTest(cfg, host, id, cancel));
                 app.note("speed test started · its bytes count in the router's month total");
             }
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => app.speed_confirm = false,
@@ -2586,9 +2669,10 @@ mod key_tests {
         assert!(!app.speed_confirm);
         assert!(app.speed_running);
         match rx.try_recv() {
-            Ok(WorkerCmd::SpeedTest(cfg, id, _)) => {
+            Ok(WorkerCmd::SpeedTest(cfg, host, id, _)) => {
                 assert_eq!(id, app.speed_run);
                 assert_eq!(cfg.max_mb, app.speed_cfg.max_mb);
+                assert_eq!(host, app.speed_cfg.ping_host, "the host the run pings");
             }
             other => panic!("expected one SpeedTest command, got {other:?}"),
         }

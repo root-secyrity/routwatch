@@ -56,6 +56,13 @@ upload, `--max-mb`, `--upload-mb` and `--seconds` change the bounds (clamped the
 same way the TUI clamps them), and a real run needs `--allow-data`, which exits
 `3` without it.
 
+A run that succeeds is appended to `$XDG_DATA_HOME/routwatch/speed-history.jsonl`
+(`0600`, the newest two hundred kept) with `source = "cli"`; the row carries no
+ping figures, because the CLI does not ping and a saved row must describe what
+was measured. `--no-save` leaves that run out of the file, and
+`speedtest --history` lists the saved rows without touching the network or the
+file, so it works offline and needs no `--allow-data`.
+
 If you are publishing the output of `dump` somewhere else, prefer
 `dump --redact` over editing a raw file by hand; see
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for what a public issue may contain.

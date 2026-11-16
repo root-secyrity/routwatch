@@ -2734,6 +2734,7 @@ mod tests {
             band_at_start: Some("LTE B3".into()),
             band: "LTE B3".into(),
             rsrp_dbm: Some(-92.0),
+            rsrq_db: Some(-9.0),
             sinr_db: Some(11.0),
             // The device counter is bytes per second: 11.5 MB/s is 92 Mbps and
             // must be rendered through `bps`, never through `bitrate`.

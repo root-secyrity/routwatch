@@ -1520,16 +1520,53 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
 
 // ----------------------------------------------------------------- network
 
+/// Row budget for the bottom strip. One function so the title, the test and the
+/// drawing cannot disagree.
+pub(crate) fn split(height: u16) -> (u16, u16, u16) {
+    // 15 = link 8 + the smallest usable ping block 7.
+    let hist = height.saturating_sub(15).clamp(0, 14);
+    let mut link = 8;
+    let ping = height.saturating_sub(hist + link).clamp(7, 11);
+    // Surplus past the ping panel's comfortable size goes to CELL | LINK, which
+    // simply gains blank lines inside its border.
+    link += height.saturating_sub(hist + link + ping);
+    (link, ping, hist)
+}
+
+/// Rows of saved runs the panel can draw in `height` rows: the border takes two,
+/// and nothing else is reserved, so no space is spent on a footer that would
+/// steal a data row when the panel grows.
+pub(crate) fn visible_rows(height: u16) -> usize {
+    (height.saturating_sub(2) as usize).min(crate::history::SHOWN)
+}
+
 pub fn network_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
-    // 11 rows carry the ping block plus the test block; anything shorter loses
-    // the tail rather than the whole panel.
-    let panel_rows = if area.height >= 22 { 11 } else { 7 };
-    let [top, ping_area] =
-        Layout::vertical([Constraint::Min(6), Constraint::Length(panel_rows)]).areas(area);
-    // Drawn before the `snap` guard: a finished test is the user's, not the
-    // router's, and must survive a poll that failed.
+    if area.height < 18 {
+        // Cramped terminal: the ping panel alone, no saved runs.
+        let panel_rows = if area.height >= 12 { 7 } else { 5 };
+        let [top, ping_area] =
+            Layout::vertical([Constraint::Min(4), Constraint::Length(panel_rows)]).areas(area);
+        // Drawn before the `snap` guard: a finished test is the user's, not the
+        // router's, and must survive a poll that failed.
+        ping_speed_panel(f, ping_area, app);
+        draw_cell_link(f, top, app, t);
+        return;
+    }
+    let (link_h, ping_h, hist_h) = split(area.height);
+    let [top, ping_area, hist_area] = Layout::vertical([
+        Constraint::Length(link_h),
+        Constraint::Length(ping_h),
+        Constraint::Length(hist_h),
+    ])
+    .areas(area);
     ping_speed_panel(f, ping_area, app);
+    speed_history_panel(f, hist_area, app);
+    draw_cell_link(f, top, app, t);
+}
+
+/// CELL and LINK, one block of radio facts and one of the link facts.
+fn draw_cell_link(f: &mut Frame, top: Rect, app: &App, t: &crate::theme::Theme) {
     let Some(s) = &app.snap else {
         f.render_widget(
             Paragraph::new("waiting…").block(panel("NETWORK".into(), t)),
@@ -1629,30 +1666,42 @@ pub fn network_tab(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// The ping block and the speed test share one panel: both measure the path
-/// through this machine, and a reader needs them side by side.
+/// through this machine, and a reader needs them side by side. The numbers go
+/// down first; the explaining lines fill whatever rows remain, in a fixed
+/// priority, so a short panel hides prose but never a measurement.
 fn ping_speed_panel(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
-    let mut lines = Vec::new();
+    let room = area.height.saturating_sub(2) as usize;
+    // Rank 0 is a number or a live status and is never dropped. Ranks 1 to 3
+    // are dropped from the bottom of that order when the panel is short: how
+    // to run it, what it ran over, then the result note.
+    let mut rows: Vec<(u8, Line)> = Vec::new();
     match &app.ping {
         Some(p) => {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:<16}", p.host), Style::default().fg(t.fg)),
-                Span::styled(
-                    p.detail.clone(),
-                    Style::default().fg(if p.ok { t.ok } else { t.danger }),
-                ),
-            ]));
+            rows.push((
+                0,
+                Line::from(vec![
+                    Span::styled(format!("{:<16}", p.host), Style::default().fg(t.fg)),
+                    Span::styled(
+                        p.detail.clone(),
+                        Style::default().fg(if p.ok { t.ok } else { t.danger }),
+                    ),
+                ]),
+            ));
             if let Some(avg) = p.avg_ms {
-                lines.push(Line::from(Span::styled(
-                    format!("rtt avg {avg:.1} ms · packets {}/{}", p.received, p.sent),
-                    Style::default().fg(t.dim),
-                )));
+                rows.push((
+                    0,
+                    Line::from(Span::styled(
+                        format!("rtt avg {avg:.1} ms · packets {}/{}", p.received, p.sent),
+                        Style::default().fg(t.dim),
+                    )),
+                ));
             }
         }
-        None => lines.push(Line::from(Span::styled(
-            "no test yet",
-            Style::default().fg(t.dim),
-        ))),
+        None => rows.push((
+            0,
+            Line::from(Span::styled("no test yet", Style::default().fg(t.dim))),
+        )),
     }
     match (&app.speed_running, &app.speed_progress) {
         (true, Some(p)) => {
@@ -1660,16 +1709,22 @@ fn ping_speed_panel(f: &mut Frame, area: Rect, app: &App) {
                 crate::speedtest::Phase::Download => "downloading",
                 crate::speedtest::Phase::Upload => "uploading",
             };
-            lines.push(Line::from(Span::styled(
-                format!("{phase} · {} · {}", bytes(p.bytes), bitrate(p.rate_bps)),
-                Style::default().fg(t.accent),
-            )));
+            rows.push((
+                0,
+                Line::from(Span::styled(
+                    format!("{phase} · {} · {}", bytes(p.bytes), bitrate(p.rate_bps)),
+                    Style::default().fg(t.accent),
+                )),
+            ));
             // While the link is saturated the router polls may time out; say it
             // during the run instead of letting a stale header look broken.
-            lines.push(Line::from(Span::styled(
-                "router polls may fail while the link is busy",
-                Style::default().fg(t.dim),
-            )));
+            rows.push((
+                0,
+                Line::from(Span::styled(
+                    "router polls may fail while the link is busy",
+                    Style::default().fg(t.dim),
+                )),
+            ));
         }
         _ => {
             if let Some(r) = &app.speed {
@@ -1703,12 +1758,12 @@ fn ping_speed_panel(f: &mut Frame, area: Rect, app: &App) {
                 if r.partial {
                     spans.push(Span::styled(" · partial", Style::default().fg(t.warn)));
                 }
-                lines.push(Line::from(spans));
+                rows.push((0, Line::from(spans)));
                 if let Some(note) = &r.note {
-                    lines.push(Line::from(Span::styled(
-                        note.clone(),
-                        Style::default().fg(t.warn),
-                    )));
+                    rows.push((
+                        3,
+                        Line::from(Span::styled(note.clone(), Style::default().fg(t.warn))),
+                    ));
                 }
                 if let Some(c) = &app.speed_context {
                     // A test can cross a band change on a 5G CPE; both ends are
@@ -1717,40 +1772,139 @@ fn ping_speed_panel(f: &mut Frame, area: Rect, app: &App) {
                         (Some(a), b) if a != b => format!("{a} → {b}"),
                         _ => c.band.clone(),
                     };
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "through this host · {} · {} · peak device ↓ {} ↑ {}",
-                            c.net_type,
-                            band,
-                            // Byte counters, so `bps`, not `bitrate`.
-                            bps(c.router_peak_dl as f64),
-                            bps(c.router_peak_ul as f64)
-                        ),
-                        Style::default().fg(t.dim),
-                    )));
+                    rows.push((
+                        2,
+                        Line::from(Span::styled(
+                            format!(
+                                "through this host · {} · {} · peak device ↓ {} ↑ {}",
+                                c.net_type,
+                                band,
+                                // Byte counters, so `bps`, not `bitrate`.
+                                bps(c.router_peak_dl as f64),
+                                bps(c.router_peak_ul as f64)
+                            ),
+                            Style::default().fg(t.dim),
+                        )),
+                    ));
                 }
             } else {
-                lines.push(Line::from(Span::styled(
-                    "no speed test yet · T on this tab measures the path through this host",
-                    Style::default().fg(t.dim),
-                )));
+                rows.push((
+                    0,
+                    Line::from(Span::styled(
+                        "no speed test yet · T on this tab measures the path through this host",
+                        Style::default().fg(t.dim),
+                    )),
+                ));
             }
         }
     }
     if let Some(e) = &app.speed_error {
-        lines.push(Line::from(Span::styled(
-            format!("speed test: {e}"),
-            Style::default().fg(t.danger),
-        )));
+        rows.push((
+            0,
+            Line::from(Span::styled(
+                format!("speed test: {e}"),
+                Style::default().fg(t.danger),
+            )),
+        ));
     }
-    lines.push(Line::from(Span::styled(
-        "p ping · T speed test (both from THIS machine, not from the router)",
-        Style::default().fg(t.dim),
-    )));
+    rows.push((
+        1,
+        Line::from(Span::styled(
+            "p ping · T speed test (both from THIS machine, not from the router)",
+            Style::default().fg(t.dim),
+        )),
+    ));
+
+    // Admit optional rows by rank until the panel is full, then draw the
+    // survivors in reading order.
+    let mut admit: Vec<u8> = Vec::new();
+    let mut used = rows.iter().filter(|(rank, _)| *rank == 0).count();
+    for rank in 1..=3u8 {
+        let count = rows.iter().filter(|(r, _)| *r == rank).count();
+        if count > 0 && used + count <= room {
+            used += count;
+            admit.push(rank);
+        }
+    }
+    let shown: Vec<Line> = rows
+        .into_iter()
+        .filter(|(rank, _)| *rank == 0 || admit.contains(rank))
+        .map(|(_, line)| line)
+        .collect();
     f.render_widget(
-        Paragraph::new(lines).block(panel("PING · SPEED".into(), t)),
+        Paragraph::new(shown).block(panel("PING · SPEED".into(), t)),
         area,
     );
+}
+
+/// The last `history::SHOWN` runs, newest first. The title carries the count of
+/// rows actually drawn and the legend, so the rows are all data.
+fn speed_history_panel(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let rows = visible_rows(area.height);
+    let shown = app.history.len().min(rows);
+    let title = if app.history_total == 0 {
+        "SPEED · no saved runs".to_string()
+    } else if app.history_warn.is_some() {
+        format!(
+            "SPEED · {shown} of {} · history problem, see log",
+            app.history_total
+        )
+    } else {
+        // The median is over the rows on screen, so the number beside it is
+        // one a reader can check against the lines below.
+        let median = crate::history::median_down(&app.history[..shown]);
+        format!(
+            "SPEED · {shown} of {} · med {:.1} Mbps · ms idle/loaded, * partial, ~band",
+            app.history_total,
+            median / 1e6
+        )
+    };
+    let block = panel(title, t);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let now = crate::app::unix_now();
+    let mut lines: Vec<Line> = Vec::new();
+    for e in app.history.iter().take(rows) {
+        let age = dur(now.saturating_sub(e.ended_unix));
+        let idle = e
+            .ping_idle_ms
+            .map(|v| format!("{v:.0}"))
+            .unwrap_or_else(|| "-".into());
+        let loaded = e
+            .ping_loaded_ms
+            .map(|v| format!("{v:.0}"))
+            .unwrap_or_else(|| "-".into());
+        let mut spans = vec![
+            Span::styled(format!("{age:<4} "), Style::default().fg(t.dim)),
+            Span::styled(
+                format!("{:>6.1}↓", e.download_bps / 1e6),
+                Style::default().fg(t.ok),
+            ),
+            Span::styled(
+                format!("{:>6.1}↑", e.upload_bps / 1e6),
+                Style::default().fg(t.accent),
+            ),
+            Span::styled(format!("{idle:>4} {loaded:>4}"), Style::default().fg(t.fg)),
+        ];
+        if e.status == crate::history::Status::Partial {
+            spans.push(Span::styled(" *", Style::default().fg(t.warn)));
+        }
+        if e.band_changed {
+            spans.push(Span::styled(" ~band", Style::default().fg(t.warn)));
+        }
+        lines.push(Line::from(spans));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no saved runs · T measures one",
+            Style::default().fg(t.dim),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 // ----------------------------------------------------------------- clients
@@ -2879,4 +3033,179 @@ pub fn dense(f: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(connection_lines(app)).block(panel("CONNECTION".into(), t)),
         bottom[1],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{split, visible_rows};
+    use crate::app::{App, Tab};
+    use crate::theme::{GraphStyle, Theme};
+
+    fn fixture_app() -> App {
+        let snap: crate::model::Snapshot =
+            serde_json::from_str(include_str!("../../fixtures/sample-snapshot.json"))
+                .expect("fixture snapshot");
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            crate::app::View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(snap, 432);
+        app.tab = Tab::Network;
+        app
+    }
+
+    fn app_with_history(n: usize) -> App {
+        let mut a = fixture_app();
+        for i in 0..n {
+            let mut e = crate::history::Entry::blank();
+            e.ended_unix = crate::app::unix_now() - i as u64 * 60;
+            e.started_unix = e.ended_unix - 20;
+            e.download_bps = 120_000_000.0 + i as f64;
+            e.upload_bps = 20_000_000.0;
+            e.ping_idle_ms = Some(18.0);
+            e.ping_loaded_ms = Some(64.0);
+            a.history.push(e);
+        }
+        a.history_total = n;
+        a
+    }
+
+    fn app_with_speed_result() -> App {
+        let mut a = fixture_app();
+        a.speed_run += 1;
+        let r = crate::speedtest::SpeedResult {
+            download_bps: 150_000_000.0,
+            at_unix: crate::app::unix_now(),
+            ..crate::speedtest::SpeedResult::default()
+        };
+        let run = crate::worker::SpeedRun {
+            result: r,
+            elapsed: std::time::Duration::from_secs(12),
+            pings: crate::history::Pings::default(),
+        };
+        a.on_speed_done(a.speed_run, Ok(run));
+        a
+    }
+
+    fn draw_network(app: &App, w: u16, h: u16) -> String {
+        crate::ui::render_to_string(app, w, h)
+    }
+
+    #[test]
+    fn the_bottom_strip_never_starves_a_panel_and_never_shrinks_growth() {
+        let mut last_hist_rows = 0;
+        for h in 18..=48u16 {
+            let (link, ping, hist) = split(h);
+            assert_eq!(
+                link + ping + hist,
+                h,
+                "the three panels fill the body at {h}"
+            );
+            assert!(link >= 8, "CELL | LINK needs six content lines at {h}");
+            assert!(ping >= 7, "the ping panel keeps its minimum at {h}");
+            assert!(hist <= 14, "history never takes more than its cap at {h}");
+            let rows = visible_rows(hist);
+            assert!(rows >= last_hist_rows, "growth must not hide a row: {h}");
+            last_hist_rows = rows;
+        }
+    }
+
+    #[test]
+    fn the_table_in_the_plan_matches_the_code() {
+        use visible_rows as v;
+        assert_eq!((split(18), v(split(18).2)), ((8, 7, 3), 1));
+        assert_eq!((split(20), v(split(20).2)), ((8, 7, 5), 3));
+        assert_eq!((split(21), v(split(21).2)), ((8, 7, 6), 4));
+        assert_eq!((split(24), v(split(24).2)), ((8, 7, 9), 7));
+        assert_eq!((split(27), v(split(27).2)), ((8, 7, 12), 10));
+        assert_eq!((split(29), v(split(29).2)), ((8, 7, 14), 10));
+        assert_eq!((split(33), v(split(33).2)), ((8, 11, 14), 10));
+        assert_eq!((split(40), v(split(40).2)), ((15, 11, 14), 10));
+    }
+
+    #[test]
+    fn the_speed_title_counts_the_rows_that_are_drawn() {
+        let mut a = app_with_history(10);
+        // 80x24: header 2 + body 21 + footer 1, so four saved rows fit.
+        let screen = draw_network(&a, 80, 24);
+        assert!(
+            screen.contains("4 of 10"),
+            "the title must not claim ten drawn rows"
+        );
+        let screen = draw_network(&a, 100, 30);
+        assert!(screen.contains("10 of 10"), "{screen}");
+        a.history.truncate(3);
+        let screen = draw_network(&a, 100, 30);
+        assert!(screen.contains("3 of 10"));
+    }
+
+    /// Four rows on screen must not carry the median of ten: the number is
+    /// checkable against the lines below it, or it is noise.
+    #[test]
+    fn the_median_covers_only_the_rows_on_screen() {
+        let a = app_with_history(10);
+        let full = draw_network(&a, 100, 30);
+        let narrow = draw_network(&a, 80, 24);
+        assert!(narrow.contains("4 of 10"));
+        let med = |screen: &str| -> f64 {
+            let at = screen.find("med ").expect("a median") + 4;
+            screen[at..]
+                .split(' ')
+                .next()
+                .expect("a number")
+                .parse()
+                .expect("a float")
+        };
+        let first_four = a.history[..4].iter().map(|e| e.download_bps).sum::<f64>() / 4.0;
+        assert!(
+            (med(&narrow) - first_four / 1e6).abs() < 0.2,
+            "narrow median {} must be the four drawn rows, not {}",
+            med(&narrow),
+            med(&full)
+        );
+    }
+
+    /// A measurement and the key that starts the next one outrank prose. At
+    /// 100x14 the panel has three content rows, so only those two survive.
+    #[test]
+    fn the_ping_panel_keeps_numbers_and_drops_the_note() {
+        let mut a = app_with_speed_result();
+        a.speed_context = Some(crate::app::SpeedContext {
+            net_type: "LTE".into(),
+            band: "LTE B3".into(),
+            ..Default::default()
+        });
+        if let Some(r) = a.speed.as_mut() {
+            r.note = Some("note that is much longer than the rows allow".into());
+        }
+        let screen = draw_network(&a, 100, 30);
+        assert!(screen.contains("Mbps"), "the rate is a number, never prose");
+        assert!(screen.contains("from THIS machine"));
+        assert!(screen.contains("through this host"));
+
+        let screen = draw_network(&a, 100, 14);
+        assert!(
+            screen.contains("Mbps"),
+            "a short panel still shows the rate"
+        );
+        assert!(screen.contains("from THIS machine"));
+        assert!(
+            !screen.contains("much longer than the rows"),
+            "the note is what a three row panel drops"
+        );
+    }
+
+    #[test]
+    fn a_short_terminal_keeps_the_old_two_panel_layout() {
+        let a = app_with_history(10);
+        let screen = draw_network(&a, 80, 18);
+        assert!(screen.contains("PING · SPEED"));
+        assert!(
+            !screen.contains("SPEED · "),
+            "no history panel when the body is under 18 rows"
+        );
+    }
 }

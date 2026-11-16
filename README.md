@@ -117,6 +117,12 @@ question.
   single plain-HTTP stream from this machine through the CPE, so the number
   includes the local Wi-Fi or LAN path and spends data that counts in the router's
   month total. It asks before it runs; `Esc` stops it.
+- **The last runs are kept, and the panel says how many it shows**: each finished
+  run is appended to `$XDG_DATA_HOME/routwatch/speed-history.jsonl` (`0600`): the
+  Network tab shows the newest ten, the file keeps two hundred. The `SPEED` panel
+  also lists the ping measured before the transfer and the one measured during it,
+  so bufferbloat is visible next to the rate. `routwatch speedtest --history`
+  prints the saved rows and `--no-save` keeps a run out of the file.
 
 Fourteen more, including the `100006` band-write code, the small-terminal order and
 the graph colour floor, are stated in [`docs/limits.md`](docs/limits.md). Nothing
