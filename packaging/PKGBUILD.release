@@ -9,6 +9,10 @@
 # When a new tag is cut, bump pkgver and refresh the checksum:
 #   updpkgsums
 #
+# 0.7.0: the checksum is pinned to the v0.7.0 tag archive, confirmed from two
+# endpoints (github.com archive and codeload, byte-identical) before the package
+# was built.
+#
 # 0.6.0: the checksum is pinned to the v0.6.0 tag archive, confirmed from two
 # endpoints (github.com archive and codeload, byte-identical) before the package
 # was built.
@@ -46,7 +50,7 @@ provides=('routwatch')
 conflicts=('routwatch-git')
 options=('!lto' '!strip')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('3372c74648609a3527bdb74528c99bb201b973fedb2da08521a7f2de73e85b7f')
+sha256sums=('3e5117de3dedc70e3ff26b4fe53fffb6f90b797758be3ee6b5cfedfa6dc423a9')
 
 build() {
 	cd "$pkgname-$pkgver"
