@@ -353,6 +353,9 @@ pub struct MockCpe {
     logouts: Arc<AtomicUsize>,
     signals: Arc<AtomicUsize>,
     dhcp_posts: Arc<AtomicUsize>,
+    /// Every POST the mock saw, whatever the path. A read-only audit must leave
+    /// this at zero; `dhcp_posts` counts one endpoint and cannot answer that.
+    posts: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -372,6 +375,8 @@ impl MockCpe {
         let st = Arc::clone(&state);
         let dhcp_posts = Arc::new(AtomicUsize::new(0));
         let dp = Arc::clone(&dhcp_posts);
+        let posts = Arc::new(AtomicUsize::new(0));
+        let po = Arc::clone(&posts);
         let dhcp = Arc::new(Mutex::new(DhcpState::default()));
         let dh = Arc::clone(&dhcp);
         let thread = std::thread::spawn(move || {
@@ -385,6 +390,7 @@ impl MockCpe {
                     logouts: &lo,
                     signals: &sig,
                     dhcp_posts: &dp,
+                    posts: &po,
                 };
                 let _ = serve(stream, profile, &counters, &st, &dh);
             }
@@ -396,6 +402,7 @@ impl MockCpe {
             logouts,
             signals,
             dhcp_posts,
+            posts,
             thread: Some(thread),
         }
     }
@@ -425,6 +432,11 @@ impl MockCpe {
     pub fn dhcp_posts(&self) -> usize {
         self.dhcp_posts.load(Ordering::SeqCst)
     }
+
+    /// POST requests of any path seen so far.
+    pub fn posts(&self) -> usize {
+        self.posts.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for MockCpe {
@@ -446,6 +458,7 @@ struct Counters<'a> {
     logouts: &'a AtomicUsize,
     signals: &'a AtomicUsize,
     dhcp_posts: &'a AtomicUsize,
+    posts: &'a AtomicUsize,
 }
 
 fn serve(
@@ -464,6 +477,9 @@ fn serve(
 
     if path.starts_with("/api/device/signal") {
         counters.signals.fetch_add(1, Ordering::SeqCst);
+    }
+    if method == "POST" {
+        counters.posts.fetch_add(1, Ordering::SeqCst);
     }
 
     // Drain headers so the client is not left writing into a closed socket.
