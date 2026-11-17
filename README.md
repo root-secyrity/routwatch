@@ -168,6 +168,26 @@ same address are both exit 0: the ISP keeping the lease is a result, not a failu
   address through this path is unverified. The write is covered by the mock and by
   the plan's rules, not by a live renew.
 
+## Watching the link after a write
+
+A band write restarts the radio, and a mask the tower does not like shows up as a
+link that never comes back. `routwatch bands --set 1,3 --allow-write --watch 180`
+holds the session open for three minutes after the write lands and reads the link
+every five seconds.
+
+- The terminal command stays attached; the TUI keeps the same offer in its status
+  bar (`watching 172s, u reverts`) and closes it when the window ends.
+- A session the restart dropped is rebuilt once with the same credentials, so the
+  watch survives the radio going down and up.
+- If the link has neither a state nor a WAN address for a full minute, the watch
+  offers the previous mask once and waits for `y` on stdin. It never reverts on its
+  own, and the window ending writes nothing.
+- The TUI's `u` sends the four values the device carried before the apply (mode,
+  bands, mask, option) back through the same write path, forced: by verdict time the
+  device already reports the target mask, so an unforced write would be skipped.
+- **Not measured on hardware yet**: a revert taken after a real dropped link is
+  covered by the mock only.
+
 ## Development
 
 `make build`, `make test`, `make lint`, `make fmt`; a change is ready when all four

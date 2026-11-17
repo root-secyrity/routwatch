@@ -145,6 +145,10 @@ enum Cmd {
         /// (used once per firmware to prove the write path; resets the radio)
         #[arg(long)]
         force: bool,
+        /// Keep watching the link after a successful write, for this many
+        /// seconds. Nothing is reverted without a `y` on stdin.
+        #[arg(long, value_name = "SECS")]
+        watch: Option<u64>,
     },
     /// Try band sets, measure each, print a ranked table
     Scan {
@@ -689,8 +693,16 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             dry_run,
             allow_write,
             force,
+            watch,
         }) => {
-            let mut client = connect(&cfg, cli.password_stdin)?;
+            if watch.is_some() && set.is_none() {
+                return Err(ApiError::Usage(
+                    "--watch needs --set: there is no write to watch".into(),
+                ));
+            }
+            // The credentials are kept for the watch: a radio restart can drop
+            // the session, and the watch has to sign in again by itself.
+            let (mut client, creds) = connect_with(&cfg, cli.password_stdin)?;
             if let Some(list_arg) = set {
                 let mode_code = bands::mode_code(&mode).ok_or_else(|| {
                     ApiError::Config(format!("unknown mode {mode:?}; use auto, 4g or 5g"))
@@ -778,17 +790,50 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     &mut progress,
                     limits,
                 );
-                client.logout();
-                match settled {
+                let undo_payload = bands::BandPayload {
+                    network_mode: current
+                        .network_mode
+                        .clone()
+                        .unwrap_or_else(|| "00".to_string()),
+                    network_band: network_all
+                        .clone()
+                        .unwrap_or_else(|| current_mask.clone().unwrap_or_else(|| "0".to_string())),
+                    lte_band: current_mask.clone().unwrap_or_else(|| "0".to_string()),
+                    network_option: current.network_option.clone(),
+                };
+                let undo_intent = WriteIntent::ApplyBands {
+                    mode: undo_payload.network_mode.clone(),
+                    bands: current_mask
+                        .as_deref()
+                        .and_then(bands::from_hex)
+                        .map(bands::bands_from_mask)
+                        .unwrap_or_default(),
+                    mask: undo_payload.lte_band.clone(),
+                    option: undo_payload.network_option.clone(),
+                };
+                let result = match settled {
                     WriteState::Success { .. } => {
                         println!("result: {}", settled.label());
-                        Ok(())
+                        match watch {
+                            Some(secs) if secs > 0 => watch_link(
+                                &mut client,
+                                &creds,
+                                Some((&undo_payload, &undo_intent)),
+                                cfg.app.verify_secs,
+                                secs,
+                            ),
+                            _ => Ok(()),
+                        }
                     }
                     other => {
                         println!("result: {}", other.label());
                         Err(ApiError::WriteFailed(other.label()))
                     }
-                }
+                };
+                // One logout per path: the watch keeps the session open on
+                // purpose, and closes it here like every other branch.
+                client.logout();
+                result
             } else {
                 let node = client.get("net/net-mode-list")?;
                 let catalog = bands::from_net_mode_list(&node);
@@ -1800,11 +1845,57 @@ fn read_password(cfg: &config::Config, stdin_password: Option<&str>) -> Result<S
 }
 
 fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, ApiError> {
+    Ok(connect_with(cfg, password_stdin)?.0)
+}
+
+/// The same login, keeping the credentials: a command that holds the session
+/// open across a radio restart must be able to sign in again on its own.
+fn connect_with(
+    cfg: &config::Config,
+    password_stdin: bool,
+) -> Result<(HuaweiClient, (String, String)), ApiError> {
     let stdin_password = read_stdin_password(password_stdin)?;
     let password = read_password(cfg, stdin_password.as_deref())?;
     let mut client = HuaweiClient::new(&cfg.router.ip, cfg.app.timeout_ms);
     client.login(&cfg.router.username, &password)?;
-    Ok(client)
+    Ok((client, (cfg.router.username.clone(), password)))
+}
+
+/// One line from stdin, `y` in either case. Anything else, or no stdin at all,
+/// means no: the revert is offered, never taken.
+fn confirmed_on_stdin() -> bool {
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(_) => matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"),
+        Err(_) => false,
+    }
+}
+
+/// The watch, wired to this process: a real clock, real stdin, stdout lines.
+fn watch_link(
+    client: &mut HuaweiClient,
+    creds: &(String, String),
+    undo: Option<(&bands::BandPayload, &WriteIntent)>,
+    verify_secs: u64,
+    secs: u64,
+) -> Result<(), ApiError> {
+    let mut sleep = |d: Duration| std::thread::sleep(d);
+    let mut confirm = confirmed_on_stdin;
+    let mut log = |line: String| println!("watch: {line}");
+    let mut io = routwatch::watch::WatchIo {
+        sleep: &mut sleep,
+        confirm: &mut confirm,
+        log: &mut log,
+    };
+    routwatch::watch::watch_link(
+        client,
+        (creds.0.as_str(), creds.1.as_str()),
+        undo,
+        verify_secs,
+        secs,
+        &mut io,
+    )?;
+    Ok(())
 }
 
 // --------------------------------------------------------------------- TUI

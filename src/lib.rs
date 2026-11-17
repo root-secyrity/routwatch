@@ -30,6 +30,7 @@ pub mod speedtest;
 pub mod theme;
 pub mod ui;
 pub mod usage;
+pub mod watch;
 pub mod worker;
 pub mod write;
 pub mod xml;

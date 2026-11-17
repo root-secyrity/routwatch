@@ -109,6 +109,12 @@ why each one is stated instead of hidden.
   password over WLAN is not a field this firmware exposes: the check prints
   `unknown` rather than a pass.
 
+- **The watch is a read, and the revert is a question**: `--watch` holds the
+  session open for the requested seconds and reads `monitoring/status` every five
+  seconds; it writes nothing on its own, and the window ending leaves the mask as
+  applied. The revert is offered once after a minute of no state and no address,
+  and taken only on a `y`, because the tool cannot tell a band it dropped from an
+  ISP that went away. A session the radio restart dropped is signed in again once.
 - **The speed test measures this host, not the router**: the transfer runs from
   this machine through the CPE, so the number includes the local Wi-Fi or LAN
   segment, and it is a single plain-HTTP stream rather than the sum of every
