@@ -128,6 +128,13 @@ why each one is stated instead of hidden.
   spent nothing. The panel shows ten rows and the file keeps two hundred; at
   `100x30` all ten fit, and at `80x24` it says `4 of 10` rather than pretending.
 
+- **`scan` ranks this host's path, not the link**: the speed test runs from the
+  machine routwatch sits on, through the CPE, so a VPN or a second interface in that
+  path measures itself. The run refuses to start when the default route and the
+  router's interface differ, and `--ignore-route` is the explicit way past that
+  check. One measurement per set is also one sample: a set that wins once has won
+  once, and the tables say `measured`, not `best`.
+
 - `[app].verify_secs` (default 20): how long a band or DNS write is re-read before it
   is called a failure. The H122-373 publishes the new mask after its radio restarts,
   and one read at 1.5 s measured a landed switch as a failure.

@@ -129,6 +129,25 @@ the graph colour floor, are stated in [`docs/limits.md`](docs/limits.md). Nothin
 there is a wish list: each entry is something a firmware or a terminal actually
 did.
 
+## Band scan
+
+`routwatch scan --set 1,3 --set 1,28 --allow-write` applies one band set at a
+time, waits for the link to carry an address again, runs one speed test on that
+set, and at the end puts the mask the run started with back on the radio. The
+table ranks the sets by measured download.
+
+- It cuts the internet for every set: seconds to a minute each, and the whole run
+  spends the data the speed tests spend.
+- `--dry-run` prints the set list, the time ceiling and the data ceiling and sends
+  nothing. Both ceilings are upper bounds: the settle wait ends as soon as an
+  address returns, and a measurement that fails early spends less.
+- `--settle` is a cap, not a duration.
+- `Ctrl-C` restores the starting mask too. If the restore itself fails the run says
+  which set is still on the radio and the exact command that puts it back.
+- One number per set is not a verdict: the test measures this host's path through
+  the router, not the WAN link alone, so a VPN or a second interface in that path
+  makes every row say nothing about the set.
+
 ## Development
 
 `make build`, `make test`, `make lint`, `make fmt`; a change is ready when all four
