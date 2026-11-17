@@ -32,6 +32,10 @@ pub enum Cmd {
     ApplyBands {
         payload: BandPayload,
         intent: WriteIntent,
+        /// Send the write even when the device already reports the target mask.
+        /// The revert needs it: by the time `u` is pressed the apply it undoes
+        /// has landed, so the device matches the payload it must be sent.
+        force: bool,
     },
     ApplyDns {
         primary: String,
@@ -449,13 +453,17 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 }
                 continue;
             }
-            Ok(Cmd::ApplyBands { payload, intent }) => {
+            Ok(Cmd::ApplyBands {
+                payload,
+                intent,
+                force,
+            }) => {
                 let mut progress = |st: WriteState| {
                     let _ = ev_tx.send(Ev::Write(st));
                 };
                 let limits = VerifyLimits::from_secs(cfg.app.verify_secs);
                 let settled =
-                    apply_bands_with(&mut client, &payload, intent, false, &mut progress, limits);
+                    apply_bands_with(&mut client, &payload, intent, force, &mut progress, limits);
                 let link_dropped = matches!(&settled, WriteState::Success { note, .. } if !note.contains("nothing sent"));
                 let _ = ev_tx.send(Ev::Write(settled));
                 if link_dropped {

@@ -1106,4 +1106,54 @@ mod tests {
         let settled = apply_bands_with(&mut c, &payload, intent, false, &mut |_| {}, limits);
         assert!(matches!(settled, WriteState::Success { .. }), "{settled:?}");
     }
+
+    #[test]
+    fn a_forced_write_goes_out_even_when_the_mask_already_matches() {
+        use crate::write::{
+            apply_bands_with, read_mode, same_band_target, VerifyLimits, WriteIntent, WriteState,
+        };
+        use std::time::Duration;
+
+        let mock = MockCpe::start(Profile::SwitchWarns);
+        let mut c = crate::router::client::HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let before = read_mode(&mut c).expect("read");
+        let mask = before.lte_band.clone().expect("the mock reports a mask");
+        let payload = crate::router::bands::BandPayload {
+            network_mode: before.network_mode.clone().unwrap_or_else(|| "00".into()),
+            network_band: mask.clone(),
+            lte_band: mask.clone(),
+            network_option: before.network_option.clone(),
+        };
+        assert!(
+            same_band_target(&before, &payload),
+            "the payload must already be the device's target, or this test proves nothing"
+        );
+        let limits = VerifyLimits {
+            reread: Duration::from_millis(50),
+            window: Duration::from_secs(2),
+        };
+        let intent = WriteIntent::ApplyBands {
+            mode: payload.network_mode.clone(),
+            bands: vec![],
+            mask: payload.lte_band.clone(),
+            option: payload.network_option.clone(),
+        };
+        let after_login = mock.posts();
+        let settled = apply_bands_with(&mut c, &payload, intent, true, &mut |_| {}, limits);
+        match &settled {
+            WriteState::Success { note, .. } => {
+                assert!(
+                    !note.contains("nothing sent"),
+                    "a forced write is a write: {note}"
+                )
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            mock.posts() - after_login,
+            1,
+            "exactly one POST even though the device already matched"
+        );
+    }
 }

@@ -331,6 +331,17 @@ pub struct LastApply {
     pub at: Instant,
 }
 
+/// What the device carried before a pending apply, whole. Captured at the
+/// confirmation, because the snapshot that supplied it is replaced by the next
+/// poll long before the verdict arrives.
+#[derive(Debug, Clone, Default)]
+pub struct UndoPoint {
+    pub net_mode: String,
+    pub bands: Vec<u8>,
+    pub mask: String,
+    pub option: Option<String>,
+}
+
 pub struct App {
     pub tab: Tab,
     pub view: View,
@@ -384,12 +395,16 @@ pub struct App {
     pub allow_write: bool,
     /// The device mask the pending write will replace, captured at confirm time.
     pending_undo: Option<Vec<u8>>,
+    /// The same point with mode and option, taken at the confirmation.
+    pending_undo_full: Option<UndoPoint>,
     /// True once the worker reported `Pending`: a no-op success never sets it,
     /// and that is what separates "sent and verified" from "already active"
     /// without reading the note's English.
     write_sent: bool,
     /// The mask `u` puts back in the tick list. None until an apply lands.
     pub undo_mask: Option<Vec<u8>>,
+    /// The same point with its mode and option, which is what `u` writes back.
+    pub undo_full: Option<UndoPoint>,
     pub last_apply: Option<LastApply>,
     bands_initialised: bool,
     // --- M4 ---
@@ -551,9 +566,11 @@ impl App {
             write: WriteState::Idle,
             allow_write: false,
             pending_undo: None,
+            pending_undo_full: None,
             write_sent: false,
             undo_mask: None,
             last_apply: None,
+            undo_full: None,
             bands_initialised: false,
             input: None,
             ping: None,
@@ -978,6 +995,23 @@ impl App {
             return false;
         }
         self.pending_undo = Some(self.bands_on_device());
+        // Captured from the same snapshot the tick list came from: the mode and
+        // option the device carries now are half of what a revert needs.
+        let nm = self
+            .snap
+            .as_ref()
+            .map(|s| s.net_mode.clone())
+            .unwrap_or_default();
+        let bands = self.bands_on_device();
+        self.pending_undo_full = Some(UndoPoint {
+            net_mode: nm.network_mode.clone().unwrap_or_default(),
+            mask: nm
+                .lte_band
+                .clone()
+                .unwrap_or_else(|| bands::to_hex(bands::mask_from_bands(&bands))),
+            option: nm.network_option.clone(),
+            bands,
+        });
         self.write_sent = false;
         self.write = WriteState::Confirming(self.band_intent());
         true
@@ -990,6 +1024,7 @@ impl App {
         // A cancelled confirmation never wrote anything, so there is nothing to
         // remember and nothing to put back.
         self.pending_undo = None;
+        self.pending_undo_full = None;
         self.write_sent = false;
     }
 
@@ -1009,6 +1044,9 @@ impl App {
                 if let WriteIntent::ApplyBands { mode, bands, .. } = intent {
                     if self.write_sent {
                         self.undo_mask = self.pending_undo.take();
+                        // The point `u` writes back is the one saved before the
+                        // apply; `last_apply` describes what was applied.
+                        self.undo_full = self.pending_undo_full.take();
                         self.last_apply = Some(LastApply {
                             bands: bands.clone(),
                             mode: mode.clone(),
@@ -1022,6 +1060,7 @@ impl App {
                     }
                 }
                 self.pending_undo = None;
+                self.pending_undo_full = None;
                 self.write_sent = false;
             }
             WriteState::Failed { intent, err } => {
@@ -1030,6 +1069,7 @@ impl App {
                     format!("write failed · {} · {err}", intent.label()),
                 );
                 self.pending_undo = None;
+                self.pending_undo_full = None;
                 self.write_sent = false;
             }
             _ => {}
@@ -1059,6 +1099,43 @@ impl App {
             self.band_mask_hex(),
             self.bands_selected.len()
         ))
+    }
+
+    /// The payload that puts the device back where it was before the last
+    /// apply, built from the four values saved at the confirmation. The mode
+    /// decides whether `NetworkBand` goes out as the band mask (auto) or as the
+    /// firmware's own all-bands mask: sending the mask under mode `00` narrows
+    /// the network instead of restoring it.
+    pub fn undo_payload(&self) -> Option<crate::router::bands::BandPayload> {
+        let last = self.undo_full.as_ref()?;
+        let all = self.snap.as_ref().and_then(|s| {
+            s.network_bands_mask
+                .clone()
+                .or_else(|| s.all_bands_mask.clone())
+        });
+        let network_band = if last.net_mode == "00" {
+            all.unwrap_or_else(|| last.mask.clone())
+        } else {
+            last.mask.clone()
+        };
+        Some(crate::router::bands::BandPayload {
+            network_mode: last.net_mode.clone(),
+            network_band,
+            lte_band: last.mask.clone(),
+            network_option: last.option.clone(),
+        })
+    }
+
+    /// The same four values as an intent, so the confirmation dialog, the log
+    /// line and the revert all speak about one write.
+    pub fn undo_intent(&self) -> Option<WriteIntent> {
+        let last = self.undo_full.as_ref()?;
+        Some(WriteIntent::ApplyBands {
+            mode: last.net_mode.clone(),
+            bands: last.bands.clone(),
+            mask: last.mask.clone(),
+            option: last.option.clone(),
+        })
     }
 
     /// How old the displayed data is - the header turns this into `live`/`stale`.

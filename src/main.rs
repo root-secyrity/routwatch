@@ -13,7 +13,7 @@ use routwatch::{completion, record};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -2188,8 +2188,34 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
     // `u` belongs to the verdict it undoes, so it is read before the banner that
     // swallows every other key while a write is settled.
     if app.tab == Tab::Bands && matches!(normalise_key(k.code), KeyCode::Char('u')) {
-        match app.band_undo() {
-            Some(label) => {
+        // The revert is a write like any other: the four values the device
+        // carried before the apply go back out on the worker's path, forced,
+        // because the apply it undoes has already landed and the device
+        // therefore matches the payload it is being sent.
+        // A failed write says nothing about what the device carries now, so it
+        // offers no revert: the point would be written blind.
+        let blocked = app.write.is_busy() || matches!(app.write, WriteState::Failed { .. });
+        let write_back = if blocked {
+            None
+        } else {
+            app.undo_payload().zip(app.undo_intent())
+        };
+        match (write_back, app.band_undo()) {
+            (Some((payload, intent)), Some(label)) => {
+                let _ = tx.send(WorkerCmd::ApplyBands {
+                    payload,
+                    intent: intent.clone(),
+                    force: true,
+                });
+                app.note(format!("{label} · writing"));
+                app.settle_write(WriteState::Pending {
+                    intent,
+                    since: Instant::now(),
+                });
+            }
+            // The point exists but the write cannot go out: say which of the two
+            // stopped it rather than pretend the revert happened.
+            (_, Some(label)) => {
                 app.note(label);
                 if app.write.is_settled() {
                     app.settle_write(WriteState::Idle);
@@ -2197,8 +2223,10 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             }
             // Two different facts: an old point with no usable band, versus no
             // point at all.
-            None if app.undo_mask.is_some() => app.note("undo point has no band this device lists"),
-            None => app.note("nothing to undo: no apply yet this session"),
+            (_, None) if app.undo_mask.is_some() => {
+                app.note("undo point has no band this device lists")
+            }
+            (_, None) => app.note("nothing to undo: no apply yet this session"),
         }
         return;
     }
@@ -2576,6 +2604,7 @@ fn send_apply(app: &mut App, tx: &Sender<WorkerCmd>) {
             let _ = tx.send(WorkerCmd::ApplyBands {
                 payload,
                 intent: intent.clone(),
+                force: false,
             });
         }
         WriteIntent::SetDns { primary, secondary } => {
@@ -3100,6 +3129,107 @@ mod key_tests {
         assert!(
             matches!(app.write, WriteState::Idle),
             "the banner yields after the undo key"
+        );
+    }
+
+    #[test]
+    fn the_undo_key_sends_the_saved_four_values_back_forced() {
+        use routwatch::app::UndoPoint;
+        use routwatch::write::WriteState;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.select_tab(Tab::Bands);
+        app.bands_supported = vec![1, 3, 5];
+        app.bands_selected = vec![1];
+        app.band_mode = "03".into();
+        // The device carried these four values before the apply that landed.
+        app.undo_full = Some(UndoPoint {
+            net_mode: "00".into(),
+            bands: vec![1, 3],
+            mask: "80000009".into(),
+            option: None,
+        });
+        app.undo_mask = Some(vec![1, 3]);
+        app.settle_write(WriteState::Success {
+            intent: app.band_intent(),
+            note: "verified".into(),
+        });
+        assert!(matches!(app.write, WriteState::Success { .. }));
+
+        handle_key(&mut app, key(KeyCode::Char('u')), &tx);
+        match rx.try_recv() {
+            Ok(WorkerCmd::ApplyBands {
+                payload,
+                force,
+                intent,
+            }) => {
+                assert!(
+                    force,
+                    "the mask is already the target: the write must be forced"
+                );
+                assert_eq!(payload.network_mode, "00", "the saved mode goes back");
+                assert_eq!(payload.lte_band, "80000009", "the saved mask goes back");
+                assert_eq!(
+                    payload.network_option, None,
+                    "the saved option goes back, null included"
+                );
+                match intent {
+                    routwatch::write::WriteIntent::ApplyBands { mask, mode, .. } => {
+                        assert_eq!(mask, "80000009");
+                        assert_eq!(mode, "00");
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            _ => panic!("u must send one apply, and only one"),
+        }
+        assert!(
+            matches!(app.write, WriteState::Pending { .. }),
+            "the revert is a write in flight, not a note"
+        );
+        assert_eq!(
+            app.bands_selected,
+            vec![1, 3],
+            "the tick list follows the point being written"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_leaves_u_with_nothing_to_send() {
+        use routwatch::app::UndoPoint;
+        use routwatch::write::WriteState;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.select_tab(Tab::Bands);
+        app.bands_supported = vec![1, 3, 5];
+        app.bands_selected = vec![1];
+        app.undo_full = Some(UndoPoint {
+            net_mode: "00".into(),
+            bands: vec![1, 3],
+            mask: "80000009".into(),
+            option: None,
+        });
+        app.settle_write(WriteState::Failed {
+            intent: app.band_intent(),
+            err: "router refused".into(),
+        });
+
+        handle_key(&mut app, key(KeyCode::Char('u')), &tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "a failed write offers no revert to send"
         );
     }
 
