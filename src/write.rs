@@ -218,11 +218,6 @@ fn write_cause(e: &ApiError) -> String {
 /// this repo's log agree, and every one of them applied.
 const SWITCH_WARNING: u32 = 100006;
 
-/// How long the radio gets, after a 100006, before the read-back is believed.
-/// A band write restarts the modem; the new mask is not always visible on the
-/// very next GET.
-const SWITCH_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
-
 fn switch_warning(e: &ApiError) -> Option<u32> {
     match e {
         ApiError::Router(code) if *code == SWITCH_WARNING => Some(*code),
@@ -330,6 +325,26 @@ pub fn apply_bands(
     force: bool,
     progress: &mut dyn FnMut(WriteState),
 ) -> WriteState {
+    apply_bands_with(
+        client,
+        payload,
+        intent,
+        force,
+        progress,
+        VerifyLimits::default(),
+    )
+}
+
+/// The same write with an explicit verification window, so a test can drive the
+/// poll without waiting twenty seconds.
+pub fn apply_bands_with(
+    client: &mut HuaweiClient,
+    payload: &BandPayload,
+    intent: WriteIntent,
+    force: bool,
+    progress: &mut dyn FnMut(WriteState),
+    limits: VerifyLimits,
+) -> WriteState {
     // Guard 1: if the device already reports this mask, sending anything is a
     // no-op and a needless link reset.
     let target = bands::from_hex(&payload.lte_band).unwrap_or(0);
@@ -362,84 +377,94 @@ pub fn apply_bands(
         since: Instant::now(),
     });
 
-    // Guard 2: the device is the truth. Never re-send: read back and compare
-    // mode, both masks and the NR option with what was asked for.
-    let mut after = read_mode(client);
+    // Guard 2: the device is the truth. Never re-send: read back until the mode,
+    // both masks and the NR option match what was asked for, or the window closes.
+    //
+    // A refusal is a verdict, not a delay. Only an accepted write, or the one
+    // warning code this firmware sends after it applied the payload, is worth
+    // polling for: `poll_with` reads once before it looks at the window, so an
+    // empty window would still accept a mask the device already carried.
+    let may_land = sent.is_ok() || sent.as_ref().err().and_then(switch_warning).is_some();
 
-    // One extra read, and only for this case: the router said 100006 and the
-    // first read-back still shows the old state. The radio is mid-restart, so
-    // give it the grace period instead of calling a landing switch a failure.
-    // The write itself is never repeated.
-    let mismatched = matches!(&after, Ok(cur) if !matches_after(cur, payload));
-    if mismatched {
-        if let Err(e) = &sent {
-            if switch_warning(e).is_some() {
-                std::thread::sleep(SWITCH_GRACE);
-                after = read_mode(client);
-            }
-        }
-    }
+    let (hit, attempts, last_err) = if may_land {
+        poll_until(
+            || read_mode(client),
+            |cur| matches_after(cur, payload),
+            limits,
+            std::thread::sleep,
+        )
+    } else {
+        // Nothing was sent successfully: there is no answer to wait for.
+        (None, 0u32, None)
+    };
 
-    if let Ok(current) = &after {
-        if matches_after(current, payload) {
-            let zero = if auto_reports_zero_band(current, payload) {
-                "; device reports NetworkBand 0 in auto mode"
-            } else {
-                ""
-            };
-            return WriteState::Success {
-                intent,
-                note: format!(
-                    "{}{zero}",
-                    match &sent {
-                        Ok(_) => format!(
-                            "verified, device mode {} mask 0x{}",
-                            current.network_mode.clone().unwrap_or_else(|| "-".into()),
-                            bands::to_hex(target)
+    if let Some(current) = &hit {
+        let zero = if auto_reports_zero_band(current, payload) {
+            "; device reports NetworkBand 0 in auto mode"
+        } else {
+            ""
+        };
+        return WriteState::Success {
+            intent,
+            note: format!(
+                "{}{zero}",
+                match &sent {
+                    Ok(_) => format!(
+                        "verified, device mode {} mask 0x{}",
+                        current.network_mode.clone().unwrap_or_else(|| "-".into()),
+                        bands::to_hex(target)
+                    ),
+                    Err(e) => match switch_warning(e) {
+                        Some(code) => format!(
+                            "router answered {code} while switching; read-back confirms the change"
                         ),
-                        Err(e) => match switch_warning(e) {
-                            Some(code) => format!(
-                                "router answered {code} while switching; read-back confirms the change"
-                            ),
-                            None => format!("{}; read-back confirms the change", write_cause(e)),
-                        },
-                    }
-                ),
-            };
-        }
+                        None => format!("{}; read-back confirms the change", write_cause(e)),
+                    },
+                }
+            ),
+        };
     }
 
-    let err = match (&sent, &after) {
-        (Err(e), Err(ve)) => format!("{}; read-back failed too: {ve}", write_cause(e)),
-        (Err(e), Ok(current)) => {
-            let kept = format!(
-                "device still reports mode {} mask 0x{}",
-                current.network_mode.clone().unwrap_or_else(|| "-".into()),
-                current
-                    .lte_band
-                    .as_deref()
-                    .and_then(bands::from_hex)
-                    .map(bands::to_hex)
-                    .unwrap_or_else(|| "-".into())
-            );
-            match switch_warning(e) {
+    // What the device kept. A poll that never matched still leaves one question
+    // open - what did it answer last? - so the failure path reads once more. A
+    // refusal sent nothing, and saying "no read after the refusal" is the truth.
+    let describe = |cur: &NetMode| {
+        format!(
+            "device still reports mode {} mask 0x{}",
+            cur.network_mode.clone().unwrap_or_else(|| "-".into()),
+            cur.lte_band
+                .as_deref()
+                .and_then(bands::from_hex)
+                .map(bands::to_hex)
+                .unwrap_or_else(|| "-".into())
+        )
+    };
+    let kept = match (&hit, may_land) {
+        (Some(cur), _) => describe(cur),
+        (None, true) => match read_mode(client) {
+            Ok(cur) => describe(&cur),
+            Err(e) => format!("no read after the refusal ({e})"),
+        },
+        (None, false) => "no read after the refusal".to_string(),
+    };
+    WriteState::Failed {
+        intent,
+        err: match &sent {
+            Err(e) => match switch_warning(e) {
                 Some(code) => format!(
-                    "router answered {code} and the change did not land within {}s: {kept}",
-                    SWITCH_GRACE.as_secs_f32()
+                    "router answered {code} and the change did not land within {}s after {attempts} reads: {kept}",
+                    limits.window.as_secs()
                 ),
                 None => format!("{}; {kept}", write_cause(e)),
-            }
-        }
-        (Ok(_), Ok(current)) => format!(
-            "mismatch after write: wanted mode {} mask 0x{}, device reports mode {} mask 0x{}",
-            payload.network_mode,
-            payload.network_band,
-            current.network_mode.clone().unwrap_or_else(|| "-".into()),
-            current.network_band.clone().unwrap_or_else(|| "-".into())
-        ),
-        (Ok(_), Err(ve)) => format!("write sent, but reading net/net-mode failed: {ve}"),
-    };
-    WriteState::Failed { intent, err }
+            },
+            Ok(_) => format!(
+                "write sent, but the device never reported the new mask after {attempts} reads: {} ({kept})",
+                last_err
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "no read error".into())
+            ),
+        },
+    }
 }
 
 /// What the write will send, decided in one place so `--dry-run` and the write

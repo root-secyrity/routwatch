@@ -55,6 +55,10 @@ pub enum Profile {
     /// Same code, same body, but the new mask only shows up after `LATE_MS`:
     /// the radio is mid-restart when the first read-back lands.
     SwitchWarnsLate,
+    /// A POST that is answered `OK` and stored, but the new mask is published
+    /// only after `LATE_MS`. The shape a real modem has: accepted, then silent
+    /// for a moment while the radio restarts.
+    SwitchAppliesLateOk,
     /// The code without the change: a real refusal dressed as the same warning.
     SwitchRefuses,
     /// A firmware that answers the three codes this client names, each on its own
@@ -95,7 +99,10 @@ impl Profile {
             // A 404 is what a firmware that does not implement the endpoint
             // actually returns; the tool must read it as "not exposed".
             Profile::NoHostList => {}
-            Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses => {}
+            Profile::SwitchWarns
+            | Profile::SwitchWarnsLate
+            | Profile::SwitchAppliesLateOk
+            | Profile::SwitchRefuses => {}
             Profile::CodesRefused => {}
         }
         match self {
@@ -538,7 +545,10 @@ fn serve(
     // point of the case.
     let is_switch = matches!(
         profile,
-        Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses
+        Profile::SwitchWarns
+            | Profile::SwitchWarnsLate
+            | Profile::SwitchAppliesLateOk
+            | Profile::SwitchRefuses
     );
     let is_dhcp = matches!(
         profile,
@@ -593,18 +603,22 @@ fn serve(
                     s.apply(&payload);
                 }
             }
-            (
-                200,
-                "<error><code>100006</code><message>Unknown error</message></error>".to_string(),
-            )
+            let body = if profile == Profile::SwitchAppliesLateOk {
+                "<response>OK</response>"
+            } else {
+                "<error><code>100006</code><message>Unknown error</message></error>"
+            };
+            (200, body.to_string())
         }
         ("GET", "/api/net/net-mode") if is_switch => {
-            let late_pending = profile == Profile::SwitchWarnsLate
-                && state
-                    .lock()
-                    .ok()
-                    .and_then(|s| s.applied_at)
-                    .is_some_and(|t| t.elapsed().as_millis() < LATE_MS as u128);
+            let late_pending = matches!(
+                profile,
+                Profile::SwitchWarnsLate | Profile::SwitchAppliesLateOk
+            ) && state
+                .lock()
+                .ok()
+                .and_then(|s| s.applied_at)
+                .is_some_and(|t| t.elapsed().as_millis() < LATE_MS as u128);
             let body = if late_pending {
                 NET_MODE.to_string()
             } else {
@@ -925,5 +939,30 @@ mod tests {
         let (head, body) = text.split_once("\r\n\r\n").expect("a response head");
         assert!(head.contains("200 OK"), "{head}");
         assert_eq!(body, "1024", "the peer reports exactly what it consumed");
+    }
+
+    #[test]
+    fn a_late_but_successful_write_is_seen_by_the_poll() {
+        use crate::write::{apply_bands_with, VerifyLimits, WriteIntent, WriteState};
+        use std::time::Duration;
+
+        let mock = MockCpe::start(Profile::SwitchAppliesLateOk);
+        let mut c = crate::router::client::HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        // A mask the mock does not carry, so the write is real and not a no-op.
+        let payload =
+            crate::router::bands::resolve("08", &[1, 28], None, Some("80000005"), Some("0"));
+        let limits = VerifyLimits {
+            reread: Duration::from_millis(700),
+            window: Duration::from_secs(3),
+        };
+        let intent = WriteIntent::ApplyBands {
+            mode: payload.network_mode.clone(),
+            bands: vec![1, 28],
+            mask: payload.lte_band.clone(),
+            option: payload.network_option.clone(),
+        };
+        let settled = apply_bands_with(&mut c, &payload, intent, false, &mut |_| {}, limits);
+        assert!(matches!(settled, WriteState::Success { .. }), "{settled:?}");
     }
 }
