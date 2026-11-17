@@ -133,3 +133,99 @@ pub fn watch_link(
     (io.log)(format!("{secs}s over, the mask stays as applied"));
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock_cpe::{MockCpe, Profile};
+    use crate::router::bands;
+    use std::time::Duration;
+
+    fn payload() -> BandPayload {
+        bands::resolve("03", &[1, 3], None, Some("80000009"), None)
+    }
+
+    fn intent(p: &BandPayload) -> WriteIntent {
+        WriteIntent::ApplyBands {
+            mode: p.network_mode.clone(),
+            bands: vec![1, 3],
+            mask: p.lte_band.clone(),
+            option: p.network_option.clone(),
+        }
+    }
+
+    /// A watch that never sleeps, never asks, and keeps every line it printed.
+    fn run(
+        profile: Profile,
+        secs: u64,
+        take_revert: bool,
+    ) -> (WatchResult, Vec<String>, usize, usize) {
+        let mock = MockCpe::start(profile);
+        let mut client = crate::router::client::HuaweiClient::new(mock.addr(), 2000);
+        client.login("admin", "demo").expect("mock login");
+        let p = payload();
+        let i = intent(&p);
+        // The login itself is a POST, so only the delta below is a write.
+        let posts_before = mock.posts();
+        let mut sleep = |_: Duration| {};
+        let mut confirm = move || take_revert;
+        let mut lines: Vec<String> = Vec::new();
+        let mut log = |line: String| lines.push(line);
+        let out = {
+            let mut io = WatchIo {
+                sleep: &mut sleep,
+                confirm: &mut confirm,
+                log: &mut log,
+            };
+            watch_link(
+                &mut client,
+                ("admin", "demo"),
+                Some((&p, &i)),
+                20,
+                secs,
+                &mut io,
+            )
+            .expect("watch runs")
+        };
+        (out, lines, mock.posts() - posts_before, mock.logouts())
+    }
+
+    #[test]
+    fn a_healthy_link_is_watched_without_a_single_write() {
+        let (out, lines, posts, logouts) = run(Profile::RenewKeeps, 15, false);
+        assert_eq!(out.polls, 3, "one read every five seconds");
+        assert_eq!(out.seconds_down, 0);
+        assert!(!out.reverted);
+        assert_eq!(posts, 0, "watching is read only");
+        assert_eq!(logouts, 0, "the session is held open, not closed early");
+        assert!(lines.iter().any(|l| l.contains("15s over")), "{lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("put the previous mask back")),
+            "an up link is never asked about: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_dead_link_is_offered_the_revert_once_and_a_no_costs_nothing() {
+        let (out, lines, posts, _) = run(Profile::RenewStartsDown, 75, false);
+        assert_eq!(out.polls, 15);
+        assert!(out.seconds_down >= DOWN_SECS, "{out:?}");
+        assert!(!out.reverted);
+        assert_eq!(posts, 0, "a declined offer writes nothing");
+        let offers = lines
+            .iter()
+            .filter(|l| l.contains("put the previous mask back"))
+            .count();
+        assert_eq!(offers, 1, "one offer, not one per poll: {lines:?}");
+    }
+
+    #[test]
+    fn the_window_ending_never_writes_and_never_infers_a_revert() {
+        let (out, lines, posts, _) = run(Profile::RenewKeeps, 5, false);
+        assert_eq!(out.polls, 1);
+        assert_eq!(posts, 0);
+        assert!(lines.iter().any(|l| l.contains("5s over")));
+    }
+}
