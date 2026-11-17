@@ -18,6 +18,7 @@ pub const SUBCOMMANDS: &[&str] = &[
     "restart",
     "ping",
     "speedtest",
+    "history",
     "dump",
     "share",
     "status",

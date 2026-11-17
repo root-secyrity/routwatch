@@ -123,6 +123,12 @@ question.
   also lists the ping measured before the transfer and the one measured during it,
   so bufferbloat is visible next to the rate. `routwatch speedtest --history`
   prints the saved rows and `--no-save` keeps a run out of the file.
+- **The signal itself is logged, one row a minute**: every command that collects
+  appends to `$XDG_DATA_HOME/routwatch/signal-history.jsonl` (`0600`, last 1440
+  rows), so a drop that happened while nobody watched still has a shape.
+  `routwatch history --signal` prints the newest rows without touching the
+  network or needing a config file; `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
+  log off.
 
 Fourteen more, including the `100006` band-write code, the small-terminal order and
 the graph colour floor, are stated in [`docs/limits.md`](docs/limits.md). Nothing

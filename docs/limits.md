@@ -139,6 +139,13 @@ why each one is stated instead of hidden.
   is called a failure. The H122-373 publishes the new mask after its radio restarts,
   and one read at 1.5 s measured a landed switch as a failure.
 
+- **The signal log can stop without a word**: every command that collects appends at
+  most one row a minute to `$XDG_DATA_HOME/routwatch/signal-history.jsonl`, and a write
+  that fails never fails the command the user asked for. The common cause is the
+  sidecar lock being held by another routwatch, which is why a gap in the log is read as
+  "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
+  log off for scripts that read every second.
+
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
 README's Safety list, and the guard that enforces them is in

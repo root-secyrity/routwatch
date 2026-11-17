@@ -277,6 +277,16 @@ enum Cmd {
         #[arg(long)]
         history: bool,
     },
+    /// Saved long-term history
+    History {
+        /// Signal rows (no network)
+        #[arg(long)]
+        signal: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Sample the router into a recording file (.rwr, one frame per line)
     Record {
         /// Destination file (default: $XDG_DATA_HOME/routwatch/recordings/<date>.rwr)
@@ -408,6 +418,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
         Some(Cmd::Preview { .. })
             | Some(Cmd::Replay { .. })
             | Some(Cmd::Speedtest { .. })
+            | Some(Cmd::History { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
     );
     let cfg = if offline {
@@ -1357,6 +1368,39 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 if let Some(note) = &r.note {
                     println!("note: {note}");
                 }
+            }
+            Ok(())
+        }
+        Some(Cmd::History {
+            signal,
+            json,
+            limit,
+        }) => {
+            if !signal {
+                eprintln!(
+                    "history: only the signal log is saved so far: pass --signal (speed runs are `speedtest --history`)"
+                );
+                return Err(ApiError::Quiet(2));
+            }
+            let Some(p) = routwatch::signal_history::path() else {
+                eprintln!("history: this platform has no data directory, so no log is kept");
+                return Err(ApiError::Quiet(2));
+            };
+            let l = routwatch::signal_history::load(&p);
+            if l.damaged > 0 {
+                eprintln!(
+                    "history: {} of {} rows could not be read and are skipped",
+                    l.damaged, l.total
+                );
+            }
+            let rows: Vec<routwatch::signal_history::Row> =
+                l.rows.iter().rev().take(limit).rev().cloned().collect();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+            } else if rows.is_empty() {
+                println!("no signal rows yet: they are written by every command that collects");
+            } else {
+                print!("{}", routwatch::signal_history::table(&rows));
             }
             Ok(())
         }
