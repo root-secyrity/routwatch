@@ -65,6 +65,17 @@ pub enum Profile {
     /// path: `monitoring/status` answers 100003, `sms/sms-count` answers 100002,
     /// and `monitoring/month_statistics` answers 100004.
     CodesRefused,
+    /// The data switch is stateful: dropping the link empties the WAN address and
+    /// bringing it back yields a new lease, the way a renew is supposed to end.
+    RenewChanges,
+    /// The same switch, but the ISP keeps the lease: the address is identical
+    /// before and after, which is a result about the ISP, not a failure.
+    RenewKeeps,
+    /// The link never comes back: every attempt to switch it on is refused.
+    RenewRefuses,
+    /// The link is already down when the renew starts: switching it off first
+    /// would be a no-op, so the only correct POST is the one that brings it back.
+    RenewStartsDown,
 }
 
 /// How long `SwitchWarnsLate` takes to publish the new mask. Shorter than the
@@ -103,7 +114,11 @@ impl Profile {
             | Profile::SwitchWarnsLate
             | Profile::SwitchAppliesLateOk
             | Profile::SwitchRefuses => {}
-            Profile::CodesRefused => {}
+            Profile::CodesRefused
+            | Profile::RenewChanges
+            | Profile::RenewKeeps
+            | Profile::RenewRefuses
+            | Profile::RenewStartsDown => {}
         }
         match self {
             Profile::DhcpNoDns => routes.push(("/api/dhcp/feature-switch", FEATURE_DNS_HIDDEN)),
@@ -345,6 +360,38 @@ impl DhcpState {
     }
 }
 
+/// The data-connection state the renew profiles keep. The same firmware answers
+/// the switch, the address and the status document from this one state, which is
+/// why a renew can be exercised without a router.
+#[derive(Debug, Clone)]
+struct LinkState {
+    up: bool,
+    wan: String,
+    /// Set by a POST that asks for the link to come back with a new lease.
+    fresh: bool,
+}
+
+impl Default for LinkState {
+    fn default() -> Self {
+        LinkState {
+            up: true,
+            wan: "203.0.113.77".into(),
+            fresh: false,
+        }
+    }
+}
+
+impl LinkState {
+    fn status_body(&self) -> String {
+        format!(
+            "<response><ConnectionStatus>{}</ConnectionStatus><WanIPAddress>{}</WanIPAddress>\
+             <PrimaryDns>203.0.113.1</PrimaryDns><SignalIcon>4</SignalIcon></response>",
+            if self.up { 901 } else { 902 },
+            if self.up { self.wan.as_str() } else { "" }
+        )
+    }
+}
+
 /// A running fake router. Dropping it stops the listener.
 pub struct MockCpe {
     addr: String,
@@ -356,6 +403,8 @@ pub struct MockCpe {
     /// Every POST the mock saw, whatever the path. A read-only audit must leave
     /// this at zero; `dhcp_posts` counts one endpoint and cannot answer that.
     posts: Arc<AtomicUsize>,
+    /// POST `dialup/mobile-dataswitch` bodies that asked for the link to go down.
+    link_downs: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -379,6 +428,14 @@ impl MockCpe {
         let po = Arc::clone(&posts);
         let dhcp = Arc::new(Mutex::new(DhcpState::default()));
         let dh = Arc::clone(&dhcp);
+        let mut ls = LinkState::default();
+        if profile == Profile::RenewStartsDown {
+            ls.up = false;
+        }
+        let link = Arc::new(Mutex::new(ls));
+        let lk = Arc::clone(&link);
+        let link_downs = Arc::new(AtomicUsize::new(0));
+        let ld = Arc::clone(&link_downs);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(Ordering::SeqCst) {
@@ -391,8 +448,9 @@ impl MockCpe {
                     signals: &sig,
                     dhcp_posts: &dp,
                     posts: &po,
+                    link_downs: &ld,
                 };
-                let _ = serve(stream, profile, &counters, &st, &dh);
+                let _ = serve(stream, profile, &counters, &st, &dh, &lk);
             }
         });
         MockCpe {
@@ -403,6 +461,7 @@ impl MockCpe {
             signals,
             dhcp_posts,
             posts,
+            link_downs,
             thread: Some(thread),
         }
     }
@@ -437,6 +496,12 @@ impl MockCpe {
     pub fn posts(&self) -> usize {
         self.posts.load(Ordering::SeqCst)
     }
+
+    /// POST `dialup/mobile-dataswitch` bodies that switched the link off. A renew
+    /// on a link that is already down must leave this at zero.
+    pub fn link_downs(&self) -> usize {
+        self.link_downs.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for MockCpe {
@@ -459,6 +524,7 @@ struct Counters<'a> {
     signals: &'a AtomicUsize,
     dhcp_posts: &'a AtomicUsize,
     posts: &'a AtomicUsize,
+    link_downs: &'a AtomicUsize,
 }
 
 fn serve(
@@ -467,6 +533,7 @@ fn serve(
     counters: &Counters,
     state: &Mutex<SwitchState>,
     dhcp: &Mutex<DhcpState>,
+    link: &Mutex<LinkState>,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -575,7 +642,65 @@ fn serve(
             | Profile::DhcpWithDns
     );
 
+    let is_renew = matches!(
+        profile,
+        Profile::RenewChanges
+            | Profile::RenewKeeps
+            | Profile::RenewRefuses
+            | Profile::RenewStartsDown
+    );
+
     let (status, body) = match (method, path.as_str()) {
+        ("GET", "/api/dialup/mobile-dataswitch") if is_renew => {
+            let up = link.lock().map(|l| l.up).unwrap_or(true);
+            (
+                200,
+                format!(
+                    "<response><dataswitch>{}</dataswitch></response>",
+                    u8::from(up)
+                ),
+            )
+        }
+        ("POST", "/api/dialup/mobile-dataswitch") if is_renew => {
+            let want_up = payload.contains("<dataswitch>1</dataswitch>");
+            if want_up && profile == Profile::RenewRefuses {
+                // The link does not come back: the caller has to say so out loud.
+                (
+                    200,
+                    "<error><code>100006</code><message>busy</message></error>".to_string(),
+                )
+            } else if let Ok(mut l) = link.lock() {
+                if !want_up {
+                    l.up = false;
+                    l.fresh = false;
+                    counters.link_downs.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    l.up = true;
+                    l.fresh = true;
+                }
+                (200, "<response>OK</response>".to_string())
+            } else {
+                (200, "<response>OK</response>".to_string())
+            }
+        }
+        ("GET", "/api/monitoring/status") if is_renew => {
+            let body = link
+                .lock()
+                .map(|mut l| {
+                    // A fresh lease is handed out on the first read after the
+                    // switch came back, not at the POST: the address a renew
+                    // reports has to come from the read, like the real one.
+                    if l.fresh {
+                        if profile == Profile::RenewChanges {
+                            l.wan = "203.0.113.99".to_string();
+                        }
+                        l.fresh = false;
+                    }
+                    l.status_body()
+                })
+                .unwrap_or_default();
+            (200, body)
+        }
         ("GET", "/api/dhcp/settings") if is_dhcp => {
             (200, dhcp.lock().map(|d| d.body()).unwrap_or_default())
         }

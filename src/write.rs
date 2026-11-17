@@ -637,6 +637,126 @@ pub fn apply_dns(
     }
 }
 
+/// How a renew ended. An unchanged address is a result about the ISP, not a
+/// failure; a link still down is a failure the caller has to say out loud.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenewOutcome {
+    Changed {
+        before: String,
+        after: String,
+        secs: u64,
+    },
+    Unchanged {
+        ip: String,
+        secs: u64,
+    },
+    /// The data connection was switched off and never came back on.
+    LinkDown {
+        why: String,
+    },
+    /// Back on, but no address within the cap.
+    NoAddress {
+        attempts: u32,
+        last_err: Option<String>,
+    },
+}
+
+impl RenewOutcome {
+    /// The exit code a script reads: a kept lease is a result, a dead link is not.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            RenewOutcome::Changed { .. } | RenewOutcome::Unchanged { .. } => 0,
+            RenewOutcome::LinkDown { .. } | RenewOutcome::NoAddress { .. } => 1,
+        }
+    }
+}
+
+/// Bring the data connection back after it was dropped. A dropped link that is
+/// never re-enabled takes the user offline until he opens the router page, so a
+/// failed attempt is retried, and a link still down is a failure, not a warning.
+fn re_enable(client: &mut HuaweiClient, mut sleep: impl FnMut(Duration)) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 1..=3u8 {
+        match client.post(
+            "dialup/mobile-dataswitch",
+            HuaweiClient::dataswitch_payload(true),
+        ) {
+            Ok(_) => return Ok(()),
+            Err(e) => last = format!("attempt {attempt}: {e}"),
+        }
+        // No wait after the last attempt: it buys nothing and the test sleeps
+        // through it for nothing.
+        if attempt < 3 {
+            sleep(Duration::from_secs(3));
+        }
+    }
+    Err(last)
+}
+
+/// Ask the network for a new address: drop the data connection, wait, bring it
+/// back, then watch the device report a WAN IP. A link that is already down is
+/// switched on, never off first.
+///
+/// The sleep is a parameter, not `std::thread::sleep` written inside: the
+/// failure test passes its own and does not wait nine real seconds. The wait
+/// that counts is `--settle`'s cap, spent as a poll that returns the moment an
+/// address appears.
+pub fn renew_ip(
+    client: &mut HuaweiClient,
+    limits: VerifyLimits,
+    mut sleep: impl FnMut(Duration),
+) -> RenewOutcome {
+    // Seconds of wait actually spent, so the report is honest on an injected
+    // sleep too and no caller has to read a wall clock.
+    let mut slept = 0u64;
+    let before = parse::wan_addr(client).unwrap_or(None);
+    if before.is_some() {
+        let _ = client.post(
+            "dialup/mobile-dataswitch",
+            HuaweiClient::dataswitch_payload(false),
+        );
+        sleep(Duration::from_secs(3));
+        slept += 3;
+    }
+    let mut counting = |d: Duration| {
+        slept += d.as_secs();
+        sleep(d);
+    };
+    if let Err(why) = re_enable(client, &mut counting) {
+        return RenewOutcome::LinkDown { why };
+    }
+    let (hit, attempts, last_err) = poll_with(
+        || parse::wan_addr(client),
+        |addr: &Option<String>| addr.as_deref().is_some_and(|s| !s.trim().is_empty()),
+        limits,
+        &mut counting,
+    );
+    match hit.flatten() {
+        Some(after) => match before {
+            Some(b) if b == after => RenewOutcome::Unchanged {
+                ip: after,
+                secs: slept,
+            },
+            Some(b) => RenewOutcome::Changed {
+                before: b,
+                after,
+                secs: slept,
+            },
+            // The link was off, so the address is new and there is no before to
+            // name: saying "none" is truer than inventing one.
+            None => RenewOutcome::Changed {
+                before: "none".to_string(),
+                after,
+                secs: slept,
+            },
+        },
+        None => RenewOutcome::NoAddress {
+            attempts,
+            last_err: last_err.map(|e| e.to_string()),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1285,5 +1405,97 @@ mod tests {
         assert_eq!(hit.flatten().as_deref(), Some("203.0.113.9"));
         assert_eq!(attempts, 3);
         assert!(err.is_none());
+    }
+
+    // A renew: the switch, the address and the status document come from one
+    // state in the mock, so these run without a router and without a second.
+    mod renew {
+        use super::*;
+        use crate::mock_cpe::{MockCpe, Profile};
+
+        fn fast() -> VerifyLimits {
+            VerifyLimits {
+                reread: Duration::from_millis(1),
+                window: Duration::from_secs(2),
+            }
+        }
+
+        fn client(m: &MockCpe) -> HuaweiClient {
+            let mut c = HuaweiClient::new(m.addr(), 5000);
+            c.login("admin", "x").expect("login");
+            c
+        }
+
+        #[test]
+        fn a_renew_that_gets_a_new_lease_says_before_and_after() {
+            let m = MockCpe::start(Profile::RenewChanges);
+            let mut c = client(&m);
+            let out = renew_ip(&mut c, fast(), |_| {});
+            match &out {
+                RenewOutcome::Changed { before, after, .. } => {
+                    assert_eq!(before, "203.0.113.77");
+                    assert_eq!(after, "203.0.113.99");
+                }
+                other => panic!("expected a change, got {other:?}"),
+            }
+            assert_eq!(out.exit_code(), 0);
+            assert_eq!(m.link_downs(), 1, "an up link is dropped exactly once");
+        }
+
+        #[test]
+        fn the_same_lease_back_is_unchanged_and_still_exit_zero() {
+            let m = MockCpe::start(Profile::RenewKeeps);
+            let mut c = client(&m);
+            let out = renew_ip(&mut c, fast(), |_| {});
+            match &out {
+                RenewOutcome::Unchanged { ip, .. } => assert_eq!(ip, "203.0.113.77"),
+                other => panic!("expected unchanged, got {other:?}"),
+            }
+            assert_eq!(
+                out.exit_code(),
+                0,
+                "the ISP keeping the lease is not a failure"
+            );
+        }
+
+        #[test]
+        fn a_link_that_stays_down_is_a_failure_with_the_last_attempt_named() {
+            let m = MockCpe::start(Profile::RenewRefuses);
+            let mut c = client(&m);
+            let mut slept = Vec::new();
+            let out = renew_ip(&mut c, fast(), |d| slept.push(d));
+            match &out {
+                RenewOutcome::LinkDown { why } => {
+                    assert!(why.contains("attempt 3"), "{why}");
+                }
+                other => panic!("expected a dead link, got {other:?}"),
+            }
+            assert_eq!(out.exit_code(), 1);
+            // One wait after dropping the link, then two between the three enable
+            // attempts: the injected sleep proves the retry without costing nine
+            // real seconds, and there is no wait after the last attempt.
+            assert_eq!(
+                slept,
+                vec![
+                    Duration::from_secs(3),
+                    Duration::from_secs(3),
+                    Duration::from_secs(3)
+                ]
+            );
+            assert_eq!(m.link_downs(), 1);
+        }
+
+        #[test]
+        fn a_link_already_down_is_switched_on_and_never_off_first() {
+            let m = MockCpe::start(Profile::RenewStartsDown);
+            let mut c = client(&m);
+            let out = renew_ip(&mut c, fast(), |_| {});
+            assert_eq!(
+                m.link_downs(),
+                0,
+                "switching an off link off is the no-op this path exists to avoid"
+            );
+            assert_eq!(out.exit_code(), 0);
+        }
     }
 }

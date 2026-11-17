@@ -440,6 +440,13 @@ pub fn parse_sms_count(n: &Node) -> SmsCount {
 /// in `monitoring/status`, and `parse_device` reads the same tag from
 /// `device/information`. Both are asked, the first non-empty answer wins, so
 /// neither firmware is a special case.
+/// The connect state the firmware reports: 900 is connected, 901 is connected
+/// and the WAN is up. Any other number is a state the caller must not read as up.
+pub fn connection_status(n: &Node) -> Option<u32> {
+    n.value("ConnectionStatus")
+        .and_then(|v| v.trim().parse().ok())
+}
+
 pub fn wan_addr(client: &mut HuaweiClient) -> Result<Option<String>, ApiError> {
     let mut last: Option<ApiError> = None;
     for path in ["monitoring/status", "device/information"] {
@@ -816,5 +823,22 @@ mod tests {
             parse("<response><StartDay>1</StartDay><DataLimit>unlimited</DataLimit></response>")
                 .unwrap();
         assert_eq!(parse_quota(&month, Some(&start)).data_limit_bytes, None);
+    }
+
+    #[test]
+    fn the_connect_state_is_read_from_the_status_document() {
+        // The field name is measured, not guessed: `monitoring/status` answers
+        // `<ConnectionStatus>901</ConnectionStatus>` on H122-373 (WEBUI
+        // 11.0.2.21, 2026-11-17), and `dialup/connection` carries no state at all.
+        let raw = include_str!("../../tests/fixtures/status_h122.xml");
+        let n = parse(raw).expect("xml");
+        assert_eq!(connection_status(&n), Some(901));
+    }
+
+    #[test]
+    fn a_status_document_without_the_field_reports_nothing() {
+        let n =
+            parse("<response><WanIPAddress>203.0.113.7</WanIPAddress></response>").expect("xml");
+        assert_eq!(connection_status(&n), None);
     }
 }
