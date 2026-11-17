@@ -830,7 +830,13 @@ mod tests {
         // The field name is measured, not guessed: `monitoring/status` answers
         // `<ConnectionStatus>901</ConnectionStatus>` on H122-373 (WEBUI
         // 11.0.2.21, 2026-11-17), and `dialup/connection` carries no state at all.
-        let raw = include_str!("../../tests/fixtures/status_h122.xml");
+        // The document is inline, not a capture from tests/: that directory is
+        // untracked, so a clone would fail to compile with a file include.
+        let raw = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+            "<response><ConnectionStatus>901</ConnectionStatus>",
+            "<SignalIcon>5</SignalIcon></response>"
+        );
         let n = parse(raw).expect("xml");
         assert_eq!(connection_status(&n), Some(901));
     }
