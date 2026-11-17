@@ -28,6 +28,11 @@ pub const IDENTITY_TAGS: &[&str] = &[
     "wifiwpapsk",
     "wpapsk",
     "presharedkey",
+    "password",
+    // TR-069 credentials: an ACS URL names the operator's account and the
+    // password is a password. Neither is a field a reader needs a value for.
+    "tr069password",
+    "tr069acsurl",
     "hostname",
     "actualname",
     "associatedssid",
@@ -49,6 +54,7 @@ fn is_identity(tag: &str) -> bool {
         || lower.ends_with("ssid")
         || lower.ends_with("ipaddress")
         || lower.ends_with("psk")
+        || lower.ends_with("password")
 }
 
 /// Replace the *text* of every identity element, leaving the tag names, the
@@ -141,6 +147,18 @@ mod tests {
 <rsrp>-95dBm</rsrp>
 <Hosts><Host><HostName>living-room-tv</HostName><IpAddress>192.168.8.101</IpAddress></Host></Hosts>
 </response>"#;
+
+    #[test]
+    fn tr069_credentials_never_survive_the_scrub() {
+        let raw = "<response><Tr069Enable>1</Tr069Enable><Tr069ACSURL>http://acs.example/x</Tr069ACSURL><Tr069Password>hunter2</Tr069Password></response>";
+        let out = crate::scrub::scrub_xml(raw);
+        assert!(!out.contains("hunter2"), "{out}");
+        assert!(!out.contains("acs.example"), "{out}");
+        assert!(
+            out.contains("<Tr069Enable>1</Tr069Enable>"),
+            "field names stay"
+        );
+    }
 
     /// The promise: a dump a maintainer can read in public. Names survive,
     /// values do not.

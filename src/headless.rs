@@ -535,6 +535,17 @@ pub fn doctor(
         )),
     }
 
+    // The same audit `privacy` prints, on one line: a user reading `--live`
+    // should not have to run a second command to learn who can reach the router.
+    let audit = crate::privacy::Audit::collect(&mut client);
+    caps.push(cap(
+        "privacy",
+        "reported",
+        "read_only_audit",
+        audit.summary(),
+        Some("routwatch privacy prints every check beside its source endpoint"),
+    ));
+
     client.logout();
 
     DoctorReport {
@@ -970,6 +981,29 @@ mod doctor_tests {
                 .filter(|c| c.state == "failed")
                 .map(|c| (&c.id, &c.detail))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// The privacy line is a live-mode fact: it names the refusal and the DNS
+    /// server the firmware reports, in one row of the doctor table.
+    #[test]
+    fn doctor_text_names_the_privacy_line() {
+        let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
+        let mut cfg = Config::default();
+        cfg.router.ip = mock.addr().to_string();
+        cfg.router.password = "pw".into();
+        let report = doctor(&cfg, "/tmp/absent/config.toml", true, Some("pw"));
+        let privacy = capability(&report, "privacy");
+        assert_eq!(privacy.state, "reported", "detail {:?}", privacy.detail);
+        assert!(
+            privacy.detail.contains("tr069 not exposed"),
+            "detail was {:?}",
+            privacy.detail
+        );
+        assert!(
+            privacy.detail.contains("dns 203.0.113.1"),
+            "the DNS server must be named: {:?}",
+            privacy.detail
         );
     }
 

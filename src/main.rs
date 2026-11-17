@@ -104,6 +104,14 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Read-only audit: remote management, DNS in use, admin surface
+    Privacy {
+        #[arg(long)]
+        json: bool,
+        /// Print the raw XML of every probed endpoint (contains device data)
+        #[arg(long)]
+        raw: bool,
+    },
     /// Health check in netwatch's doctor --json shape
     Doctor {
         #[arg(long)]
@@ -369,6 +377,39 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let stdin_password = read_stdin_password(cli.password_stdin)?;
             let password = read_password(&cfg, stdin_password.as_deref())?;
             run_tui(app, cfg, password)
+        }
+        Some(Cmd::Privacy { json, raw }) => {
+            let mut client = connect(&cfg, cli.password_stdin)?;
+            let audit = routwatch::privacy::Audit::collect(&mut client);
+            let bodies: Vec<(&'static str, String)> = if raw {
+                // Same probe list the audit read, so the two cannot drift apart.
+                routwatch::router::endpoints::PRIVACY
+                    .iter()
+                    .filter_map(|spec| {
+                        client
+                            .raw(spec.path)
+                            .ok()
+                            .map(|body| (spec.path, routwatch::scrub::scrub_xml(&body)))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            client.logout();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&audit).unwrap());
+            } else {
+                for c in &audit.checks {
+                    println!("{:<14} {:<11} {}", c.name, c.state.as_str(), c.detail);
+                }
+            }
+            if raw {
+                eprintln!("raw: endpoint XML with serial, IMEI, MACs and host names replaced by <redacted>");
+                for (path, body) in &bodies {
+                    eprintln!("\n##### {path} #####\n{}", body.trim());
+                }
+            }
+            Ok(())
         }
         Some(Cmd::Doctor { json, live }) => {
             let stdin_password = read_stdin_password(cli.password_stdin)?;
