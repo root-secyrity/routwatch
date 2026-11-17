@@ -9,6 +9,7 @@ use crate::error::ApiError;
 pub const SUBCOMMANDS: &[&str] = &[
     "snapshot",
     "privacy",
+    "scan",
     "doctor",
     "bands",
     "dns",

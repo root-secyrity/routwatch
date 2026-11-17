@@ -146,6 +146,35 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Try band sets, measure each, print a ranked table
+    Scan {
+        /// Comma separated sets, each set its own argument (e.g. --set 1,3 --set 20,28)
+        #[arg(long = "set", value_name = "LIST", required = true)]
+        sets: Vec<String>,
+        #[arg(long, default_value = "auto")]
+        mode: String,
+        #[arg(long)]
+        option: Option<String>,
+        /// Upper bound in seconds for the link to come back before a set is
+        /// called no-service. The wait ends as soon as an address returns.
+        #[arg(long, default_value_t = 60)]
+        settle: u64,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        allow_write: bool,
+        #[arg(long)]
+        allow_data: bool,
+        #[arg(long)]
+        json: bool,
+        /// Do not add the runs to the saved speed history
+        #[arg(long)]
+        no_save: bool,
+        /// Measure even when this host's route to the internet does not leave
+        /// through the router
+        #[arg(long)]
+        ignore_route: bool,
+    },
     /// DNS servers: read, set or reset (verified write path)
     Dns {
         /// PRIMARY,SECONDARY (IPv4)
@@ -350,11 +379,36 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             return Err(ApiError::Config(e));
         }
     }
+    // Writing to the radio and spending data are the two ways `scan` can hurt.
+    // The flag is answered before any config read, so a machine that was never
+    // set up gets the same sentence instead of a missing-config error.
+    if let Some(Cmd::Scan {
+        dry_run,
+        allow_write,
+        allow_data,
+        ..
+    }) = &cli.cmd
+    {
+        if !dry_run && !allow_write {
+            eprintln!("scan applies band sets: pass --allow-write, or --dry-run to see the plan");
+            return Err(ApiError::Quiet(3));
+        }
+        if !dry_run && !allow_data {
+            eprintln!("scan spends data: pass --allow-data, or --dry-run to see the plan");
+            return Err(ApiError::Quiet(3));
+        }
+    }
+
     // Offline commands must work without a config file; everything that talks
-    // to the router keeps the strict loader (and its 0600 check).
+    // to the router keeps the strict loader (and its 0600 check). `scan
+    // --dry-run` prints a plan and touches nothing, so it belongs here;
+    // `ip renew` does not, because it really writes.
     let offline = matches!(
         cli.cmd,
-        Some(Cmd::Preview { .. }) | Some(Cmd::Replay { .. }) | Some(Cmd::Speedtest { .. })
+        Some(Cmd::Preview { .. })
+            | Some(Cmd::Replay { .. })
+            | Some(Cmd::Speedtest { .. })
+            | Some(Cmd::Scan { dry_run: true, .. })
     );
     let cfg = if offline {
         config::load_or_default(cli.config.clone())?
@@ -756,6 +810,175 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 }
                 Ok(())
             }
+        }
+        Some(Cmd::Scan {
+            sets,
+            mode,
+            option,
+            settle,
+            dry_run,
+            json,
+            no_save,
+            ignore_route,
+            ..
+        }) => {
+            let selection: Vec<Vec<u8>> = sets
+                .iter()
+                .map(|s| bands::parse_list(s).map_err(ApiError::Config))
+                .collect::<Result<_, _>>()?;
+            let mode_code = bands::mode_code(&mode).ok_or_else(|| {
+                ApiError::Config(format!("unknown mode {mode:?}; use auto, 4g or 5g"))
+            })?;
+            let option_code = match &option {
+                Some(o) => Some(
+                    bands::option_code(o)
+                        .ok_or_else(|| {
+                            ApiError::Config(format!(
+                                "unknown NR option {o:?}; use nsa, sa or both"
+                            ))
+                        })?
+                        .to_string(),
+                ),
+                None => None,
+            };
+            // The three steps of a set and their ceilings. `settle` and `grace`
+            // are ours; the measurement ceiling is the speedtest module's own
+            // number, so a change to one of its phases moves the estimate with it.
+            let plan = cfg.app.speedtest.clone().sanitised();
+            let measure_secs = routwatch::speedtest::worst_case_secs(&plan);
+            let per_set = settle + LINK_GRACE.as_secs() + measure_secs;
+            let secs = per_set * selection.len() as u64;
+            let mb = plan.max_mb * selection.len() as u64;
+            let shown: Vec<String> = selection
+                .iter()
+                .map(|s| s.iter().map(u8::to_string).collect::<Vec<_>>().join(","))
+                .collect();
+            if dry_run {
+                println!("scan: {} sets: {}", selection.len(), shown.join(" | "));
+                println!(
+                    "time: upper bound {secs} s ({per_set} s per set: --settle {settle} s cap, {} s grace, {measure_secs} s measurement)",
+                    LINK_GRACE.as_secs()
+                );
+                println!("data: upper bound {mb} MB ({} MB per set)", plan.max_mb);
+                println!(
+                    "each ceiling is an upper bound: the settle wait ends as soon as an address returns, and a measurement that fails early spends less"
+                );
+                println!(
+                    "radius: the measurement is this host's path through the router, not the WAN link alone; a VPN or a second interface in that path makes every row say nothing about the set"
+                );
+                println!("dry-run: nothing was sent");
+                return Ok(());
+            }
+            // A speed figure from a path that does not leave through the router
+            // says nothing about the set under test, so the run stops unless the
+            // user says they know the path.
+            if !ignore_route {
+                let out_dev = route_dev("1.1.1.1");
+                let router_dev = route_dev(&cfg.router.ip);
+                if let (Some(a), Some(b)) = (&out_dev, &router_dev) {
+                    if a != b {
+                        return Err(ApiError::Config(format!(
+                            "scan measures this host's path: the internet leaves via {a}, while {} is on {b}. A VPN or a second interface sits in the measured path; pass --ignore-route to measure anyway",
+                            cfg.router.ip
+                        )));
+                    }
+                }
+            }
+
+            let mut client = connect(&cfg, cli.password_stdin)?;
+            let catalog = client
+                .get("net/net-mode-list")
+                .ok()
+                .map(|n| bands::from_net_mode_list(&n));
+            let lte_all = catalog.as_ref().and_then(|c| c.lte_all).map(bands::to_hex);
+            let network_all = catalog
+                .as_ref()
+                .and_then(|c| c.network_all)
+                .map(bands::to_hex);
+            // Read before the first write: this is the mask the run returns to.
+            let start = write::read_mode(&mut client)?;
+            let start_bands = start
+                .lte_band
+                .as_deref()
+                .and_then(bands::from_hex)
+                .map(bands::bands_from_mask)
+                .unwrap_or_default();
+            let snap = headless::collect(&mut client, &cfg.router.ip).ok();
+            let radio = routwatch::history::Radio {
+                net_type: snap
+                    .as_ref()
+                    .map(|s| s.connection.net_type.clone())
+                    .filter(|s| !s.is_empty()),
+                band: None,
+                band_at_start: Some(
+                    start_bands
+                        .iter()
+                        .map(|b| format!("B{b}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )
+                .filter(|s| !s.is_empty()),
+                rsrp_dbm: snap.as_ref().and_then(|s| s.signal.rsrp_dbm),
+                rsrq_db: snap.as_ref().and_then(|s| s.signal.rsrq_db),
+                sinr_db: snap.as_ref().and_then(|s| s.signal.sinr_db),
+            };
+            let interrupted = std::sync::atomic::AtomicBool::new(false);
+            // Installed before the first write, dropped back to the default once
+            // the starting mask is on the radio again.
+            let handler: extern "C" fn(libc::c_int) = on_sigint;
+            unsafe {
+                libc::signal(libc::SIGINT, handler as libc::sighandler_t);
+            }
+            let (rows, restore_err, applied) = {
+                let mut io = LiveScan {
+                    client: &mut client,
+                    plan: &plan,
+                    mode_code: mode_code.to_string(),
+                    option: option_code.clone(),
+                    lte_all: lte_all.clone(),
+                    network_all: network_all.clone(),
+                    settle: Duration::from_secs(settle),
+                    start: start.clone(),
+                    start_bands: start_bands.clone(),
+                    last_bands: None,
+                    wrote: false,
+                    save: !no_save,
+                    radio,
+                    interrupted: &interrupted,
+                };
+                let (rows, err) = routwatch::scan::run(&selection, &mut io);
+                (rows, err, io.wrote)
+            };
+            unsafe {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+            }
+            client.logout();
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+            } else {
+                print_scan_table(&rows);
+            }
+            if !applied {
+                println!("nothing to restore: no set was applied");
+            } else if let Some(why) = &restore_err {
+                let last = rows
+                    .iter()
+                    .rev()
+                    .find(|r| !matches!(r.outcome, routwatch::scan::Outcome::NotRun));
+                let on = last.map(|r| label_of(&r.bands)).unwrap_or_default();
+                println!(
+                    "bands NOT restored: the router is still on {on}. Run: routwatch bands --set {} --mode {mode_code} --allow-write ({why})",
+                    label_of(&start_bands)
+                );
+                return Err(ApiError::Quiet(1));
+            } else {
+                println!(
+                    "bands restored to the set the run started with ({})",
+                    label_of(&start_bands)
+                );
+            }
+            Ok(())
         }
         Some(Cmd::Dns {
             set,
@@ -2324,6 +2547,233 @@ fn human_bytes(v: u64) -> String {
         format!("{:.0} KB", f / K)
     } else {
         format!("{v} B")
+    }
+}
+
+/// How long the link is given to hold an address before a measurement starts:
+/// the address comes back before the route and DNS behind it settle.
+const LINK_GRACE: Duration = Duration::from_secs(5);
+
+/// Set by the SIGINT handler and read by the loop. A signal handler may only
+/// touch an atomic: everything else (the restore, the exit code) happens on the
+/// normal path the flag sends the loop down.
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_sigint(_sig: libc::c_int) {
+    INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// "1,3,5": the spelling the table and the restore hint use.
+fn label_of(bands: &[u8]) -> String {
+    bands
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The interface this host would send a packet to `target` through, read from
+/// the kernel's own routing answer.
+fn route_dev(target: &str) -> Option<String> {
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", target])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    text.split_whitespace()
+        .skip_while(|w| *w != "dev")
+        .nth(1)
+        .map(str::to_string)
+}
+
+/// The table T3.4 describes: measured rows first, then the ones that carry no
+/// number, in the order they were tried.
+fn print_scan_table(rows: &[routwatch::scan::SetResult]) {
+    println!("radius: this measures this host's path through the router, not the WAN link alone");
+    println!(
+        "{:<12} {:<27} {:>11} {:>11} {:>8} note",
+        "set", "result", "down", "up", "ttfb"
+    );
+    for i in routwatch::scan::rank(rows) {
+        let r = &rows[i];
+        let (down, up, ttfb) = match &r.outcome {
+            routwatch::scan::Outcome::Measured {
+                down_bps,
+                up_bps,
+                ttfb_ms,
+            } => (
+                ui::widgets::bitrate(*down_bps),
+                up_bps
+                    .map(ui::widgets::bitrate)
+                    .unwrap_or_else(|| "-".into()),
+                format!("{ttfb_ms:.0} ms"),
+            ),
+            _ => ("-".into(), "-".into(), "-".into()),
+        };
+        let note = r
+            .note
+            .clone()
+            .or_else(|| r.outcome.why().map(str::to_string))
+            .unwrap_or_default();
+        println!(
+            "{:<12} {:<27} {:>11} {:>11} {:>8} {}",
+            label_of(&r.bands),
+            r.outcome.label(),
+            down,
+            up,
+            ttfb,
+            note
+        );
+    }
+}
+
+/// The real `ScanIo`: one router client, one speed-test plan, one SIGINT flag.
+struct LiveScan<'a> {
+    client: &'a mut HuaweiClient,
+    plan: &'a routwatch::config::Speedtest,
+    mode_code: String,
+    option: Option<String>,
+    lte_all: Option<String>,
+    network_all: Option<String>,
+    settle: Duration,
+    start: routwatch::model::NetMode,
+    start_bands: Vec<u8>,
+    last_bands: Option<Vec<u8>>,
+    wrote: bool,
+    save: bool,
+    radio: routwatch::history::Radio,
+    interrupted: &'a std::sync::atomic::AtomicBool,
+}
+
+impl LiveScan<'_> {
+    /// The payload for a set, built against the device's own masks so the
+    /// router is never handed a constant this firmware did not report.
+    fn payload(&self, bands: &[u8]) -> bands::BandPayload {
+        bands::resolve(
+            &self.mode_code,
+            bands,
+            self.lte_all.as_deref(),
+            self.network_all.as_deref(),
+            self.option.as_deref(),
+        )
+    }
+
+    fn write(
+        &mut self,
+        payload: &bands::BandPayload,
+        bands: &[u8],
+        force: bool,
+    ) -> Result<(), String> {
+        let intent = WriteIntent::ApplyBands {
+            mode: payload.network_mode.clone(),
+            bands: bands.to_vec(),
+            mask: payload.lte_band.clone(),
+            option: payload.network_option.clone(),
+        };
+        match write::apply_bands(self.client, payload, intent, force, &mut |_| {}) {
+            WriteState::Success { .. } => Ok(()),
+            other => Err(other.label()),
+        }
+    }
+}
+
+impl routwatch::scan::ScanIo for LiveScan<'_> {
+    fn apply(&mut self, bands: &[u8]) -> Result<(), String> {
+        let payload = self.payload(bands);
+        let out = self.write(&payload, bands, false);
+        if out.is_ok() {
+            self.wrote = true;
+            self.last_bands = Some(bands.to_vec());
+        }
+        out
+    }
+
+    fn settle(&mut self) -> routwatch::scan::Settle {
+        let limits = write::VerifyLimits {
+            reread: write::VERIFY_REREAD,
+            window: self.settle,
+        };
+        let (hit, _, _) = write::poll_with(
+            || parse::wan_addr(self.client),
+            |ip: &Option<String>| ip.is_some(),
+            limits,
+            std::thread::sleep,
+        );
+        if self.interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+            return routwatch::scan::Settle::Interrupted;
+        }
+        match hit {
+            Some(_) => {
+                std::thread::sleep(LINK_GRACE);
+                routwatch::scan::Settle::Ready
+            }
+            None => routwatch::scan::Settle::NoService,
+        }
+    }
+
+    fn measure(&mut self) -> Result<routwatch::scan::Outcome, String> {
+        let started = std::time::Instant::now();
+        let r = routwatch::speedtest::run(self.plan, self.interrupted, |_| {})?;
+        if self.save {
+            if let Some(path) = routwatch::history::path() {
+                let mut radio = self.radio.clone();
+                radio.band = self.last_bands.as_deref().map(label_of);
+                let entry = routwatch::history::Entry::from_result(
+                    &r,
+                    self.plan,
+                    routwatch::history::Source::Cli,
+                    Some(&radio),
+                    routwatch::history::Pings::default(),
+                    started.elapsed().as_millis() as u64,
+                    routwatch::app::unix_now(),
+                );
+                if let Err(e) = routwatch::history::append(&path, &entry) {
+                    eprintln!("speed run not saved: {e}");
+                }
+            }
+        }
+        Ok(routwatch::scan::Outcome::Measured {
+            down_bps: r.download_bps,
+            up_bps: (r.upload_bps > 0.0).then_some(r.upload_bps),
+            ttfb_ms: r.ttfb_ms,
+        })
+    }
+
+    fn applied(&self) -> bool {
+        self.wrote
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        // `force` because the radio may already be back on the starting mask by
+        // itself after the last set failed: the user asked for that mask, so the
+        // write proves it rather than trusting a read.
+        let payload = bands::BandPayload {
+            network_mode: self
+                .start
+                .network_mode
+                .clone()
+                .unwrap_or_else(|| "00".to_string()),
+            network_band: self
+                .start
+                .network_band
+                .clone()
+                .unwrap_or_else(|| self.start.lte_band.clone().unwrap_or_default()),
+            lte_band: self
+                .start
+                .lte_band
+                .clone()
+                .unwrap_or_else(|| "0".to_string()),
+            network_option: self.start.network_option.clone(),
+        };
+        let bands_now = self.start_bands.clone();
+        self.write(&payload, &bands_now, true)
+    }
+
+    fn interrupted(&self) -> bool {
+        self.interrupted.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

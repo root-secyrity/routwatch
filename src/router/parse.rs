@@ -1,7 +1,9 @@
 //! XML -> typed structs. Every numeric field is Option: a missing or `" "`
 //! placeholder value must stay absent, never become 0.
 
+use crate::error::ApiError;
 use crate::model::*;
+use crate::router::HuaweiClient;
 use crate::xml::Node;
 
 fn f32_of(n: &Node, key: &str) -> Option<f32> {
@@ -430,6 +432,33 @@ pub fn parse_sms_count(n: &Node) -> SmsCount {
         outbox: u32_of(n, "LocalOutbox").unwrap_or(0),
         draft: u32_of(n, "LocalDraft").unwrap_or(0),
         max: u32_of(n, "LocalMax").unwrap_or(0),
+    }
+}
+
+/// The WAN address the link carries right now, `None` when it has none yet.
+/// `WanIPAddress` is not in one fixed document: measured on the lab CPE it sits
+/// in `monitoring/status`, and `parse_device` reads the same tag from
+/// `device/information`. Both are asked, the first non-empty answer wins, so
+/// neither firmware is a special case.
+pub fn wan_addr(client: &mut HuaweiClient) -> Result<Option<String>, ApiError> {
+    let mut last: Option<ApiError> = None;
+    for path in ["monitoring/status", "device/information"] {
+        match client.get(path) {
+            Ok(doc) => {
+                if let Some(v) = doc.value("WanIPAddress").filter(|v| !v.trim().is_empty()) {
+                    return Ok(Some(v.to_string()));
+                }
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    match last {
+        // The router answered with an error or without the tag: there is no
+        // address to report yet, which is what the wait is waiting for.
+        Some(ApiError::Unsupported(_) | ApiError::Http(_) | ApiError::Parse(_)) | None => Ok(None),
+        // Anything else (network, auth) says the read itself failed. That is not
+        // "no address yet" and must not turn into `Settle::NoService`.
+        Some(e) => Err(e),
     }
 }
 
