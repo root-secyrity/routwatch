@@ -22,6 +22,7 @@ pub mod privacy;
 pub mod record;
 pub mod report;
 pub mod router;
+pub mod scan;
 pub mod scrub;
 pub mod share;
 pub mod speedtest;
