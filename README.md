@@ -154,6 +154,20 @@ table ranks the sets by measured download.
   the router, not the WAN link alone, so a VPN or a second interface in that path
   makes every row say nothing about the set.
 
+## New address
+
+`routwatch ip renew --allow-write` drops the mobile data connection, brings it
+back, and watches for the address the firmware reports. A changed address and the
+same address are both exit 0: the ISP keeping the lease is a result, not a failure.
+
+- It really cuts the link for a few seconds, and it is a write: without
+  `--allow-write` the command refuses and names the flag.
+- A connection that does not come back is exit 1 with the last attempt named, and
+  the router stays reachable on its LAN address.
+- **Not measured on hardware yet**: whether the H122-373 actually hands out a new
+  address through this path is unverified. The write is covered by the mock and by
+  the plan's rules, not by a live renew.
+
 ## Development
 
 `make build`, `make test`, `make lint`, `make fmt`; a change is ready when all four

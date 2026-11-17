@@ -139,6 +139,11 @@ why each one is stated instead of hidden.
   is called a failure. The H122-373 publishes the new mask after its radio restarts,
   and one read at 1.5 s measured a landed switch as a failure.
 
+- **A renew that keeps the same address is not a failure**: `ip renew` reads the
+  address, drops the data connection, brings it back and watches. The ISP may hand
+  the same lease back, and that is reported as unchanged with exit 0. The write
+  path is not measured on a live H122-373 yet: no live renew has been run.
+
 - **The signal log can stop without a word**: every command that collects appends at
   most one row a minute to `$XDG_DATA_HOME/routwatch/signal-history.jsonl`, and a write
   that fails never fails the command the user asked for. The common cause is the

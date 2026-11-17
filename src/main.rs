@@ -277,6 +277,11 @@ enum Cmd {
         #[arg(long)]
         history: bool,
     },
+    /// Ask the network for a new WAN address
+    Ip {
+        #[command(subcommand)]
+        action: IpAction,
+    },
     /// Saved long-term history
     History {
         /// Signal rows (no network)
@@ -333,6 +338,20 @@ enum Cmd {
         /// screenshots and for checking a theme without a terminal
         #[arg(long)]
         ansi: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum IpAction {
+    /// Drop the data connection, bring it back, and watch for the address
+    Renew {
+        #[arg(long)]
+        allow_write: bool,
+        #[arg(long)]
+        json: bool,
+        /// Cap on the wait for an address, in seconds (a ceiling, not a duration)
+        #[arg(long, default_value_t = 60)]
+        settle: u64,
     },
 }
 
@@ -413,6 +432,17 @@ fn run(cli: Cli) -> Result<(), ApiError> {
     // to the router keeps the strict loader (and its 0600 check). `scan
     // --dry-run` prints a plan and touches nothing, so it belongs here;
     // `ip renew` does not, because it really writes.
+    // A renew drops the link for a few seconds: it is a write, and the flag is
+    // answered before any config read so a machine never set up hears the rule.
+    if let Some(Cmd::Ip {
+        action: IpAction::Renew { allow_write, .. },
+    }) = &cli.cmd
+    {
+        if !allow_write {
+            eprintln!("ip renew switches the data connection off and on: pass --allow-write");
+            return Err(ApiError::Quiet(3));
+        }
+    }
     let offline = matches!(
         cli.cmd,
         Some(Cmd::Preview { .. })
@@ -1370,6 +1400,71 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 }
             }
             Ok(())
+        }
+        Some(Cmd::Ip {
+            action: IpAction::Renew { json, settle, .. },
+        }) => {
+            let mut client = connect(&cfg, cli.password_stdin)?;
+            let limits = routwatch::write::VerifyLimits::from_secs(settle);
+            let out = routwatch::write::renew_ip(&mut client, limits, std::thread::sleep);
+            client.logout();
+            if json {
+                let v = match &out {
+                    routwatch::write::RenewOutcome::Changed {
+                        before,
+                        after,
+                        secs,
+                    } => serde_json::json!({
+                        "outcome": "changed", "before": before, "after": after, "secs": secs
+                    }),
+                    routwatch::write::RenewOutcome::Unchanged { ip, secs } => serde_json::json!({
+                        "outcome": "unchanged", "ip": ip, "secs": secs
+                    }),
+                    routwatch::write::RenewOutcome::LinkDown { why } => serde_json::json!({
+                        "outcome": "link down", "why": why
+                    }),
+                    routwatch::write::RenewOutcome::NoAddress { attempts, last_err } => {
+                        serde_json::json!({
+                            "outcome": "no address", "attempts": attempts, "last_err": last_err
+                        })
+                    }
+                };
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            } else {
+                match &out {
+                    routwatch::write::RenewOutcome::Changed {
+                        before,
+                        after,
+                        secs,
+                    } => {
+                        println!("before: {before}");
+                        println!("after:  {after} (changed after {secs} s)");
+                    }
+                    routwatch::write::RenewOutcome::Unchanged { ip, secs } => {
+                        println!("before: {ip}");
+                        println!("after:  {ip} (unchanged after {secs} s: the ISP kept the lease)");
+                    }
+                    routwatch::write::RenewOutcome::LinkDown { why } => {
+                        println!("the data connection is still off ({why})");
+                        println!(
+                            "the router still answers on its LAN address. Run: routwatch ip renew --allow-write,"
+                        );
+                        println!("or switch the mobile data connection on from the router page.");
+                    }
+                    routwatch::write::RenewOutcome::NoAddress { attempts, last_err } => {
+                        let why = last_err
+                            .clone()
+                            .unwrap_or_else(|| "the device answered without an address".into());
+                        println!(
+                            "the data connection is on but no address came back in {attempts} reads: {why}"
+                        );
+                    }
+                }
+            }
+            match out.exit_code() {
+                0 => Ok(()),
+                code => Err(ApiError::Quiet(code)),
+            }
         }
         Some(Cmd::History {
             signal,
