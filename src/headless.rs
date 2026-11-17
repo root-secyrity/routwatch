@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::error::ApiError;
 use crate::model::Snapshot;
 use crate::router::{bands, endpoints, parse, HuaweiClient};
+use crate::signal_history;
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -172,7 +173,7 @@ pub fn collect_traced(
             Err(_) => (Vec::new(), None, None),
         };
 
-    Ok(Snapshot {
+    let snap = Snapshot {
         generated_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -193,7 +194,19 @@ pub fn collect_traced(
         network_bands_mask,
         unsupported,
         quota,
-    })
+    };
+    // Best effort, and silent on purpose: a log that cannot be written must not
+    // fail a `status` the user asked for. `ROUTWATCH_DISABLE_SIGNAL_LOG` is the
+    // switch a script that reads every second needs.
+    if std::env::var_os("ROUTWATCH_DISABLE_SIGNAL_LOG").is_none() {
+        if let Some(path) = signal_history::path() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let _ = signal_history::record_if_due(&snap, now, &path);
+        }
+    }
+    Ok(snap)
 }
 
 /// Lazily-fetched extras (opened by the SMS/Device tabs, the `R` key, or `sms`).

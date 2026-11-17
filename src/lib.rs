@@ -25,6 +25,7 @@ pub mod router;
 pub mod scan;
 pub mod scrub;
 pub mod share;
+pub mod signal_history;
 pub mod speedtest;
 pub mod theme;
 pub mod ui;

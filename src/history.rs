@@ -395,7 +395,7 @@ pub fn append(path: &Path, e: &Entry) -> io::Result<()> {
     f.sync_data()
 }
 
-fn lock_exclusive(path: &Path) -> io::Result<Option<std::fs::File>> {
+pub(crate) fn lock_exclusive(path: &Path) -> io::Result<Option<std::fs::File>> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
     let lock = path.with_extension("jsonl.lock");
