@@ -11,7 +11,7 @@ use crate::model::NetMode;
 use crate::router::bands::{self, BandPayload};
 use crate::router::client::HuaweiClient;
 use crate::router::parse;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteIntent {
@@ -251,6 +251,74 @@ pub fn same_band_target(current: &NetMode, payload: &BandPayload) -> bool {
         .clone()
         .unwrap_or_else(|| "0".to_string());
     mask_matches && mode_matches && want_opt == have_opt
+}
+
+/// How long the radio gets to publish the mask it accepted. A band write
+/// restarts the modem, and its own UI shows the new mask only after the radio
+/// comes back; one read lands too early. Measured on H122-373 (WEBUI 11.0.2.21).
+pub const VERIFY_REREAD: Duration = Duration::from_secs(5);
+
+/// The closing window when the app config carries no value.
+pub const VERIFY_WINDOW_DEFAULT: Duration = Duration::from_secs(20);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifyLimits {
+    pub reread: Duration,
+    pub window: Duration,
+}
+
+impl Default for VerifyLimits {
+    fn default() -> Self {
+        VerifyLimits {
+            reread: VERIFY_REREAD,
+            window: VERIFY_WINDOW_DEFAULT,
+        }
+    }
+}
+
+/// Re-read until `accept` says yes, or until the window closes. Generic over the
+/// value a read returns, so a WAN address is polled by the same loop as a band
+/// mask. The last error is carried out, because "the device stopped answering"
+/// and "the device answered the wrong thing" are different failures.
+pub fn poll_with<T, F>(
+    mut read: F,
+    accept: impl Fn(&T) -> bool,
+    limits: VerifyLimits,
+    mut sleep: impl FnMut(Duration),
+) -> (Option<T>, u32, Option<ApiError>)
+where
+    F: FnMut() -> Result<T, ApiError>,
+{
+    let mut elapsed = Duration::ZERO;
+    let mut attempts = 0u32;
+    let mut last_err: Option<ApiError>;
+    loop {
+        attempts += 1;
+        match read() {
+            Ok(v) if accept(&v) => return (Some(v), attempts, None),
+            Ok(_) => last_err = None,
+            Err(e) => last_err = Some(e),
+        }
+        if elapsed >= limits.window {
+            return (None, attempts, last_err);
+        }
+        sleep(limits.reread);
+        elapsed += limits.reread;
+    }
+}
+
+/// The band-mask case: `poll_with` with the device model's own reader.
+pub fn poll_until<F, M>(
+    read: F,
+    matches: M,
+    limits: VerifyLimits,
+    sleep: impl FnMut(Duration),
+) -> (Option<NetMode>, u32, Option<ApiError>)
+where
+    F: FnMut() -> Result<NetMode, ApiError>,
+    M: Fn(&NetMode) -> bool,
+{
+    poll_with(read, matches, limits, sleep)
 }
 
 /// Apply an intent, verifying against the device. Returns the settled state  -
@@ -1043,5 +1111,132 @@ mod tests {
             other => panic!("a firmware with the DNS row must accept the write: {other:?}"),
         }
         assert_eq!(mock.dhcp_posts(), 1);
+    }
+
+    fn net_mode(mode: &str, band: &str, lte: &str, option: Option<&str>) -> NetMode {
+        NetMode {
+            network_mode: Some(mode.into()),
+            network_band: Some(band.into()),
+            lte_band: Some(lte.into()),
+            network_option: option.map(Into::into),
+        }
+    }
+
+    /// The payload the tests compare against. `0x8000001` sets bits 0 and 27, i.e.
+    /// bands 1 and 28, so the mask literal in `net_mode(...)` must be this same value.
+    fn payload_4g() -> BandPayload {
+        bands::resolve("03", &[1, 28], None, Some("3FFFFFFF"), None)
+    }
+
+    #[test]
+    fn the_first_read_wins_and_nothing_sleeps() {
+        let mut reads = 0;
+        let mut slept = Vec::new();
+        let (hit, attempts, err) = poll_until(
+            || {
+                reads += 1;
+                Ok(net_mode("03", "8000001", "8000001", None))
+            },
+            |m| matches_after(m, &payload_4g()),
+            VerifyLimits::default(),
+            |d| slept.push(d),
+        );
+        assert!(hit.is_some());
+        assert_eq!(attempts, 1);
+        assert!(slept.is_empty(), "{slept:?}");
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn a_late_mask_is_waited_for_and_the_gap_is_five_seconds() {
+        let mut n = 0;
+        let mut slept = Vec::new();
+        let (hit, attempts, _) = poll_until(
+            || {
+                n += 1;
+                if n < 4 {
+                    Ok(net_mode("03", "1", "1", None))
+                } else {
+                    Ok(net_mode("03", "8000001", "8000001", None))
+                }
+            },
+            |m| matches_after(m, &payload_4g()),
+            VerifyLimits::default(),
+            |d| slept.push(d),
+        );
+        assert!(hit.is_some());
+        assert_eq!(attempts, 4);
+        assert_eq!(slept, vec![Duration::from_secs(5); 3]);
+    }
+
+    #[test]
+    fn the_window_closes_after_twenty_seconds() {
+        let mut slept = Vec::new();
+        let (hit, attempts, _) = poll_until(
+            || Ok(net_mode("03", "1", "1", None)),
+            |m| matches_after(m, &payload_4g()),
+            VerifyLimits::default(),
+            |d| slept.push(d),
+        );
+        assert!(hit.is_none());
+        assert_eq!(attempts, 5);
+        assert_eq!(slept.iter().sum::<Duration>(), Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_lost_response_does_not_end_the_poll() {
+        let mut n = 0;
+        let (hit, attempts, _) = poll_until(
+            || {
+                n += 1;
+                if n == 1 {
+                    Err(ApiError::Network("timed out".into()))
+                } else {
+                    Ok(net_mode("03", "8000001", "8000001", None))
+                }
+            },
+            |m| matches_after(m, &payload_4g()),
+            VerifyLimits::default(),
+            |_| {},
+        );
+        assert!(hit.is_some());
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn the_last_error_is_reported_when_the_window_closes() {
+        let (hit, attempts, err) = poll_until(
+            || Err(ApiError::Network("refused".into())),
+            |_| false,
+            VerifyLimits {
+                reread: Duration::from_millis(1),
+                window: Duration::ZERO,
+            },
+            |_| {},
+        );
+        assert!(hit.is_none());
+        assert_eq!(attempts, 1);
+        assert!(err.is_some());
+    }
+
+    #[test]
+    fn the_generic_poll_accepts_a_type_that_is_not_a_band_mask() {
+        let mut reads = 0;
+        let (hit, attempts, err) = poll_with(
+            || {
+                reads += 1;
+                Ok::<_, ApiError>(if reads < 3 {
+                    None
+                } else {
+                    Some("203.0.113.9".to_string())
+                })
+            },
+            |ip: &Option<String>| ip.is_some(),
+            VerifyLimits::default(),
+            |_| {},
+        );
+        assert_eq!(hit.flatten().as_deref(), Some("203.0.113.9"));
+        assert_eq!(attempts, 3);
+        assert!(err.is_none());
     }
 }
