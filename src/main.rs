@@ -100,6 +100,9 @@ enum Cmd {
         /// Dump raw XML responses instead of parsing
         #[arg(long)]
         raw: bool,
+        /// With --raw, print every PROBE endpoint, not the first eight
+        #[arg(long)]
+        all: bool,
     },
     /// Health check in netwatch's doctor --json shape
     Doctor {
@@ -500,7 +503,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let mut app = ui_opts.build(&cfg);
             run_replay(&mut app, frames, speed.max(1), cli.redact)
         }
-        Some(Cmd::Snapshot { json, raw }) => {
+        Some(Cmd::Snapshot { json, raw, all }) => {
             // A flag that looks like protection and is not is worse than none:
             // the raw XML carries IMEI, serial and MACs in the clear.
             if raw && cli.redact {
@@ -513,7 +516,12 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             }
             let mut client = connect(&cfg, cli.password_stdin)?;
             if raw {
-                for spec in routwatch::router::endpoints::PROBE.iter().take(8) {
+                let take = if all {
+                    routwatch::router::endpoints::PROBE.len()
+                } else {
+                    8
+                };
+                for spec in routwatch::router::endpoints::PROBE.iter().take(take) {
                     match client.raw(spec.path) {
                         Ok(body) => println!("\n##### {} #####\n{}", spec.path, body.trim()),
                         Err(e) => println!("\n##### {} #####\n<error: {e}>", spec.path),
