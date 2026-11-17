@@ -99,6 +99,16 @@ why each one is stated instead of hidden.
   without a session). The speed test is host-side by necessity: it measures the
   path through this machine, never the WAN link on its own.
 
+- **The privacy audit is read-only and says so where it cannot answer**: `privacy`
+  issues `GET` calls only (`the_audit_never_posts` holds it) and prints the code a
+  refusal carried instead of reading silence as "off". TR-069 is not exposed on
+  the H122-373 (WEBUI 11.0.2.21, measured 2026-11-17: `ntwk/tr069`,
+  `device/tr069` and `security/tr069` all answered 100003), so the report declares
+  that and the DNS check names both sources, because the server DHCP advertises
+  and the server the link reports are different facts. Whether the web UI needs a
+  password over WLAN is not a field this firmware exposes: the check prints
+  `unknown` rather than a pass.
+
 - **The speed test measures this host, not the router**: the transfer runs from
   this machine through the CPE, so the number includes the local Wi-Fi or LAN
   segment, and it is a single plain-HTTP stream rather than the sum of every
