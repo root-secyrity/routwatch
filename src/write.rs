@@ -11,7 +11,7 @@ use crate::model::NetMode;
 use crate::router::bands::{self, BandPayload};
 use crate::router::client::HuaweiClient;
 use crate::router::parse;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteIntent {
@@ -218,11 +218,6 @@ fn write_cause(e: &ApiError) -> String {
 /// this repo's log agree, and every one of them applied.
 const SWITCH_WARNING: u32 = 100006;
 
-/// How long the radio gets, after a 100006, before the read-back is believed.
-/// A band write restarts the modem; the new mask is not always visible on the
-/// very next GET.
-const SWITCH_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
-
 fn switch_warning(e: &ApiError) -> Option<u32> {
     match e {
         ApiError::Router(code) if *code == SWITCH_WARNING => Some(*code),
@@ -253,6 +248,85 @@ pub fn same_band_target(current: &NetMode, payload: &BandPayload) -> bool {
     mask_matches && mode_matches && want_opt == have_opt
 }
 
+/// How long the radio gets to publish the mask it accepted. A band write
+/// restarts the modem, and its own UI shows the new mask only after the radio
+/// comes back; one read lands too early. Measured on H122-373 (WEBUI 11.0.2.21).
+pub const VERIFY_REREAD: Duration = Duration::from_secs(5);
+
+/// The closing window when the app config carries no value.
+pub const VERIFY_WINDOW_DEFAULT: Duration = Duration::from_secs(20);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifyLimits {
+    pub reread: Duration,
+    pub window: Duration,
+}
+
+impl Default for VerifyLimits {
+    fn default() -> Self {
+        VerifyLimits {
+            reread: VERIFY_REREAD,
+            window: VERIFY_WINDOW_DEFAULT,
+        }
+    }
+}
+
+/// Re-read until `accept` says yes, or until the window closes. Generic over the
+/// value a read returns, so a WAN address is polled by the same loop as a band
+/// mask. The last error is carried out, because "the device stopped answering"
+/// and "the device answered the wrong thing" are different failures.
+pub fn poll_with<T, F>(
+    mut read: F,
+    accept: impl Fn(&T) -> bool,
+    limits: VerifyLimits,
+    mut sleep: impl FnMut(Duration),
+) -> (Option<T>, u32, Option<ApiError>)
+where
+    F: FnMut() -> Result<T, ApiError>,
+{
+    let mut elapsed = Duration::ZERO;
+    let mut attempts = 0u32;
+    let mut last_err: Option<ApiError>;
+    loop {
+        attempts += 1;
+        match read() {
+            Ok(v) if accept(&v) => return (Some(v), attempts, None),
+            Ok(_) => last_err = None,
+            Err(e) => last_err = Some(e),
+        }
+        if elapsed >= limits.window {
+            return (None, attempts, last_err);
+        }
+        sleep(limits.reread);
+        elapsed += limits.reread;
+    }
+}
+
+impl VerifyLimits {
+    /// A user-facing number is clamped: below 5 s the window cannot outlast the
+    /// modem restart, and above 120 s the CLI looks hung.
+    pub fn from_secs(secs: u64) -> VerifyLimits {
+        VerifyLimits {
+            window: Duration::from_secs(secs.clamp(5, 120)),
+            ..Default::default()
+        }
+    }
+}
+
+/// The band-mask case: `poll_with` with the device model's own reader.
+pub fn poll_until<F, M>(
+    read: F,
+    matches: M,
+    limits: VerifyLimits,
+    sleep: impl FnMut(Duration),
+) -> (Option<NetMode>, u32, Option<ApiError>)
+where
+    F: FnMut() -> Result<NetMode, ApiError>,
+    M: Fn(&NetMode) -> bool,
+{
+    poll_with(read, matches, limits, sleep)
+}
+
 /// Apply an intent, verifying against the device. Returns the settled state  -
 /// never an intermediate one.
 pub fn apply_bands(
@@ -261,6 +335,26 @@ pub fn apply_bands(
     intent: WriteIntent,
     force: bool,
     progress: &mut dyn FnMut(WriteState),
+) -> WriteState {
+    apply_bands_with(
+        client,
+        payload,
+        intent,
+        force,
+        progress,
+        VerifyLimits::default(),
+    )
+}
+
+/// The same write with an explicit verification window, so a test can drive the
+/// poll without waiting twenty seconds.
+pub fn apply_bands_with(
+    client: &mut HuaweiClient,
+    payload: &BandPayload,
+    intent: WriteIntent,
+    force: bool,
+    progress: &mut dyn FnMut(WriteState),
+    limits: VerifyLimits,
 ) -> WriteState {
     // Guard 1: if the device already reports this mask, sending anything is a
     // no-op and a needless link reset.
@@ -294,84 +388,94 @@ pub fn apply_bands(
         since: Instant::now(),
     });
 
-    // Guard 2: the device is the truth. Never re-send: read back and compare
-    // mode, both masks and the NR option with what was asked for.
-    let mut after = read_mode(client);
+    // Guard 2: the device is the truth. Never re-send: read back until the mode,
+    // both masks and the NR option match what was asked for, or the window closes.
+    //
+    // A refusal is a verdict, not a delay. Only an accepted write, or the one
+    // warning code this firmware sends after it applied the payload, is worth
+    // polling for: `poll_with` reads once before it looks at the window, so an
+    // empty window would still accept a mask the device already carried.
+    let may_land = sent.is_ok() || sent.as_ref().err().and_then(switch_warning).is_some();
 
-    // One extra read, and only for this case: the router said 100006 and the
-    // first read-back still shows the old state. The radio is mid-restart, so
-    // give it the grace period instead of calling a landing switch a failure.
-    // The write itself is never repeated.
-    let mismatched = matches!(&after, Ok(cur) if !matches_after(cur, payload));
-    if mismatched {
-        if let Err(e) = &sent {
-            if switch_warning(e).is_some() {
-                std::thread::sleep(SWITCH_GRACE);
-                after = read_mode(client);
-            }
-        }
-    }
+    let (hit, attempts, last_err) = if may_land {
+        poll_until(
+            || read_mode(client),
+            |cur| matches_after(cur, payload),
+            limits,
+            std::thread::sleep,
+        )
+    } else {
+        // Nothing was sent successfully: there is no answer to wait for.
+        (None, 0u32, None)
+    };
 
-    if let Ok(current) = &after {
-        if matches_after(current, payload) {
-            let zero = if auto_reports_zero_band(current, payload) {
-                "; device reports NetworkBand 0 in auto mode"
-            } else {
-                ""
-            };
-            return WriteState::Success {
-                intent,
-                note: format!(
-                    "{}{zero}",
-                    match &sent {
-                        Ok(_) => format!(
-                            "verified, device mode {} mask 0x{}",
-                            current.network_mode.clone().unwrap_or_else(|| "-".into()),
-                            bands::to_hex(target)
+    if let Some(current) = &hit {
+        let zero = if auto_reports_zero_band(current, payload) {
+            "; device reports NetworkBand 0 in auto mode"
+        } else {
+            ""
+        };
+        return WriteState::Success {
+            intent,
+            note: format!(
+                "{}{zero}",
+                match &sent {
+                    Ok(_) => format!(
+                        "verified, device mode {} mask 0x{}",
+                        current.network_mode.clone().unwrap_or_else(|| "-".into()),
+                        bands::to_hex(target)
+                    ),
+                    Err(e) => match switch_warning(e) {
+                        Some(code) => format!(
+                            "router answered {code} while switching; read-back confirms the change"
                         ),
-                        Err(e) => match switch_warning(e) {
-                            Some(code) => format!(
-                                "router answered {code} while switching; read-back confirms the change"
-                            ),
-                            None => format!("{}; read-back confirms the change", write_cause(e)),
-                        },
-                    }
-                ),
-            };
-        }
+                        None => format!("{}; read-back confirms the change", write_cause(e)),
+                    },
+                }
+            ),
+        };
     }
 
-    let err = match (&sent, &after) {
-        (Err(e), Err(ve)) => format!("{}; read-back failed too: {ve}", write_cause(e)),
-        (Err(e), Ok(current)) => {
-            let kept = format!(
-                "device still reports mode {} mask 0x{}",
-                current.network_mode.clone().unwrap_or_else(|| "-".into()),
-                current
-                    .lte_band
-                    .as_deref()
-                    .and_then(bands::from_hex)
-                    .map(bands::to_hex)
-                    .unwrap_or_else(|| "-".into())
-            );
-            match switch_warning(e) {
+    // What the device kept. A poll that never matched still leaves one question
+    // open - what did it answer last? - so the failure path reads once more. A
+    // refusal sent nothing, and saying "no read after the refusal" is the truth.
+    let describe = |cur: &NetMode| {
+        format!(
+            "device still reports mode {} mask 0x{}",
+            cur.network_mode.clone().unwrap_or_else(|| "-".into()),
+            cur.lte_band
+                .as_deref()
+                .and_then(bands::from_hex)
+                .map(bands::to_hex)
+                .unwrap_or_else(|| "-".into())
+        )
+    };
+    let kept = match (&hit, may_land) {
+        (Some(cur), _) => describe(cur),
+        (None, true) => match read_mode(client) {
+            Ok(cur) => describe(&cur),
+            Err(e) => format!("no read after the refusal ({e})"),
+        },
+        (None, false) => "no read after the refusal".to_string(),
+    };
+    WriteState::Failed {
+        intent,
+        err: match &sent {
+            Err(e) => match switch_warning(e) {
                 Some(code) => format!(
-                    "router answered {code} and the change did not land within {}s: {kept}",
-                    SWITCH_GRACE.as_secs_f32()
+                    "router answered {code} and the change did not land within {}s after {attempts} reads: {kept}",
+                    limits.window.as_secs()
                 ),
                 None => format!("{}; {kept}", write_cause(e)),
-            }
-        }
-        (Ok(_), Ok(current)) => format!(
-            "mismatch after write: wanted mode {} mask 0x{}, device reports mode {} mask 0x{}",
-            payload.network_mode,
-            payload.network_band,
-            current.network_mode.clone().unwrap_or_else(|| "-".into()),
-            current.network_band.clone().unwrap_or_else(|| "-".into())
-        ),
-        (Ok(_), Err(ve)) => format!("write sent, but reading net/net-mode failed: {ve}"),
-    };
-    WriteState::Failed { intent, err }
+            },
+            Ok(_) => format!(
+                "write sent, but the device never reported the new mask after {attempts} reads: {} ({kept})",
+                last_err
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "no read error".into())
+            ),
+        },
+    }
 }
 
 /// What the write will send, decided in one place so `--dry-run` and the write
@@ -529,6 +633,126 @@ pub fn apply_dns(
         (Ok(_), None) => WriteState::Failed {
             intent,
             err: "write sent, but reading dhcp/settings back failed".into(),
+        },
+    }
+}
+
+/// How a renew ended. An unchanged address is a result about the ISP, not a
+/// failure; a link still down is a failure the caller has to say out loud.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenewOutcome {
+    Changed {
+        before: String,
+        after: String,
+        secs: u64,
+    },
+    Unchanged {
+        ip: String,
+        secs: u64,
+    },
+    /// The data connection was switched off and never came back on.
+    LinkDown {
+        why: String,
+    },
+    /// Back on, but no address within the cap.
+    NoAddress {
+        attempts: u32,
+        last_err: Option<String>,
+    },
+}
+
+impl RenewOutcome {
+    /// The exit code a script reads: a kept lease is a result, a dead link is not.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            RenewOutcome::Changed { .. } | RenewOutcome::Unchanged { .. } => 0,
+            RenewOutcome::LinkDown { .. } | RenewOutcome::NoAddress { .. } => 1,
+        }
+    }
+}
+
+/// Bring the data connection back after it was dropped. A dropped link that is
+/// never re-enabled takes the user offline until he opens the router page, so a
+/// failed attempt is retried, and a link still down is a failure, not a warning.
+fn re_enable(client: &mut HuaweiClient, mut sleep: impl FnMut(Duration)) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 1..=3u8 {
+        match client.post(
+            "dialup/mobile-dataswitch",
+            HuaweiClient::dataswitch_payload(true),
+        ) {
+            Ok(_) => return Ok(()),
+            Err(e) => last = format!("attempt {attempt}: {e}"),
+        }
+        // No wait after the last attempt: it buys nothing and the test sleeps
+        // through it for nothing.
+        if attempt < 3 {
+            sleep(Duration::from_secs(3));
+        }
+    }
+    Err(last)
+}
+
+/// Ask the network for a new address: drop the data connection, wait, bring it
+/// back, then watch the device report a WAN IP. A link that is already down is
+/// switched on, never off first.
+///
+/// The sleep is a parameter, not `std::thread::sleep` written inside: the
+/// failure test passes its own and does not wait nine real seconds. The wait
+/// that counts is `--settle`'s cap, spent as a poll that returns the moment an
+/// address appears.
+pub fn renew_ip(
+    client: &mut HuaweiClient,
+    limits: VerifyLimits,
+    mut sleep: impl FnMut(Duration),
+) -> RenewOutcome {
+    // Seconds of wait actually spent, so the report is honest on an injected
+    // sleep too and no caller has to read a wall clock.
+    let mut slept = 0u64;
+    let before = parse::wan_addr(client).unwrap_or(None);
+    if before.is_some() {
+        let _ = client.post(
+            "dialup/mobile-dataswitch",
+            HuaweiClient::dataswitch_payload(false),
+        );
+        sleep(Duration::from_secs(3));
+        slept += 3;
+    }
+    let mut counting = |d: Duration| {
+        slept += d.as_secs();
+        sleep(d);
+    };
+    if let Err(why) = re_enable(client, &mut counting) {
+        return RenewOutcome::LinkDown { why };
+    }
+    let (hit, attempts, last_err) = poll_with(
+        || parse::wan_addr(client),
+        |addr: &Option<String>| addr.as_deref().is_some_and(|s| !s.trim().is_empty()),
+        limits,
+        &mut counting,
+    );
+    match hit.flatten() {
+        Some(after) => match before {
+            Some(b) if b == after => RenewOutcome::Unchanged {
+                ip: after,
+                secs: slept,
+            },
+            Some(b) => RenewOutcome::Changed {
+                before: b,
+                after,
+                secs: slept,
+            },
+            // The link was off, so the address is new and there is no before to
+            // name: saying "none" is truer than inventing one.
+            None => RenewOutcome::Changed {
+                before: "none".to_string(),
+                after,
+                secs: slept,
+            },
+        },
+        None => RenewOutcome::NoAddress {
+            attempts,
+            last_err: last_err.map(|e| e.to_string()),
         },
     }
 }
@@ -1043,5 +1267,235 @@ mod tests {
             other => panic!("a firmware with the DNS row must accept the write: {other:?}"),
         }
         assert_eq!(mock.dhcp_posts(), 1);
+    }
+
+    fn net_mode(mode: &str, band: &str, lte: &str, option: Option<&str>) -> NetMode {
+        NetMode {
+            network_mode: Some(mode.into()),
+            network_band: Some(band.into()),
+            lte_band: Some(lte.into()),
+            network_option: option.map(Into::into),
+        }
+    }
+
+    /// The payload the tests compare against. `0x8000001` sets bits 0 and 27, i.e.
+    /// bands 1 and 28, so the mask literal in `net_mode(...)` must be this same value.
+    fn payload_4g() -> BandPayload {
+        bands::resolve("03", &[1, 28], None, Some("3FFFFFFF"), None)
+    }
+
+    #[test]
+    fn the_first_read_wins_and_nothing_sleeps() {
+        let mut reads = 0;
+        let mut slept = Vec::new();
+        let (hit, attempts, err) = poll_until(
+            || {
+                reads += 1;
+                Ok(net_mode("03", "8000001", "8000001", None))
+            },
+            |m| matches_after(m, &payload_4g()),
+            VerifyLimits::default(),
+            |d| slept.push(d),
+        );
+        assert!(hit.is_some());
+        assert_eq!(attempts, 1);
+        assert!(slept.is_empty(), "{slept:?}");
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn a_late_mask_is_waited_for_and_the_gap_is_five_seconds() {
+        let mut n = 0;
+        let mut slept = Vec::new();
+        let (hit, attempts, _) = poll_until(
+            || {
+                n += 1;
+                if n < 4 {
+                    Ok(net_mode("03", "1", "1", None))
+                } else {
+                    Ok(net_mode("03", "8000001", "8000001", None))
+                }
+            },
+            |m| matches_after(m, &payload_4g()),
+            VerifyLimits::default(),
+            |d| slept.push(d),
+        );
+        assert!(hit.is_some());
+        assert_eq!(attempts, 4);
+        assert_eq!(slept, vec![Duration::from_secs(5); 3]);
+    }
+
+    #[test]
+    fn the_window_closes_after_twenty_seconds() {
+        let mut slept = Vec::new();
+        let (hit, attempts, _) = poll_until(
+            || Ok(net_mode("03", "1", "1", None)),
+            |m| matches_after(m, &payload_4g()),
+            VerifyLimits::default(),
+            |d| slept.push(d),
+        );
+        assert!(hit.is_none());
+        assert_eq!(attempts, 5);
+        assert_eq!(slept.iter().sum::<Duration>(), Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_lost_response_does_not_end_the_poll() {
+        let mut n = 0;
+        let (hit, attempts, _) = poll_until(
+            || {
+                n += 1;
+                if n == 1 {
+                    Err(ApiError::Network("timed out".into()))
+                } else {
+                    Ok(net_mode("03", "8000001", "8000001", None))
+                }
+            },
+            |m| matches_after(m, &payload_4g()),
+            VerifyLimits::default(),
+            |_| {},
+        );
+        assert!(hit.is_some());
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn the_last_error_is_reported_when_the_window_closes() {
+        let (hit, attempts, err) = poll_until(
+            || Err(ApiError::Network("refused".into())),
+            |_| false,
+            VerifyLimits {
+                reread: Duration::from_millis(1),
+                window: Duration::ZERO,
+            },
+            |_| {},
+        );
+        assert!(hit.is_none());
+        assert_eq!(attempts, 1);
+        assert!(err.is_some());
+    }
+
+    #[test]
+    fn the_window_is_clamped_between_five_and_one_hundred_twenty() {
+        assert_eq!(VerifyLimits::from_secs(0).window, Duration::from_secs(5));
+        assert_eq!(
+            VerifyLimits::from_secs(600).window,
+            Duration::from_secs(120)
+        );
+        assert_eq!(VerifyLimits::from_secs(30).window, Duration::from_secs(30));
+        assert_eq!(VerifyLimits::from_secs(30).reread, VERIFY_REREAD);
+    }
+
+    #[test]
+    fn the_generic_poll_accepts_a_type_that_is_not_a_band_mask() {
+        let mut reads = 0;
+        let (hit, attempts, err) = poll_with(
+            || {
+                reads += 1;
+                Ok::<_, ApiError>(if reads < 3 {
+                    None
+                } else {
+                    Some("203.0.113.9".to_string())
+                })
+            },
+            |ip: &Option<String>| ip.is_some(),
+            VerifyLimits::default(),
+            |_| {},
+        );
+        assert_eq!(hit.flatten().as_deref(), Some("203.0.113.9"));
+        assert_eq!(attempts, 3);
+        assert!(err.is_none());
+    }
+
+    // A renew: the switch, the address and the status document come from one
+    // state in the mock, so these run without a router and without a second.
+    mod renew {
+        use super::*;
+        use crate::mock_cpe::{MockCpe, Profile};
+
+        fn fast() -> VerifyLimits {
+            VerifyLimits {
+                reread: Duration::from_millis(1),
+                window: Duration::from_secs(2),
+            }
+        }
+
+        fn client(m: &MockCpe) -> HuaweiClient {
+            let mut c = HuaweiClient::new(m.addr(), 5000);
+            c.login("admin", "x").expect("login");
+            c
+        }
+
+        #[test]
+        fn a_renew_that_gets_a_new_lease_says_before_and_after() {
+            let m = MockCpe::start(Profile::RenewChanges);
+            let mut c = client(&m);
+            let out = renew_ip(&mut c, fast(), |_| {});
+            match &out {
+                RenewOutcome::Changed { before, after, .. } => {
+                    assert_eq!(before, "203.0.113.77");
+                    assert_eq!(after, "203.0.113.99");
+                }
+                other => panic!("expected a change, got {other:?}"),
+            }
+            assert_eq!(out.exit_code(), 0);
+            assert_eq!(m.link_downs(), 1, "an up link is dropped exactly once");
+        }
+
+        #[test]
+        fn the_same_lease_back_is_unchanged_and_still_exit_zero() {
+            let m = MockCpe::start(Profile::RenewKeeps);
+            let mut c = client(&m);
+            let out = renew_ip(&mut c, fast(), |_| {});
+            match &out {
+                RenewOutcome::Unchanged { ip, .. } => assert_eq!(ip, "203.0.113.77"),
+                other => panic!("expected unchanged, got {other:?}"),
+            }
+            assert_eq!(
+                out.exit_code(),
+                0,
+                "the ISP keeping the lease is not a failure"
+            );
+        }
+
+        #[test]
+        fn a_link_that_stays_down_is_a_failure_with_the_last_attempt_named() {
+            let m = MockCpe::start(Profile::RenewRefuses);
+            let mut c = client(&m);
+            let mut slept = Vec::new();
+            let out = renew_ip(&mut c, fast(), |d| slept.push(d));
+            match &out {
+                RenewOutcome::LinkDown { why } => {
+                    assert!(why.contains("attempt 3"), "{why}");
+                }
+                other => panic!("expected a dead link, got {other:?}"),
+            }
+            assert_eq!(out.exit_code(), 1);
+            // One wait after dropping the link, then two between the three enable
+            // attempts: the injected sleep proves the retry without costing nine
+            // real seconds, and there is no wait after the last attempt.
+            assert_eq!(
+                slept,
+                vec![
+                    Duration::from_secs(3),
+                    Duration::from_secs(3),
+                    Duration::from_secs(3)
+                ]
+            );
+            assert_eq!(m.link_downs(), 1);
+        }
+
+        #[test]
+        fn a_link_already_down_is_switched_on_and_never_off_first() {
+            let m = MockCpe::start(Profile::RenewStartsDown);
+            let mut c = client(&m);
+            let out = renew_ip(&mut c, fast(), |_| {});
+            assert_eq!(
+                m.link_downs(),
+                0,
+                "switching an off link off is the no-op this path exists to avoid"
+            );
+            assert_eq!(out.exit_code(), 0);
+        }
     }
 }

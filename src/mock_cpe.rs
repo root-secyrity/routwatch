@@ -55,12 +55,27 @@ pub enum Profile {
     /// Same code, same body, but the new mask only shows up after `LATE_MS`:
     /// the radio is mid-restart when the first read-back lands.
     SwitchWarnsLate,
+    /// A POST that is answered `OK` and stored, but the new mask is published
+    /// only after `LATE_MS`. The shape a real modem has: accepted, then silent
+    /// for a moment while the radio restarts.
+    SwitchAppliesLateOk,
     /// The code without the change: a real refusal dressed as the same warning.
     SwitchRefuses,
     /// A firmware that answers the three codes this client names, each on its own
     /// path: `monitoring/status` answers 100003, `sms/sms-count` answers 100002,
     /// and `monitoring/month_statistics` answers 100004.
     CodesRefused,
+    /// The data switch is stateful: dropping the link empties the WAN address and
+    /// bringing it back yields a new lease, the way a renew is supposed to end.
+    RenewChanges,
+    /// The same switch, but the ISP keeps the lease: the address is identical
+    /// before and after, which is a result about the ISP, not a failure.
+    RenewKeeps,
+    /// The link never comes back: every attempt to switch it on is refused.
+    RenewRefuses,
+    /// The link is already down when the renew starts: switching it off first
+    /// would be a no-op, so the only correct POST is the one that brings it back.
+    RenewStartsDown,
 }
 
 /// How long `SwitchWarnsLate` takes to publish the new mask. Shorter than the
@@ -95,8 +110,15 @@ impl Profile {
             // A 404 is what a firmware that does not implement the endpoint
             // actually returns; the tool must read it as "not exposed".
             Profile::NoHostList => {}
-            Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses => {}
-            Profile::CodesRefused => {}
+            Profile::SwitchWarns
+            | Profile::SwitchWarnsLate
+            | Profile::SwitchAppliesLateOk
+            | Profile::SwitchRefuses => {}
+            Profile::CodesRefused
+            | Profile::RenewChanges
+            | Profile::RenewKeeps
+            | Profile::RenewRefuses
+            | Profile::RenewStartsDown => {}
         }
         match self {
             Profile::DhcpNoDns => routes.push(("/api/dhcp/feature-switch", FEATURE_DNS_HIDDEN)),
@@ -338,6 +360,38 @@ impl DhcpState {
     }
 }
 
+/// The data-connection state the renew profiles keep. The same firmware answers
+/// the switch, the address and the status document from this one state, which is
+/// why a renew can be exercised without a router.
+#[derive(Debug, Clone)]
+struct LinkState {
+    up: bool,
+    wan: String,
+    /// Set by a POST that asks for the link to come back with a new lease.
+    fresh: bool,
+}
+
+impl Default for LinkState {
+    fn default() -> Self {
+        LinkState {
+            up: true,
+            wan: "203.0.113.77".into(),
+            fresh: false,
+        }
+    }
+}
+
+impl LinkState {
+    fn status_body(&self) -> String {
+        format!(
+            "<response><ConnectionStatus>{}</ConnectionStatus><WanIPAddress>{}</WanIPAddress>\
+             <PrimaryDns>203.0.113.1</PrimaryDns><SignalIcon>4</SignalIcon></response>",
+            if self.up { 901 } else { 902 },
+            if self.up { self.wan.as_str() } else { "" }
+        )
+    }
+}
+
 /// A running fake router. Dropping it stops the listener.
 pub struct MockCpe {
     addr: String,
@@ -346,6 +400,11 @@ pub struct MockCpe {
     logouts: Arc<AtomicUsize>,
     signals: Arc<AtomicUsize>,
     dhcp_posts: Arc<AtomicUsize>,
+    /// Every POST the mock saw, whatever the path. A read-only audit must leave
+    /// this at zero; `dhcp_posts` counts one endpoint and cannot answer that.
+    posts: Arc<AtomicUsize>,
+    /// POST `dialup/mobile-dataswitch` bodies that asked for the link to go down.
+    link_downs: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -365,8 +424,18 @@ impl MockCpe {
         let st = Arc::clone(&state);
         let dhcp_posts = Arc::new(AtomicUsize::new(0));
         let dp = Arc::clone(&dhcp_posts);
+        let posts = Arc::new(AtomicUsize::new(0));
+        let po = Arc::clone(&posts);
         let dhcp = Arc::new(Mutex::new(DhcpState::default()));
         let dh = Arc::clone(&dhcp);
+        let mut ls = LinkState::default();
+        if profile == Profile::RenewStartsDown {
+            ls.up = false;
+        }
+        let link = Arc::new(Mutex::new(ls));
+        let lk = Arc::clone(&link);
+        let link_downs = Arc::new(AtomicUsize::new(0));
+        let ld = Arc::clone(&link_downs);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(Ordering::SeqCst) {
@@ -378,8 +447,10 @@ impl MockCpe {
                     logouts: &lo,
                     signals: &sig,
                     dhcp_posts: &dp,
+                    posts: &po,
+                    link_downs: &ld,
                 };
-                let _ = serve(stream, profile, &counters, &st, &dh);
+                let _ = serve(stream, profile, &counters, &st, &dh, &lk);
             }
         });
         MockCpe {
@@ -389,6 +460,8 @@ impl MockCpe {
             logouts,
             signals,
             dhcp_posts,
+            posts,
+            link_downs,
             thread: Some(thread),
         }
     }
@@ -418,6 +491,17 @@ impl MockCpe {
     pub fn dhcp_posts(&self) -> usize {
         self.dhcp_posts.load(Ordering::SeqCst)
     }
+
+    /// POST requests of any path seen so far.
+    pub fn posts(&self) -> usize {
+        self.posts.load(Ordering::SeqCst)
+    }
+
+    /// POST `dialup/mobile-dataswitch` bodies that switched the link off. A renew
+    /// on a link that is already down must leave this at zero.
+    pub fn link_downs(&self) -> usize {
+        self.link_downs.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for MockCpe {
@@ -439,6 +523,8 @@ struct Counters<'a> {
     logouts: &'a AtomicUsize,
     signals: &'a AtomicUsize,
     dhcp_posts: &'a AtomicUsize,
+    posts: &'a AtomicUsize,
+    link_downs: &'a AtomicUsize,
 }
 
 fn serve(
@@ -447,6 +533,7 @@ fn serve(
     counters: &Counters,
     state: &Mutex<SwitchState>,
     dhcp: &Mutex<DhcpState>,
+    link: &Mutex<LinkState>,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -457,6 +544,9 @@ fn serve(
 
     if path.starts_with("/api/device/signal") {
         counters.signals.fetch_add(1, Ordering::SeqCst);
+    }
+    if method == "POST" {
+        counters.posts.fetch_add(1, Ordering::SeqCst);
     }
 
     // Drain headers so the client is not left writing into a closed socket.
@@ -538,7 +628,10 @@ fn serve(
     // point of the case.
     let is_switch = matches!(
         profile,
-        Profile::SwitchWarns | Profile::SwitchWarnsLate | Profile::SwitchRefuses
+        Profile::SwitchWarns
+            | Profile::SwitchWarnsLate
+            | Profile::SwitchAppliesLateOk
+            | Profile::SwitchRefuses
     );
     let is_dhcp = matches!(
         profile,
@@ -549,7 +642,65 @@ fn serve(
             | Profile::DhcpWithDns
     );
 
+    let is_renew = matches!(
+        profile,
+        Profile::RenewChanges
+            | Profile::RenewKeeps
+            | Profile::RenewRefuses
+            | Profile::RenewStartsDown
+    );
+
     let (status, body) = match (method, path.as_str()) {
+        ("GET", "/api/dialup/mobile-dataswitch") if is_renew => {
+            let up = link.lock().map(|l| l.up).unwrap_or(true);
+            (
+                200,
+                format!(
+                    "<response><dataswitch>{}</dataswitch></response>",
+                    u8::from(up)
+                ),
+            )
+        }
+        ("POST", "/api/dialup/mobile-dataswitch") if is_renew => {
+            let want_up = payload.contains("<dataswitch>1</dataswitch>");
+            if want_up && profile == Profile::RenewRefuses {
+                // The link does not come back: the caller has to say so out loud.
+                (
+                    200,
+                    "<error><code>100006</code><message>busy</message></error>".to_string(),
+                )
+            } else if let Ok(mut l) = link.lock() {
+                if !want_up {
+                    l.up = false;
+                    l.fresh = false;
+                    counters.link_downs.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    l.up = true;
+                    l.fresh = true;
+                }
+                (200, "<response>OK</response>".to_string())
+            } else {
+                (200, "<response>OK</response>".to_string())
+            }
+        }
+        ("GET", "/api/monitoring/status") if is_renew => {
+            let body = link
+                .lock()
+                .map(|mut l| {
+                    // A fresh lease is handed out on the first read after the
+                    // switch came back, not at the POST: the address a renew
+                    // reports has to come from the read, like the real one.
+                    if l.fresh {
+                        if profile == Profile::RenewChanges {
+                            l.wan = "203.0.113.99".to_string();
+                        }
+                        l.fresh = false;
+                    }
+                    l.status_body()
+                })
+                .unwrap_or_default();
+            (200, body)
+        }
         ("GET", "/api/dhcp/settings") if is_dhcp => {
             (200, dhcp.lock().map(|d| d.body()).unwrap_or_default())
         }
@@ -593,18 +744,22 @@ fn serve(
                     s.apply(&payload);
                 }
             }
-            (
-                200,
-                "<error><code>100006</code><message>Unknown error</message></error>".to_string(),
-            )
+            let body = if profile == Profile::SwitchAppliesLateOk {
+                "<response>OK</response>"
+            } else {
+                "<error><code>100006</code><message>Unknown error</message></error>"
+            };
+            (200, body.to_string())
         }
         ("GET", "/api/net/net-mode") if is_switch => {
-            let late_pending = profile == Profile::SwitchWarnsLate
-                && state
-                    .lock()
-                    .ok()
-                    .and_then(|s| s.applied_at)
-                    .is_some_and(|t| t.elapsed().as_millis() < LATE_MS as u128);
+            let late_pending = matches!(
+                profile,
+                Profile::SwitchWarnsLate | Profile::SwitchAppliesLateOk
+            ) && state
+                .lock()
+                .ok()
+                .and_then(|s| s.applied_at)
+                .is_some_and(|t| t.elapsed().as_millis() < LATE_MS as u128);
             let body = if late_pending {
                 NET_MODE.to_string()
             } else {
@@ -925,5 +1080,80 @@ mod tests {
         let (head, body) = text.split_once("\r\n\r\n").expect("a response head");
         assert!(head.contains("200 OK"), "{head}");
         assert_eq!(body, "1024", "the peer reports exactly what it consumed");
+    }
+
+    #[test]
+    fn a_late_but_successful_write_is_seen_by_the_poll() {
+        use crate::write::{apply_bands_with, VerifyLimits, WriteIntent, WriteState};
+        use std::time::Duration;
+
+        let mock = MockCpe::start(Profile::SwitchAppliesLateOk);
+        let mut c = crate::router::client::HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        // A mask the mock does not carry, so the write is real and not a no-op.
+        let payload =
+            crate::router::bands::resolve("08", &[1, 28], None, Some("80000005"), Some("0"));
+        let limits = VerifyLimits {
+            reread: Duration::from_millis(700),
+            window: Duration::from_secs(3),
+        };
+        let intent = WriteIntent::ApplyBands {
+            mode: payload.network_mode.clone(),
+            bands: vec![1, 28],
+            mask: payload.lte_band.clone(),
+            option: payload.network_option.clone(),
+        };
+        let settled = apply_bands_with(&mut c, &payload, intent, false, &mut |_| {}, limits);
+        assert!(matches!(settled, WriteState::Success { .. }), "{settled:?}");
+    }
+
+    #[test]
+    fn a_forced_write_goes_out_even_when_the_mask_already_matches() {
+        use crate::write::{
+            apply_bands_with, read_mode, same_band_target, VerifyLimits, WriteIntent, WriteState,
+        };
+        use std::time::Duration;
+
+        let mock = MockCpe::start(Profile::SwitchWarns);
+        let mut c = crate::router::client::HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let before = read_mode(&mut c).expect("read");
+        let mask = before.lte_band.clone().expect("the mock reports a mask");
+        let payload = crate::router::bands::BandPayload {
+            network_mode: before.network_mode.clone().unwrap_or_else(|| "00".into()),
+            network_band: mask.clone(),
+            lte_band: mask.clone(),
+            network_option: before.network_option.clone(),
+        };
+        assert!(
+            same_band_target(&before, &payload),
+            "the payload must already be the device's target, or this test proves nothing"
+        );
+        let limits = VerifyLimits {
+            reread: Duration::from_millis(50),
+            window: Duration::from_secs(2),
+        };
+        let intent = WriteIntent::ApplyBands {
+            mode: payload.network_mode.clone(),
+            bands: vec![],
+            mask: payload.lte_band.clone(),
+            option: payload.network_option.clone(),
+        };
+        let after_login = mock.posts();
+        let settled = apply_bands_with(&mut c, &payload, intent, true, &mut |_| {}, limits);
+        match &settled {
+            WriteState::Success { note, .. } => {
+                assert!(
+                    !note.contains("nothing sent"),
+                    "a forced write is a write: {note}"
+                )
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            mock.posts() - after_login,
+            1,
+            "exactly one POST even though the device already matched"
+        );
     }
 }

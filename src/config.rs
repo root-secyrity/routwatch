@@ -133,6 +133,13 @@ pub struct App {
     pub presets: Option<Vec<BandPreset>>,
     #[serde(default)]
     pub speedtest: Speedtest,
+    /// Seconds to keep re-reading after a write before calling it a failure.
+    #[serde(default = "default_verify_secs")]
+    pub verify_secs: u64,
+}
+
+fn default_verify_secs() -> u64 {
+    20
 }
 
 impl Default for App {
@@ -147,6 +154,7 @@ impl Default for App {
             report_identity: false,
             presets: None,
             speedtest: Speedtest::default(),
+            verify_secs: default_verify_secs(),
         }
     }
 }
@@ -546,5 +554,12 @@ budget_gb = 100
         }
         .sanitised();
         assert_eq!(s.upload_mb, 100);
+    }
+
+    #[test]
+    fn a_config_without_verify_secs_gets_twenty() {
+        let cfg: Config =
+            toml::from_str("[router]\nip = \"192.168.8.1\"\nusername = \"admin\"\n").unwrap();
+        assert_eq!(cfg.app.verify_secs, 20);
     }
 }

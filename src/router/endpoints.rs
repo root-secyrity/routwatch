@@ -13,6 +13,14 @@ pub struct Spec {
     pub path: &'static str,
 }
 
+/// Endpoints a privacy audit asks for. A firmware either serves them or refuses
+/// with a code; the audit prints the code. Only paths confirmed on a device go
+/// here: H122-373 (WEBUI 11.0.2.21) answered 100003 for `ntwk/tr069` on
+/// 2026-11-17, so the list is empty and `privacy` declares that in its output.
+/// The field names and codes measured are in DOCK/PRIVACY-PROBE.md, local by
+/// design.
+pub const PRIVACY: &[Spec] = &[];
+
 pub const PROBE: &[Spec] = &[
     Spec {
         group: "signal",

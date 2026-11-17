@@ -13,7 +13,7 @@ use routwatch::{completion, record};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -100,6 +100,17 @@ enum Cmd {
         /// Dump raw XML responses instead of parsing
         #[arg(long)]
         raw: bool,
+        /// With --raw, print every PROBE endpoint, not the first eight
+        #[arg(long)]
+        all: bool,
+    },
+    /// Read-only audit: remote management, DNS in use, admin surface
+    Privacy {
+        #[arg(long)]
+        json: bool,
+        /// Print the raw XML of every probed endpoint (contains device data)
+        #[arg(long)]
+        raw: bool,
     },
     /// Health check in netwatch's doctor --json shape
     Doctor {
@@ -134,6 +145,39 @@ enum Cmd {
         /// (used once per firmware to prove the write path; resets the radio)
         #[arg(long)]
         force: bool,
+        /// Keep watching the link after a successful write, for this many
+        /// seconds. Nothing is reverted without a `y` on stdin.
+        #[arg(long, value_name = "SECS")]
+        watch: Option<u64>,
+    },
+    /// Try band sets, measure each, print a ranked table
+    Scan {
+        /// Comma separated sets, each set its own argument (e.g. --set 1,3 --set 20,28)
+        #[arg(long = "set", value_name = "LIST", required = true)]
+        sets: Vec<String>,
+        #[arg(long, default_value = "auto")]
+        mode: String,
+        #[arg(long)]
+        option: Option<String>,
+        /// Upper bound in seconds for the link to come back before a set is
+        /// called no-service. The wait ends as soon as an address returns.
+        #[arg(long, default_value_t = 60)]
+        settle: u64,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        allow_write: bool,
+        #[arg(long)]
+        allow_data: bool,
+        #[arg(long)]
+        json: bool,
+        /// Do not add the runs to the saved speed history
+        #[arg(long)]
+        no_save: bool,
+        /// Measure even when this host's route to the internet does not leave
+        /// through the router
+        #[arg(long)]
+        ignore_route: bool,
     },
     /// DNS servers: read, set or reset (verified write path)
     Dns {
@@ -237,6 +281,21 @@ enum Cmd {
         #[arg(long)]
         history: bool,
     },
+    /// Ask the network for a new WAN address
+    Ip {
+        #[command(subcommand)]
+        action: IpAction,
+    },
+    /// Saved long-term history
+    History {
+        /// Signal rows (no network)
+        #[arg(long)]
+        signal: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Sample the router into a recording file (.rwr, one frame per line)
     Record {
         /// Destination file (default: $XDG_DATA_HOME/routwatch/recordings/<date>.rwr)
@@ -283,6 +342,20 @@ enum Cmd {
         /// screenshots and for checking a theme without a terminal
         #[arg(long)]
         ansi: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum IpAction {
+    /// Drop the data connection, bring it back, and watch for the address
+    Renew {
+        #[arg(long)]
+        allow_write: bool,
+        #[arg(long)]
+        json: bool,
+        /// Cap on the wait for an address, in seconds (a ceiling, not a duration)
+        #[arg(long, default_value_t = 60)]
+        settle: u64,
     },
 }
 
@@ -339,11 +412,48 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             return Err(ApiError::Config(e));
         }
     }
+    // Writing to the radio and spending data are the two ways `scan` can hurt.
+    // The flag is answered before any config read, so a machine that was never
+    // set up gets the same sentence instead of a missing-config error.
+    if let Some(Cmd::Scan {
+        dry_run,
+        allow_write,
+        allow_data,
+        ..
+    }) = &cli.cmd
+    {
+        if !dry_run && !allow_write {
+            eprintln!("scan applies band sets: pass --allow-write, or --dry-run to see the plan");
+            return Err(ApiError::Quiet(3));
+        }
+        if !dry_run && !allow_data {
+            eprintln!("scan spends data: pass --allow-data, or --dry-run to see the plan");
+            return Err(ApiError::Quiet(3));
+        }
+    }
+
     // Offline commands must work without a config file; everything that talks
-    // to the router keeps the strict loader (and its 0600 check).
+    // to the router keeps the strict loader (and its 0600 check). `scan
+    // --dry-run` prints a plan and touches nothing, so it belongs here;
+    // `ip renew` does not, because it really writes.
+    // A renew drops the link for a few seconds: it is a write, and the flag is
+    // answered before any config read so a machine never set up hears the rule.
+    if let Some(Cmd::Ip {
+        action: IpAction::Renew { allow_write, .. },
+    }) = &cli.cmd
+    {
+        if !allow_write {
+            eprintln!("ip renew switches the data connection off and on: pass --allow-write");
+            return Err(ApiError::Quiet(3));
+        }
+    }
     let offline = matches!(
         cli.cmd,
-        Some(Cmd::Preview { .. }) | Some(Cmd::Replay { .. }) | Some(Cmd::Speedtest { .. })
+        Some(Cmd::Preview { .. })
+            | Some(Cmd::Replay { .. })
+            | Some(Cmd::Speedtest { .. })
+            | Some(Cmd::History { .. })
+            | Some(Cmd::Scan { dry_run: true, .. })
     );
     let cfg = if offline {
         config::load_or_default(cli.config.clone())?
@@ -366,6 +476,39 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let stdin_password = read_stdin_password(cli.password_stdin)?;
             let password = read_password(&cfg, stdin_password.as_deref())?;
             run_tui(app, cfg, password)
+        }
+        Some(Cmd::Privacy { json, raw }) => {
+            let mut client = connect(&cfg, cli.password_stdin)?;
+            let audit = routwatch::privacy::Audit::collect(&mut client);
+            let bodies: Vec<(&'static str, String)> = if raw {
+                // Same probe list the audit read, so the two cannot drift apart.
+                routwatch::router::endpoints::PRIVACY
+                    .iter()
+                    .filter_map(|spec| {
+                        client
+                            .raw(spec.path)
+                            .ok()
+                            .map(|body| (spec.path, routwatch::scrub::scrub_xml(&body)))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            client.logout();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&audit).unwrap());
+            } else {
+                for c in &audit.checks {
+                    println!("{:<14} {:<11} {}", c.name, c.state.as_str(), c.detail);
+                }
+            }
+            if raw {
+                eprintln!("raw: endpoint XML with serial, IMEI, MACs and host names replaced by <redacted>");
+                for (path, body) in &bodies {
+                    eprintln!("\n##### {path} #####\n{}", body.trim());
+                }
+            }
+            Ok(())
         }
         Some(Cmd::Doctor { json, live }) => {
             let stdin_password = read_stdin_password(cli.password_stdin)?;
@@ -500,7 +643,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let mut app = ui_opts.build(&cfg);
             run_replay(&mut app, frames, speed.max(1), cli.redact)
         }
-        Some(Cmd::Snapshot { json, raw }) => {
+        Some(Cmd::Snapshot { json, raw, all }) => {
             // A flag that looks like protection and is not is worse than none:
             // the raw XML carries IMEI, serial and MACs in the clear.
             if raw && cli.redact {
@@ -513,7 +656,12 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             }
             let mut client = connect(&cfg, cli.password_stdin)?;
             if raw {
-                for spec in routwatch::router::endpoints::PROBE.iter().take(8) {
+                let take = if all {
+                    routwatch::router::endpoints::PROBE.len()
+                } else {
+                    8
+                };
+                for spec in routwatch::router::endpoints::PROBE.iter().take(take) {
                     match client.raw(spec.path) {
                         Ok(body) => println!("\n##### {} #####\n{}", spec.path, body.trim()),
                         Err(e) => println!("\n##### {} #####\n<error: {e}>", spec.path),
@@ -545,8 +693,16 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             dry_run,
             allow_write,
             force,
+            watch,
         }) => {
-            let mut client = connect(&cfg, cli.password_stdin)?;
+            if watch.is_some() && set.is_none() {
+                return Err(ApiError::Usage(
+                    "--watch needs --set: there is no write to watch".into(),
+                ));
+            }
+            // The credentials are kept for the watch: a radio restart can drop
+            // the session, and the watch has to sign in again by itself.
+            let (mut client, creds) = connect_with(&cfg, cli.password_stdin)?;
             if let Some(list_arg) = set {
                 let mode_code = bands::mode_code(&mode).ok_or_else(|| {
                     ApiError::Config(format!("unknown mode {mode:?}; use auto, 4g or 5g"))
@@ -625,19 +781,59 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     option: payload.network_option.clone(),
                 };
                 let mut progress = |st: WriteState| eprintln!("  {}", st.label());
-                let settled =
-                    write::apply_bands(&mut client, &payload, intent, force, &mut progress);
-                client.logout();
-                match settled {
+                let limits = write::VerifyLimits::from_secs(cfg.app.verify_secs);
+                let settled = write::apply_bands_with(
+                    &mut client,
+                    &payload,
+                    intent,
+                    force,
+                    &mut progress,
+                    limits,
+                );
+                let undo_payload = bands::BandPayload {
+                    network_mode: current
+                        .network_mode
+                        .clone()
+                        .unwrap_or_else(|| "00".to_string()),
+                    network_band: network_all
+                        .clone()
+                        .unwrap_or_else(|| current_mask.clone().unwrap_or_else(|| "0".to_string())),
+                    lte_band: current_mask.clone().unwrap_or_else(|| "0".to_string()),
+                    network_option: current.network_option.clone(),
+                };
+                let undo_intent = WriteIntent::ApplyBands {
+                    mode: undo_payload.network_mode.clone(),
+                    bands: current_mask
+                        .as_deref()
+                        .and_then(bands::from_hex)
+                        .map(bands::bands_from_mask)
+                        .unwrap_or_default(),
+                    mask: undo_payload.lte_band.clone(),
+                    option: undo_payload.network_option.clone(),
+                };
+                let result = match settled {
                     WriteState::Success { .. } => {
                         println!("result: {}", settled.label());
-                        Ok(())
+                        match watch {
+                            Some(secs) if secs > 0 => watch_link(
+                                &mut client,
+                                &creds,
+                                Some((&undo_payload, &undo_intent)),
+                                cfg.app.verify_secs,
+                                secs,
+                            ),
+                            _ => Ok(()),
+                        }
                     }
                     other => {
                         println!("result: {}", other.label());
                         Err(ApiError::WriteFailed(other.label()))
                     }
-                }
+                };
+                // One logout per path: the watch keeps the session open on
+                // purpose, and closes it here like every other branch.
+                client.logout();
+                result
             } else {
                 let node = client.get("net/net-mode-list")?;
                 let catalog = bands::from_net_mode_list(&node);
@@ -700,6 +896,175 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 }
                 Ok(())
             }
+        }
+        Some(Cmd::Scan {
+            sets,
+            mode,
+            option,
+            settle,
+            dry_run,
+            json,
+            no_save,
+            ignore_route,
+            ..
+        }) => {
+            let selection: Vec<Vec<u8>> = sets
+                .iter()
+                .map(|s| bands::parse_list(s).map_err(ApiError::Config))
+                .collect::<Result<_, _>>()?;
+            let mode_code = bands::mode_code(&mode).ok_or_else(|| {
+                ApiError::Config(format!("unknown mode {mode:?}; use auto, 4g or 5g"))
+            })?;
+            let option_code = match &option {
+                Some(o) => Some(
+                    bands::option_code(o)
+                        .ok_or_else(|| {
+                            ApiError::Config(format!(
+                                "unknown NR option {o:?}; use nsa, sa or both"
+                            ))
+                        })?
+                        .to_string(),
+                ),
+                None => None,
+            };
+            // The three steps of a set and their ceilings. `settle` and `grace`
+            // are ours; the measurement ceiling is the speedtest module's own
+            // number, so a change to one of its phases moves the estimate with it.
+            let plan = cfg.app.speedtest.clone().sanitised();
+            let measure_secs = routwatch::speedtest::worst_case_secs(&plan);
+            let per_set = settle + LINK_GRACE.as_secs() + measure_secs;
+            let secs = per_set * selection.len() as u64;
+            let mb = plan.max_mb * selection.len() as u64;
+            let shown: Vec<String> = selection
+                .iter()
+                .map(|s| s.iter().map(u8::to_string).collect::<Vec<_>>().join(","))
+                .collect();
+            if dry_run {
+                println!("scan: {} sets: {}", selection.len(), shown.join(" | "));
+                println!(
+                    "time: upper bound {secs} s ({per_set} s per set: --settle {settle} s cap, {} s grace, {measure_secs} s measurement)",
+                    LINK_GRACE.as_secs()
+                );
+                println!("data: upper bound {mb} MB ({} MB per set)", plan.max_mb);
+                println!(
+                    "each ceiling is an upper bound: the settle wait ends as soon as an address returns, and a measurement that fails early spends less"
+                );
+                println!(
+                    "radius: the measurement is this host's path through the router, not the WAN link alone; a VPN or a second interface in that path makes every row say nothing about the set"
+                );
+                println!("dry-run: nothing was sent");
+                return Ok(());
+            }
+            // A speed figure from a path that does not leave through the router
+            // says nothing about the set under test, so the run stops unless the
+            // user says they know the path.
+            if !ignore_route {
+                let out_dev = route_dev("1.1.1.1");
+                let router_dev = route_dev(&cfg.router.ip);
+                if let (Some(a), Some(b)) = (&out_dev, &router_dev) {
+                    if a != b {
+                        return Err(ApiError::Config(format!(
+                            "scan measures this host's path: the internet leaves via {a}, while {} is on {b}. A VPN or a second interface sits in the measured path; pass --ignore-route to measure anyway",
+                            cfg.router.ip
+                        )));
+                    }
+                }
+            }
+
+            let mut client = connect(&cfg, cli.password_stdin)?;
+            let catalog = client
+                .get("net/net-mode-list")
+                .ok()
+                .map(|n| bands::from_net_mode_list(&n));
+            let lte_all = catalog.as_ref().and_then(|c| c.lte_all).map(bands::to_hex);
+            let network_all = catalog
+                .as_ref()
+                .and_then(|c| c.network_all)
+                .map(bands::to_hex);
+            // Read before the first write: this is the mask the run returns to.
+            let start = write::read_mode(&mut client)?;
+            let start_bands = start
+                .lte_band
+                .as_deref()
+                .and_then(bands::from_hex)
+                .map(bands::bands_from_mask)
+                .unwrap_or_default();
+            let snap = headless::collect(&mut client, &cfg.router.ip).ok();
+            let radio = routwatch::history::Radio {
+                net_type: snap
+                    .as_ref()
+                    .map(|s| s.connection.net_type.clone())
+                    .filter(|s| !s.is_empty()),
+                band: None,
+                band_at_start: Some(
+                    start_bands
+                        .iter()
+                        .map(|b| format!("B{b}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )
+                .filter(|s| !s.is_empty()),
+                rsrp_dbm: snap.as_ref().and_then(|s| s.signal.rsrp_dbm),
+                rsrq_db: snap.as_ref().and_then(|s| s.signal.rsrq_db),
+                sinr_db: snap.as_ref().and_then(|s| s.signal.sinr_db),
+            };
+            let interrupted = std::sync::atomic::AtomicBool::new(false);
+            // Installed before the first write, dropped back to the default once
+            // the starting mask is on the radio again.
+            let handler: extern "C" fn(libc::c_int) = on_sigint;
+            unsafe {
+                libc::signal(libc::SIGINT, handler as libc::sighandler_t);
+            }
+            let (rows, restore_err, applied) = {
+                let mut io = LiveScan {
+                    client: &mut client,
+                    plan: &plan,
+                    mode_code: mode_code.to_string(),
+                    option: option_code.clone(),
+                    lte_all: lte_all.clone(),
+                    network_all: network_all.clone(),
+                    settle: Duration::from_secs(settle),
+                    start: start.clone(),
+                    start_bands: start_bands.clone(),
+                    last_bands: None,
+                    wrote: false,
+                    save: !no_save,
+                    radio,
+                    interrupted: &interrupted,
+                };
+                let (rows, err) = routwatch::scan::run(&selection, &mut io);
+                (rows, err, io.wrote)
+            };
+            unsafe {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+            }
+            client.logout();
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+            } else {
+                print_scan_table(&rows);
+            }
+            if !applied {
+                println!("nothing to restore: no set was applied");
+            } else if let Some(why) = &restore_err {
+                let last = rows
+                    .iter()
+                    .rev()
+                    .find(|r| !matches!(r.outcome, routwatch::scan::Outcome::NotRun));
+                let on = last.map(|r| label_of(&r.bands)).unwrap_or_default();
+                println!(
+                    "bands NOT restored: the router is still on {on}. Run: routwatch bands --set {} --mode {mode_code} --allow-write ({why})",
+                    label_of(&start_bands)
+                );
+                return Err(ApiError::Quiet(1));
+            } else {
+                println!(
+                    "bands restored to the set the run started with ({})",
+                    label_of(&start_bands)
+                );
+            }
+            Ok(())
         }
         Some(Cmd::Dns {
             set,
@@ -1081,6 +1446,104 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             }
             Ok(())
         }
+        Some(Cmd::Ip {
+            action: IpAction::Renew { json, settle, .. },
+        }) => {
+            let mut client = connect(&cfg, cli.password_stdin)?;
+            let limits = routwatch::write::VerifyLimits::from_secs(settle);
+            let out = routwatch::write::renew_ip(&mut client, limits, std::thread::sleep);
+            client.logout();
+            if json {
+                let v = match &out {
+                    routwatch::write::RenewOutcome::Changed {
+                        before,
+                        after,
+                        secs,
+                    } => serde_json::json!({
+                        "outcome": "changed", "before": before, "after": after, "secs": secs
+                    }),
+                    routwatch::write::RenewOutcome::Unchanged { ip, secs } => serde_json::json!({
+                        "outcome": "unchanged", "ip": ip, "secs": secs
+                    }),
+                    routwatch::write::RenewOutcome::LinkDown { why } => serde_json::json!({
+                        "outcome": "link down", "why": why
+                    }),
+                    routwatch::write::RenewOutcome::NoAddress { attempts, last_err } => {
+                        serde_json::json!({
+                            "outcome": "no address", "attempts": attempts, "last_err": last_err
+                        })
+                    }
+                };
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            } else {
+                match &out {
+                    routwatch::write::RenewOutcome::Changed {
+                        before,
+                        after,
+                        secs,
+                    } => {
+                        println!("before: {before}");
+                        println!("after:  {after} (changed after {secs} s)");
+                    }
+                    routwatch::write::RenewOutcome::Unchanged { ip, secs } => {
+                        println!("before: {ip}");
+                        println!("after:  {ip} (unchanged after {secs} s: the ISP kept the lease)");
+                    }
+                    routwatch::write::RenewOutcome::LinkDown { why } => {
+                        println!("the data connection is still off ({why})");
+                        println!(
+                            "the router still answers on its LAN address. Run: routwatch ip renew --allow-write,"
+                        );
+                        println!("or switch the mobile data connection on from the router page.");
+                    }
+                    routwatch::write::RenewOutcome::NoAddress { attempts, last_err } => {
+                        let why = last_err
+                            .clone()
+                            .unwrap_or_else(|| "the device answered without an address".into());
+                        println!(
+                            "the data connection is on but no address came back in {attempts} reads: {why}"
+                        );
+                    }
+                }
+            }
+            match out.exit_code() {
+                0 => Ok(()),
+                code => Err(ApiError::Quiet(code)),
+            }
+        }
+        Some(Cmd::History {
+            signal,
+            json,
+            limit,
+        }) => {
+            if !signal {
+                eprintln!(
+                    "history: only the signal log is saved so far: pass --signal (speed runs are `speedtest --history`)"
+                );
+                return Err(ApiError::Quiet(2));
+            }
+            let Some(p) = routwatch::signal_history::path() else {
+                eprintln!("history: this platform has no data directory, so no log is kept");
+                return Err(ApiError::Quiet(2));
+            };
+            let l = routwatch::signal_history::load(&p);
+            if l.damaged > 0 {
+                eprintln!(
+                    "history: {} of {} rows could not be read and are skipped",
+                    l.damaged, l.total
+                );
+            }
+            let rows: Vec<routwatch::signal_history::Row> =
+                l.rows.iter().rev().take(limit).rev().cloned().collect();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+            } else if rows.is_empty() {
+                println!("no signal rows yet: they are written by every command that collects");
+            } else {
+                print!("{}", routwatch::signal_history::table(&rows));
+            }
+            Ok(())
+        }
         Some(Cmd::Ping { host, count, json }) => {
             let output = std::process::Command::new("ping")
                 .args(worker::ping_args(count, &host))
@@ -1382,11 +1845,57 @@ fn read_password(cfg: &config::Config, stdin_password: Option<&str>) -> Result<S
 }
 
 fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, ApiError> {
+    Ok(connect_with(cfg, password_stdin)?.0)
+}
+
+/// The same login, keeping the credentials: a command that holds the session
+/// open across a radio restart must be able to sign in again on its own.
+fn connect_with(
+    cfg: &config::Config,
+    password_stdin: bool,
+) -> Result<(HuaweiClient, (String, String)), ApiError> {
     let stdin_password = read_stdin_password(password_stdin)?;
     let password = read_password(cfg, stdin_password.as_deref())?;
     let mut client = HuaweiClient::new(&cfg.router.ip, cfg.app.timeout_ms);
     client.login(&cfg.router.username, &password)?;
-    Ok(client)
+    Ok((client, (cfg.router.username.clone(), password)))
+}
+
+/// One line from stdin, `y` in either case. Anything else, or no stdin at all,
+/// means no: the revert is offered, never taken.
+fn confirmed_on_stdin() -> bool {
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(_) => matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"),
+        Err(_) => false,
+    }
+}
+
+/// The watch, wired to this process: a real clock, real stdin, stdout lines.
+fn watch_link(
+    client: &mut HuaweiClient,
+    creds: &(String, String),
+    undo: Option<(&bands::BandPayload, &WriteIntent)>,
+    verify_secs: u64,
+    secs: u64,
+) -> Result<(), ApiError> {
+    let mut sleep = |d: Duration| std::thread::sleep(d);
+    let mut confirm = confirmed_on_stdin;
+    let mut log = |line: String| println!("watch: {line}");
+    let mut io = routwatch::watch::WatchIo {
+        sleep: &mut sleep,
+        confirm: &mut confirm,
+        log: &mut log,
+    };
+    routwatch::watch::watch_link(
+        client,
+        (creds.0.as_str(), creds.1.as_str()),
+        undo,
+        verify_secs,
+        secs,
+        &mut io,
+    )?;
+    Ok(())
 }
 
 // --------------------------------------------------------------------- TUI
@@ -1770,8 +2279,34 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
     // `u` belongs to the verdict it undoes, so it is read before the banner that
     // swallows every other key while a write is settled.
     if app.tab == Tab::Bands && matches!(normalise_key(k.code), KeyCode::Char('u')) {
-        match app.band_undo() {
-            Some(label) => {
+        // The revert is a write like any other: the four values the device
+        // carried before the apply go back out on the worker's path, forced,
+        // because the apply it undoes has already landed and the device
+        // therefore matches the payload it is being sent.
+        // A failed write says nothing about what the device carries now, so it
+        // offers no revert: the point would be written blind.
+        let blocked = app.write.is_busy() || matches!(app.write, WriteState::Failed { .. });
+        let write_back = if blocked {
+            None
+        } else {
+            app.undo_payload().zip(app.undo_intent())
+        };
+        match (write_back, app.band_undo()) {
+            (Some((payload, intent)), Some(label)) => {
+                let _ = tx.send(WorkerCmd::ApplyBands {
+                    payload,
+                    intent: intent.clone(),
+                    force: true,
+                });
+                app.note(format!("{label} · writing"));
+                app.settle_write(WriteState::Pending {
+                    intent,
+                    since: Instant::now(),
+                });
+            }
+            // The point exists but the write cannot go out: say which of the two
+            // stopped it rather than pretend the revert happened.
+            (_, Some(label)) => {
                 app.note(label);
                 if app.write.is_settled() {
                     app.settle_write(WriteState::Idle);
@@ -1779,8 +2314,10 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             }
             // Two different facts: an old point with no usable band, versus no
             // point at all.
-            None if app.undo_mask.is_some() => app.note("undo point has no band this device lists"),
-            None => app.note("nothing to undo: no apply yet this session"),
+            (_, None) if app.undo_mask.is_some() => {
+                app.note("undo point has no band this device lists")
+            }
+            (_, None) => app.note("nothing to undo: no apply yet this session"),
         }
         return;
     }
@@ -2158,6 +2695,7 @@ fn send_apply(app: &mut App, tx: &Sender<WorkerCmd>) {
             let _ = tx.send(WorkerCmd::ApplyBands {
                 payload,
                 intent: intent.clone(),
+                force: false,
             });
         }
         WriteIntent::SetDns { primary, secondary } => {
@@ -2268,6 +2806,233 @@ fn human_bytes(v: u64) -> String {
         format!("{:.0} KB", f / K)
     } else {
         format!("{v} B")
+    }
+}
+
+/// How long the link is given to hold an address before a measurement starts:
+/// the address comes back before the route and DNS behind it settle.
+const LINK_GRACE: Duration = Duration::from_secs(5);
+
+/// Set by the SIGINT handler and read by the loop. A signal handler may only
+/// touch an atomic: everything else (the restore, the exit code) happens on the
+/// normal path the flag sends the loop down.
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_sigint(_sig: libc::c_int) {
+    INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// "1,3,5": the spelling the table and the restore hint use.
+fn label_of(bands: &[u8]) -> String {
+    bands
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The interface this host would send a packet to `target` through, read from
+/// the kernel's own routing answer.
+fn route_dev(target: &str) -> Option<String> {
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", target])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    text.split_whitespace()
+        .skip_while(|w| *w != "dev")
+        .nth(1)
+        .map(str::to_string)
+}
+
+/// The table T3.4 describes: measured rows first, then the ones that carry no
+/// number, in the order they were tried.
+fn print_scan_table(rows: &[routwatch::scan::SetResult]) {
+    println!("radius: this measures this host's path through the router, not the WAN link alone");
+    println!(
+        "{:<12} {:<27} {:>11} {:>11} {:>8} note",
+        "set", "result", "down", "up", "ttfb"
+    );
+    for i in routwatch::scan::rank(rows) {
+        let r = &rows[i];
+        let (down, up, ttfb) = match &r.outcome {
+            routwatch::scan::Outcome::Measured {
+                down_bps,
+                up_bps,
+                ttfb_ms,
+            } => (
+                ui::widgets::bitrate(*down_bps),
+                up_bps
+                    .map(ui::widgets::bitrate)
+                    .unwrap_or_else(|| "-".into()),
+                format!("{ttfb_ms:.0} ms"),
+            ),
+            _ => ("-".into(), "-".into(), "-".into()),
+        };
+        let note = r
+            .note
+            .clone()
+            .or_else(|| r.outcome.why().map(str::to_string))
+            .unwrap_or_default();
+        println!(
+            "{:<12} {:<27} {:>11} {:>11} {:>8} {}",
+            label_of(&r.bands),
+            r.outcome.label(),
+            down,
+            up,
+            ttfb,
+            note
+        );
+    }
+}
+
+/// The real `ScanIo`: one router client, one speed-test plan, one SIGINT flag.
+struct LiveScan<'a> {
+    client: &'a mut HuaweiClient,
+    plan: &'a routwatch::config::Speedtest,
+    mode_code: String,
+    option: Option<String>,
+    lte_all: Option<String>,
+    network_all: Option<String>,
+    settle: Duration,
+    start: routwatch::model::NetMode,
+    start_bands: Vec<u8>,
+    last_bands: Option<Vec<u8>>,
+    wrote: bool,
+    save: bool,
+    radio: routwatch::history::Radio,
+    interrupted: &'a std::sync::atomic::AtomicBool,
+}
+
+impl LiveScan<'_> {
+    /// The payload for a set, built against the device's own masks so the
+    /// router is never handed a constant this firmware did not report.
+    fn payload(&self, bands: &[u8]) -> bands::BandPayload {
+        bands::resolve(
+            &self.mode_code,
+            bands,
+            self.lte_all.as_deref(),
+            self.network_all.as_deref(),
+            self.option.as_deref(),
+        )
+    }
+
+    fn write(
+        &mut self,
+        payload: &bands::BandPayload,
+        bands: &[u8],
+        force: bool,
+    ) -> Result<(), String> {
+        let intent = WriteIntent::ApplyBands {
+            mode: payload.network_mode.clone(),
+            bands: bands.to_vec(),
+            mask: payload.lte_band.clone(),
+            option: payload.network_option.clone(),
+        };
+        match write::apply_bands(self.client, payload, intent, force, &mut |_| {}) {
+            WriteState::Success { .. } => Ok(()),
+            other => Err(other.label()),
+        }
+    }
+}
+
+impl routwatch::scan::ScanIo for LiveScan<'_> {
+    fn apply(&mut self, bands: &[u8]) -> Result<(), String> {
+        let payload = self.payload(bands);
+        let out = self.write(&payload, bands, false);
+        if out.is_ok() {
+            self.wrote = true;
+            self.last_bands = Some(bands.to_vec());
+        }
+        out
+    }
+
+    fn settle(&mut self) -> routwatch::scan::Settle {
+        let limits = write::VerifyLimits {
+            reread: write::VERIFY_REREAD,
+            window: self.settle,
+        };
+        let (hit, _, _) = write::poll_with(
+            || parse::wan_addr(self.client),
+            |ip: &Option<String>| ip.is_some(),
+            limits,
+            std::thread::sleep,
+        );
+        if self.interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+            return routwatch::scan::Settle::Interrupted;
+        }
+        match hit {
+            Some(_) => {
+                std::thread::sleep(LINK_GRACE);
+                routwatch::scan::Settle::Ready
+            }
+            None => routwatch::scan::Settle::NoService,
+        }
+    }
+
+    fn measure(&mut self) -> Result<routwatch::scan::Outcome, String> {
+        let started = std::time::Instant::now();
+        let r = routwatch::speedtest::run(self.plan, self.interrupted, |_| {})?;
+        if self.save {
+            if let Some(path) = routwatch::history::path() {
+                let mut radio = self.radio.clone();
+                radio.band = self.last_bands.as_deref().map(label_of);
+                let entry = routwatch::history::Entry::from_result(
+                    &r,
+                    self.plan,
+                    routwatch::history::Source::Cli,
+                    Some(&radio),
+                    routwatch::history::Pings::default(),
+                    started.elapsed().as_millis() as u64,
+                    routwatch::app::unix_now(),
+                );
+                if let Err(e) = routwatch::history::append(&path, &entry) {
+                    eprintln!("speed run not saved: {e}");
+                }
+            }
+        }
+        Ok(routwatch::scan::Outcome::Measured {
+            down_bps: r.download_bps,
+            up_bps: (r.upload_bps > 0.0).then_some(r.upload_bps),
+            ttfb_ms: r.ttfb_ms,
+        })
+    }
+
+    fn applied(&self) -> bool {
+        self.wrote
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        // `force` because the radio may already be back on the starting mask by
+        // itself after the last set failed: the user asked for that mask, so the
+        // write proves it rather than trusting a read.
+        let payload = bands::BandPayload {
+            network_mode: self
+                .start
+                .network_mode
+                .clone()
+                .unwrap_or_else(|| "00".to_string()),
+            network_band: self
+                .start
+                .network_band
+                .clone()
+                .unwrap_or_else(|| self.start.lte_band.clone().unwrap_or_default()),
+            lte_band: self
+                .start
+                .lte_band
+                .clone()
+                .unwrap_or_else(|| "0".to_string()),
+            network_option: self.start.network_option.clone(),
+        };
+        let bands_now = self.start_bands.clone();
+        self.write(&payload, &bands_now, true)
+    }
+
+    fn interrupted(&self) -> bool {
+        self.interrupted.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -2455,6 +3220,107 @@ mod key_tests {
         assert!(
             matches!(app.write, WriteState::Idle),
             "the banner yields after the undo key"
+        );
+    }
+
+    #[test]
+    fn the_undo_key_sends_the_saved_four_values_back_forced() {
+        use routwatch::app::UndoPoint;
+        use routwatch::write::WriteState;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.select_tab(Tab::Bands);
+        app.bands_supported = vec![1, 3, 5];
+        app.bands_selected = vec![1];
+        app.band_mode = "03".into();
+        // The device carried these four values before the apply that landed.
+        app.undo_full = Some(UndoPoint {
+            net_mode: "00".into(),
+            bands: vec![1, 3],
+            mask: "80000009".into(),
+            option: None,
+        });
+        app.undo_mask = Some(vec![1, 3]);
+        app.settle_write(WriteState::Success {
+            intent: app.band_intent(),
+            note: "verified".into(),
+        });
+        assert!(matches!(app.write, WriteState::Success { .. }));
+
+        handle_key(&mut app, key(KeyCode::Char('u')), &tx);
+        match rx.try_recv() {
+            Ok(WorkerCmd::ApplyBands {
+                payload,
+                force,
+                intent,
+            }) => {
+                assert!(
+                    force,
+                    "the mask is already the target: the write must be forced"
+                );
+                assert_eq!(payload.network_mode, "00", "the saved mode goes back");
+                assert_eq!(payload.lte_band, "80000009", "the saved mask goes back");
+                assert_eq!(
+                    payload.network_option, None,
+                    "the saved option goes back, null included"
+                );
+                match intent {
+                    routwatch::write::WriteIntent::ApplyBands { mask, mode, .. } => {
+                        assert_eq!(mask, "80000009");
+                        assert_eq!(mode, "00");
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            _ => panic!("u must send one apply, and only one"),
+        }
+        assert!(
+            matches!(app.write, WriteState::Pending { .. }),
+            "the revert is a write in flight, not a note"
+        );
+        assert_eq!(
+            app.bands_selected,
+            vec![1, 3],
+            "the tick list follows the point being written"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_leaves_u_with_nothing_to_send() {
+        use routwatch::app::UndoPoint;
+        use routwatch::write::WriteState;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(
+            routwatch::theme::by_name("dark"),
+            routwatch::theme::GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.select_tab(Tab::Bands);
+        app.bands_supported = vec![1, 3, 5];
+        app.bands_selected = vec![1];
+        app.undo_full = Some(UndoPoint {
+            net_mode: "00".into(),
+            bands: vec![1, 3],
+            mask: "80000009".into(),
+            option: None,
+        });
+        app.settle_write(WriteState::Failed {
+            intent: app.band_intent(),
+            err: "router refused".into(),
+        });
+
+        handle_key(&mut app, key(KeyCode::Char('u')), &tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "a failed write offers no revert to send"
         );
     }
 

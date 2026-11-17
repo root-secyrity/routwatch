@@ -349,6 +349,26 @@ impl HuaweiClient {
         self.get("dialup/mobile-dataswitch")
     }
 
+    /// The dial-up document as the firmware sends it. Field names measured on
+    /// H122-373 (WEBUI 11.0.2.21, 2026-11-17): it carries `ConnectMode` and the
+    /// dial policy, not the connect state. That state is `<ConnectionStatus>` in
+    /// `monitoring/status`.
+    pub fn dialup_connection(&mut self) -> Result<Node, ApiError> {
+        self.get("dialup/connection")
+    }
+
+    /// The exact XML the data switch sends. The node name is what the firmware
+    /// answers on H122-373 (WEBUI 11.0.2.21, 2026-11-17): GET
+    /// `dialup/mobile-dataswitch` returns `<dataswitch>1</dataswitch>`, so the
+    /// request carries the same name.
+    pub fn dataswitch_payload(up: bool) -> &'static str {
+        if up {
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><dataswitch>1</dataswitch></request>"
+        } else {
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><dataswitch>0</dataswitch></request>"
+        }
+    }
+
     /// DESTRUCTIVE: restarts the router's radio/stack. The caller must have taken a
     /// typed confirmation; nothing else in the app calls this directly.
     pub fn restart(&mut self) -> Result<Node, ApiError> {

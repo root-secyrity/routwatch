@@ -605,6 +605,13 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|s| s.content.chars().count())
         .sum::<usize>();
+    // The revert offer sits beside the section name: it is a fact about the
+    // write that just landed, not a notice that replaces the last one.
+    if let Some(line) = app.watch_line() {
+        let text = format!(" · {line}");
+        used += text.chars().count();
+        spans.push(Span::styled(text, Style::default().fg(t.accent)));
+    }
     if let Some(note) = app.live_notice() {
         let text = format!(" · {}", truncate(note, area.width as usize / 2));
         used += text.chars().count();
@@ -1490,6 +1497,33 @@ mod tests {
         assert!(
             !status.contains("connecting") && !status.contains("live"),
             "session state duplicated in the status bar: {status}"
+        );
+    }
+
+    #[test]
+    fn the_status_line_offers_the_revert_while_the_window_is_open() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        assert_eq!(
+            app.watch_line(),
+            None,
+            "no window before an apply lands: the row must stay as it was"
+        );
+        let plain = render_to_string(&app, 120, 34);
+        assert!(!plain.contains("u reverts"), "{plain}");
+
+        app.watch_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(180));
+        let text = render_to_string(&app, 120, 34);
+        assert!(text.contains("watching "), "{text}");
+        assert!(text.contains("u reverts"), "{text}");
+        let status = text.lines().last().unwrap_or_default();
+        assert!(
+            status.contains("u reverts"),
+            "the offer belongs in the status bar: {status}"
+        );
+        assert!(
+            status.contains("q quit"),
+            "keys are not displaced: {status}"
         );
     }
 

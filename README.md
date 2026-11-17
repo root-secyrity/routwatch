@@ -123,11 +123,70 @@ question.
   also lists the ping measured before the transfer and the one measured during it,
   so bufferbloat is visible next to the rate. `routwatch speedtest --history`
   prints the saved rows and `--no-save` keeps a run out of the file.
+- **The signal itself is logged, one row a minute**: every command that collects
+  appends to `$XDG_DATA_HOME/routwatch/signal-history.jsonl` (`0600`, last 1440
+  rows), so a drop that happened while nobody watched still has a shape.
+  `routwatch history --signal` prints the newest rows without touching the
+  network or needing a config file; `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
+  log off.
 
 Fourteen more, including the `100006` band-write code, the small-terminal order and
 the graph colour floor, are stated in [`docs/limits.md`](docs/limits.md). Nothing
 there is a wish list: each entry is something a firmware or a terminal actually
 did.
+
+## Band scan
+
+`routwatch scan --set 1,3 --set 1,28 --allow-write` applies one band set at a
+time, waits for the link to carry an address again, runs one speed test on that
+set, and at the end puts the mask the run started with back on the radio. The
+table ranks the sets by measured download.
+
+- It cuts the internet for every set: seconds to a minute each, and the whole run
+  spends the data the speed tests spend.
+- `--dry-run` prints the set list, the time ceiling and the data ceiling and sends
+  nothing. Both ceilings are upper bounds: the settle wait ends as soon as an
+  address returns, and a measurement that fails early spends less.
+- `--settle` is a cap, not a duration.
+- `Ctrl-C` restores the starting mask too. If the restore itself fails the run says
+  which set is still on the radio and the exact command that puts it back.
+- One number per set is not a verdict: the test measures this host's path through
+  the router, not the WAN link alone, so a VPN or a second interface in that path
+  makes every row say nothing about the set.
+
+## New address
+
+`routwatch ip renew --allow-write` drops the mobile data connection, brings it
+back, and watches for the address the firmware reports. A changed address and the
+same address are both exit 0: the ISP keeping the lease is a result, not a failure.
+
+- It really cuts the link for a few seconds, and it is a write: without
+  `--allow-write` the command refuses and names the flag.
+- A connection that does not come back is exit 1 with the last attempt named, and
+  the router stays reachable on its LAN address.
+- **Not measured on hardware yet**: whether the H122-373 actually hands out a new
+  address through this path is unverified. The write is covered by the mock and by
+  the plan's rules, not by a live renew.
+
+## Watching the link after a write
+
+A band write restarts the radio, and a mask the tower does not like shows up as a
+link that never comes back. `routwatch bands --set 1,3 --allow-write --watch 180`
+holds the session open for three minutes after the write lands and reads the link
+every five seconds.
+
+- The terminal command stays attached; the TUI keeps the same offer in its status
+  bar (`watching 172s, u reverts`) and closes it when the window ends.
+- A session the restart dropped is rebuilt once with the same credentials, so the
+  watch survives the radio going down and up.
+- If the link has neither a state nor a WAN address for a full minute, the watch
+  offers the previous mask once and waits for `y` on stdin. It never reverts on its
+  own, and the window ending writes nothing.
+- The TUI's `u` sends the four values the device carried before the apply (mode,
+  bands, mask, option) back through the same write path, forced: by verdict time the
+  device already reports the target mask, so an unforced write would be skipped.
+- **Not measured on hardware yet**: a revert taken after a real dropped link is
+  covered by the mock only.
 
 ## Development
 

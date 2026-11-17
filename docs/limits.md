@@ -99,6 +99,22 @@ why each one is stated instead of hidden.
   without a session). The speed test is host-side by necessity: it measures the
   path through this machine, never the WAN link on its own.
 
+- **The privacy audit is read-only and says so where it cannot answer**: `privacy`
+  issues `GET` calls only (`the_audit_never_posts` holds it) and prints the code a
+  refusal carried instead of reading silence as "off". TR-069 is not exposed on
+  the H122-373 (WEBUI 11.0.2.21, measured 2026-11-17: `ntwk/tr069`,
+  `device/tr069` and `security/tr069` all answered 100003), so the report declares
+  that and the DNS check names both sources, because the server DHCP advertises
+  and the server the link reports are different facts. Whether the web UI needs a
+  password over WLAN is not a field this firmware exposes: the check prints
+  `unknown` rather than a pass.
+
+- **The watch is a read, and the revert is a question**: `--watch` holds the
+  session open for the requested seconds and reads `monitoring/status` every five
+  seconds; it writes nothing on its own, and the window ending leaves the mask as
+  applied. The revert is offered once after a minute of no state and no address,
+  and taken only on a `y`, because the tool cannot tell a band it dropped from an
+  ISP that went away. A session the radio restart dropped is signed in again once.
 - **The speed test measures this host, not the router**: the transfer runs from
   this machine through the CPE, so the number includes the local Wi-Fi or LAN
   segment, and it is a single plain-HTTP stream rather than the sum of every
@@ -117,6 +133,29 @@ why each one is stated instead of hidden.
   from the CLI has no ping columns (`-`), and no row is written for a run that
   spent nothing. The panel shows ten rows and the file keeps two hundred; at
   `100x30` all ten fit, and at `80x24` it says `4 of 10` rather than pretending.
+
+- **`scan` ranks this host's path, not the link**: the speed test runs from the
+  machine routwatch sits on, through the CPE, so a VPN or a second interface in that
+  path measures itself. The run refuses to start when the default route and the
+  router's interface differ, and `--ignore-route` is the explicit way past that
+  check. One measurement per set is also one sample: a set that wins once has won
+  once, and the tables say `measured`, not `best`.
+
+- `[app].verify_secs` (default 20): how long a band or DNS write is re-read before it
+  is called a failure. The H122-373 publishes the new mask after its radio restarts,
+  and one read at 1.5 s measured a landed switch as a failure.
+
+- **A renew that keeps the same address is not a failure**: `ip renew` reads the
+  address, drops the data connection, brings it back and watches. The ISP may hand
+  the same lease back, and that is reported as unchanged with exit 0. The write
+  path is not measured on a live H122-373 yet: no live renew has been run.
+
+- **The signal log can stop without a word**: every command that collects appends at
+  most one row a minute to `$XDG_DATA_HOME/routwatch/signal-history.jsonl`, and a write
+  that fails never fails the command the user asked for. The common cause is the
+  sidecar lock being held by another routwatch, which is why a gap in the log is read as
+  "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
+  log off for scripts that read every second.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the

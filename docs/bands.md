@@ -22,6 +22,12 @@ Presets live in `~/.config/routwatch/config.toml` (`[[app.presets]]`). No
 `presets` key means the five built-ins; `presets = []` means you deleted them and
 mean it.
 
+`routwatch scan` uses the same write path for a different question: which set is
+fastest here. It applies each set, waits for an address, runs one speed test, and
+returns to the starting mask at the end or on `Ctrl-C`. It ranks by measurement,
+never by a guess from the numbers, and a failed set is reported and skipped rather
+than ending the run.
+
 A band write can answer with an undefined code even when it lands. How the tool
 reads the verdict in that case is the second bullet of [limits.md](limits.md).
 

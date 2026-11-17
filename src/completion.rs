@@ -8,6 +8,8 @@ use crate::error::ApiError;
 /// completion must match `--help`, not the historical word.
 pub const SUBCOMMANDS: &[&str] = &[
     "snapshot",
+    "privacy",
+    "scan",
     "doctor",
     "bands",
     "dns",
@@ -16,6 +18,8 @@ pub const SUBCOMMANDS: &[&str] = &[
     "restart",
     "ping",
     "speedtest",
+    "history",
+    "ip",
     "dump",
     "share",
     "status",

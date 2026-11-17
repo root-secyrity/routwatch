@@ -14,6 +14,11 @@ use std::time::{Duration, Instant};
 
 pub const HISTORY: usize = 120;
 
+/// How long the status bar keeps offering the revert after a band write lands.
+/// A radio that restarts takes a while to show the damage, so the offer outlives
+/// the banner: the countdown writes nothing when it ends.
+pub const WATCH_SECS: u64 = 180;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Dashboard,
@@ -331,6 +336,17 @@ pub struct LastApply {
     pub at: Instant,
 }
 
+/// What the device carried before a pending apply, whole. Captured at the
+/// confirmation, because the snapshot that supplied it is replaced by the next
+/// poll long before the verdict arrives.
+#[derive(Debug, Clone, Default)]
+pub struct UndoPoint {
+    pub net_mode: String,
+    pub bands: Vec<u8>,
+    pub mask: String,
+    pub option: Option<String>,
+}
+
 pub struct App {
     pub tab: Tab,
     pub view: View,
@@ -384,12 +400,20 @@ pub struct App {
     pub allow_write: bool,
     /// The device mask the pending write will replace, captured at confirm time.
     pending_undo: Option<Vec<u8>>,
+    /// The same point with mode and option, taken at the confirmation.
+    pending_undo_full: Option<UndoPoint>,
     /// True once the worker reported `Pending`: a no-op success never sets it,
     /// and that is what separates "sent and verified" from "already active"
     /// without reading the note's English.
     write_sent: bool,
+    /// How long the link is watched after an apply lands. The user pressed a
+    /// key that restarted the radio, so the tool keeps saying so, with the key
+    /// that undoes it, for as long as a revert is still useful.
+    pub watch_until: Option<Instant>,
     /// The mask `u` puts back in the tick list. None until an apply lands.
     pub undo_mask: Option<Vec<u8>>,
+    /// The same point with its mode and option, which is what `u` writes back.
+    pub undo_full: Option<UndoPoint>,
     pub last_apply: Option<LastApply>,
     bands_initialised: bool,
     // --- M4 ---
@@ -551,9 +575,12 @@ impl App {
             write: WriteState::Idle,
             allow_write: false,
             pending_undo: None,
+            pending_undo_full: None,
             write_sent: false,
             undo_mask: None,
             last_apply: None,
+            undo_full: None,
+            watch_until: None,
             bands_initialised: false,
             input: None,
             ping: None,
@@ -978,6 +1005,23 @@ impl App {
             return false;
         }
         self.pending_undo = Some(self.bands_on_device());
+        // Captured from the same snapshot the tick list came from: the mode and
+        // option the device carries now are half of what a revert needs.
+        let nm = self
+            .snap
+            .as_ref()
+            .map(|s| s.net_mode.clone())
+            .unwrap_or_default();
+        let bands = self.bands_on_device();
+        self.pending_undo_full = Some(UndoPoint {
+            net_mode: nm.network_mode.clone().unwrap_or_default(),
+            mask: nm
+                .lte_band
+                .clone()
+                .unwrap_or_else(|| bands::to_hex(bands::mask_from_bands(&bands))),
+            option: nm.network_option.clone(),
+            bands,
+        });
         self.write_sent = false;
         self.write = WriteState::Confirming(self.band_intent());
         true
@@ -990,6 +1034,7 @@ impl App {
         // A cancelled confirmation never wrote anything, so there is nothing to
         // remember and nothing to put back.
         self.pending_undo = None;
+        self.pending_undo_full = None;
         self.write_sent = false;
     }
 
@@ -1008,7 +1053,11 @@ impl App {
                 );
                 if let WriteIntent::ApplyBands { mode, bands, .. } = intent {
                     if self.write_sent {
+                        self.watch_until = Some(Instant::now() + Duration::from_secs(WATCH_SECS));
                         self.undo_mask = self.pending_undo.take();
+                        // The point `u` writes back is the one saved before the
+                        // apply; `last_apply` describes what was applied.
+                        self.undo_full = self.pending_undo_full.take();
                         self.last_apply = Some(LastApply {
                             bands: bands.clone(),
                             mode: mode.clone(),
@@ -1022,6 +1071,7 @@ impl App {
                     }
                 }
                 self.pending_undo = None;
+                self.pending_undo_full = None;
                 self.write_sent = false;
             }
             WriteState::Failed { intent, err } => {
@@ -1030,6 +1080,7 @@ impl App {
                     format!("write failed · {} · {err}", intent.label()),
                 );
                 self.pending_undo = None;
+                self.pending_undo_full = None;
                 self.write_sent = false;
             }
             _ => {}
@@ -1059,6 +1110,64 @@ impl App {
             self.band_mask_hex(),
             self.bands_selected.len()
         ))
+    }
+
+    /// The payload that puts the device back where it was before the last
+    /// apply, built from the four values saved at the confirmation. The mode
+    /// decides whether `NetworkBand` goes out as the band mask (auto) or as the
+    /// firmware's own all-bands mask: sending the mask under mode `00` narrows
+    /// the network instead of restoring it.
+    pub fn undo_payload(&self) -> Option<crate::router::bands::BandPayload> {
+        let last = self.undo_full.as_ref()?;
+        let all = self.snap.as_ref().and_then(|s| {
+            s.network_bands_mask
+                .clone()
+                .or_else(|| s.all_bands_mask.clone())
+        });
+        let network_band = if last.net_mode == "00" {
+            all.unwrap_or_else(|| last.mask.clone())
+        } else {
+            last.mask.clone()
+        };
+        Some(crate::router::bands::BandPayload {
+            network_mode: last.net_mode.clone(),
+            network_band,
+            lte_band: last.mask.clone(),
+            network_option: last.option.clone(),
+        })
+    }
+
+    /// The same four values as an intent, so the confirmation dialog, the log
+    /// line and the revert all speak about one write.
+    pub fn undo_intent(&self) -> Option<WriteIntent> {
+        let last = self.undo_full.as_ref()?;
+        Some(WriteIntent::ApplyBands {
+            mode: last.net_mode.clone(),
+            bands: last.bands.clone(),
+            mask: last.mask.clone(),
+            option: last.option.clone(),
+        })
+    }
+
+    /// Seconds left in the watch window, measured against `now` so a test can
+    /// stand at any point in it. `None` once the window is over or was never
+    /// opened: an expired window writes nothing at all.
+    pub fn watch_secs_left(&self, now: Instant) -> Option<u64> {
+        let until = self.watch_until?;
+        let left = until.saturating_duration_since(now);
+        (!left.is_zero()).then(|| left.as_secs() + 1)
+    }
+
+    /// The status-bar sentence, or nothing when no window is open.
+    pub fn watch_line(&self) -> Option<String> {
+        self.watch_line_at(Instant::now())
+    }
+
+    /// The same sentence measured against an injected clock, so the expired
+    /// state is testable without waiting three minutes.
+    pub fn watch_line_at(&self, now: Instant) -> Option<String> {
+        let left = self.watch_secs_left(now)?;
+        Some(format!("watching {left}s, u reverts"))
     }
 
     /// How old the displayed data is - the header turns this into `live`/`stale`.
@@ -1638,6 +1747,81 @@ mod tests {
         });
         assert_eq!(app.undo_mask.as_deref(), Some(&[1u8, 3][..]));
         assert!(app.last_apply.is_none(), "a failure is not an apply");
+    }
+
+    #[test]
+    fn the_countdown_opens_when_an_apply_lands() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        app.bands_selected = vec![1, 3];
+        assert!(app.begin_confirm());
+        let intent = app.write.intent().cloned().expect("confirming intent");
+        app.settle_write(WriteState::Pending {
+            intent: intent.clone(),
+            since: Instant::now(),
+        });
+        app.settle_write(WriteState::Success {
+            intent,
+            note: "verified".into(),
+        });
+        let left = app.watch_secs_left(Instant::now()).expect("a window");
+        assert!(
+            (WATCH_SECS - 2..=WATCH_SECS).contains(&left),
+            "the window is {WATCH_SECS} seconds, got {left}"
+        );
+        let line = app.watch_line().expect("the status bar says so");
+        assert!(line.contains("watching "), "{line}");
+        assert!(line.contains("u reverts"), "{line}");
+    }
+
+    #[test]
+    fn the_countdown_ending_writes_nothing() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        app.bands_selected = vec![1, 3];
+        assert!(app.begin_confirm());
+        let intent = app.write.intent().cloned().expect("confirming intent");
+        app.settle_write(WriteState::Pending {
+            intent: intent.clone(),
+            since: Instant::now(),
+        });
+        app.settle_write(WriteState::Success {
+            intent,
+            note: "verified".into(),
+        });
+        let until = app.watch_until.expect("a window");
+        let selected = app.bands_selected.clone();
+        assert_eq!(
+            app.watch_secs_left(until + Duration::from_secs(1)),
+            None,
+            "the window is over"
+        );
+        assert_eq!(
+            app.watch_line_at(until + Duration::from_secs(1)),
+            None,
+            "and the line is gone with it"
+        );
+        assert_eq!(
+            app.bands_selected, selected,
+            "an expired window moves no tick"
+        );
+        assert!(
+            matches!(app.write, WriteState::Success { .. }),
+            "it writes nothing, so the verdict stands"
+        );
+        assert!(app.undo_mask.is_some(), "the point is still there to use");
     }
 
     #[test]
