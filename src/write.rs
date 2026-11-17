@@ -302,6 +302,17 @@ where
     }
 }
 
+impl VerifyLimits {
+    /// A user-facing number is clamped: below 5 s the window cannot outlast the
+    /// modem restart, and above 120 s the CLI looks hung.
+    pub fn from_secs(secs: u64) -> VerifyLimits {
+        VerifyLimits {
+            window: Duration::from_secs(secs.clamp(5, 120)),
+            ..Default::default()
+        }
+    }
+}
+
 /// The band-mask case: `poll_with` with the device model's own reader.
 pub fn poll_until<F, M>(
     read: F,
@@ -1242,6 +1253,17 @@ mod tests {
         assert!(hit.is_none());
         assert_eq!(attempts, 1);
         assert!(err.is_some());
+    }
+
+    #[test]
+    fn the_window_is_clamped_between_five_and_one_hundred_twenty() {
+        assert_eq!(VerifyLimits::from_secs(0).window, Duration::from_secs(5));
+        assert_eq!(
+            VerifyLimits::from_secs(600).window,
+            Duration::from_secs(120)
+        );
+        assert_eq!(VerifyLimits::from_secs(30).window, Duration::from_secs(30));
+        assert_eq!(VerifyLimits::from_secs(30).reread, VERIFY_REREAD);
     }
 
     #[test]

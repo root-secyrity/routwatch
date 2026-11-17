@@ -11,7 +11,7 @@ use crate::headless;
 use crate::model::Snapshot;
 use crate::router::bands::BandPayload;
 use crate::router::HuaweiClient;
-use crate::write::{apply_bands, apply_dns, WriteIntent, WriteState};
+use crate::write::{apply_bands_with, apply_dns, VerifyLimits, WriteIntent, WriteState};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::Arc;
@@ -453,7 +453,9 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 let mut progress = |st: WriteState| {
                     let _ = ev_tx.send(Ev::Write(st));
                 };
-                let settled = apply_bands(&mut client, &payload, intent, false, &mut progress);
+                let limits = VerifyLimits::from_secs(cfg.app.verify_secs);
+                let settled =
+                    apply_bands_with(&mut client, &payload, intent, false, &mut progress, limits);
                 let link_dropped = matches!(&settled, WriteState::Success { note, .. } if !note.contains("nothing sent"));
                 let _ = ev_tx.send(Ev::Write(settled));
                 if link_dropped {

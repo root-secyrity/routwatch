@@ -625,8 +625,15 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     option: payload.network_option.clone(),
                 };
                 let mut progress = |st: WriteState| eprintln!("  {}", st.label());
-                let settled =
-                    write::apply_bands(&mut client, &payload, intent, force, &mut progress);
+                let limits = write::VerifyLimits::from_secs(cfg.app.verify_secs);
+                let settled = write::apply_bands_with(
+                    &mut client,
+                    &payload,
+                    intent,
+                    force,
+                    &mut progress,
+                    limits,
+                );
                 client.logout();
                 match settled {
                     WriteState::Success { .. } => {

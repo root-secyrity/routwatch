@@ -118,6 +118,10 @@ why each one is stated instead of hidden.
   spent nothing. The panel shows ten rows and the file keeps two hundred; at
   `100x30` all ten fit, and at `80x24` it says `4 of 10` rather than pretending.
 
+- `[app].verify_secs` (default 20): how long a band or DNS write is re-read before it
+  is called a failure. The H122-373 publishes the new mask after its radio restarts,
+  and one read at 1.5 s measured a landed switch as a failure.
+
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
 README's Safety list, and the guard that enforces them is in
