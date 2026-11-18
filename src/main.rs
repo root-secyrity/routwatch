@@ -66,7 +66,7 @@ struct Cli {
     #[arg(long, global = true)]
     view: Option<String>,
 
-    /// Graph style: dots, bars, braille
+    /// Graph style: braille (the default) or ascii; dots and bars were retired
     #[arg(long, global = true)]
     graph: Option<String>,
 
@@ -703,7 +703,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 println!("{}", serde_json::to_string(&frames).unwrap());
                 return Ok(());
             }
-            let mut app = ui_opts.build(&cfg);
+            let mut app = ui_opts.build(&cfg)?;
             run_replay(&mut app, frames, speed.max(1), cli.redact)
         }
         Some(Cmd::Snapshot { json, raw, all }) => {
@@ -1843,7 +1843,7 @@ struct UiOpts {
 }
 
 impl UiOpts {
-    fn build(&self, cfg: &config::Config) -> App {
+    fn build(&self, cfg: &config::Config) -> Result<App, ApiError> {
         let theme = self.theme.clone().unwrap_or_else(|| cfg.app.theme.clone());
         let view = self
             .view
@@ -1851,11 +1851,7 @@ impl UiOpts {
             .and_then(View::parse)
             .or_else(|| View::parse(&cfg.app.view))
             .unwrap_or(View::Full);
-        let graph = self
-            .graph
-            .as_deref()
-            .map(GraphStyle::parse)
-            .unwrap_or_else(|| GraphStyle::parse(&cfg.app.graph_style));
+        let (graph, notice) = graph_choice(self.graph.as_deref(), &cfg.app.graph_style)?;
         let mut app = App::new(
             Theme::get(&theme),
             graph,
@@ -1871,7 +1867,32 @@ impl UiOpts {
         }
         app.report_identity = cfg.app.report_identity;
         app.config_path = self.config_path.clone();
-        app
+        report_graph(&mut app, notice);
+        Ok(app)
+    }
+}
+
+/// The one place a `--graph` value and the `graph_style` setting become a
+/// renderer. Both go through `GraphStyle::resolve`, so a file written by an
+/// older build keeps loading and an unknown name is one clear error.
+fn graph_choice(
+    flag: Option<&str>,
+    setting: &str,
+) -> Result<(GraphStyle, Option<String>), ApiError> {
+    let choice = match flag {
+        Some(v) => GraphStyle::resolve(v),
+        None => GraphStyle::resolve(setting),
+    }
+    .map_err(ApiError::Usage)?;
+    Ok((choice.style, choice.notice))
+}
+
+/// Say the one line a retired value earns: to stderr for a script, and in the
+/// frame for the person watching it.
+fn report_graph(app: &mut App, notice: Option<String>) {
+    if let Some(line) = notice {
+        eprintln!("routwatch: {line}");
+        app.note(line);
     }
 }
 
@@ -1883,14 +1904,7 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
         })?,
         None => View::parse(&cfg.app.view).unwrap_or(View::Full),
     };
-    let graph = match cli.graph.as_deref() {
-        Some(g) => GraphStyle::try_parse(g).ok_or_else(|| {
-            ApiError::Usage(format!(
-                "unknown graph {g:?}; use dots, bars, braille or ascii"
-            ))
-        })?,
-        None => GraphStyle::parse(&cfg.app.graph_style),
-    };
+    let (graph, notice) = graph_choice(cli.graph.as_deref(), &cfg.app.graph_style)?;
     let mut app = App::new(
         Theme::get(&theme),
         graph,
@@ -1914,6 +1928,7 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
     // One clamp, read by both the confirmation modal and the run itself.
     app.set_speed_cfg(cfg.app.speedtest.clone());
     app.config_path = cli.config.clone();
+    report_graph(&mut app, notice);
     Ok(app)
 }
 
@@ -2483,7 +2498,6 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 app.note(format!("theme {} · w saves", app.theme.id));
             }
             KeyCode::Char('v') => app.view = app.view.next(),
-            KeyCode::Char('g') => app.graph = app.graph.next(),
             KeyCode::Char('[') => {
                 app.adjust_refresh(-500);
                 let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
@@ -2752,7 +2766,6 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         KeyCode::Esc if app.help => app.help = false,
         KeyCode::Char('v') => app.cycle_view(),
         KeyCode::Char('l') => app.toggle_lite(),
-        KeyCode::Char('g') => app.graph = app.graph.next(),
         KeyCode::Char('r') if shift && matches!(app.tab, Tab::Sms | Tab::Device) => {
             let _ = tx.send(WorkerCmd::Extras);
             app.mark_extras_requested();
@@ -3473,7 +3486,7 @@ mod key_tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3521,11 +3534,46 @@ mod key_tests {
     fn bare_app() -> App {
         App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
         )
+    }
+
+    #[test]
+    fn the_retired_key_is_not_bound_and_not_in_help_or_the_status_bar() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        let before = app.graph;
+        for code in [KeyCode::Char('g'), KeyCode::Char('G')] {
+            handle_key(&mut app, key(code), &tx);
+            assert_eq!(app.graph, before, "g must no longer cycle a renderer");
+        }
+        // A key that does nothing is a lie: it goes from the help table too.
+        for row in routwatch::ui::help::rows() {
+            let text = format!("{} {} {}", row.keys, row.short, row.full);
+            // The settings row still names the `graph` setting, which a config
+            // file can set to braille or ascii; what it may not do is offer a
+            // key that cycles between renderers this build no longer has.
+            assert!(
+                !text.contains("dots")
+                    && !text.contains("bars")
+                    && !text.contains("g graph")
+                    && !text.contains("cycles the graph"),
+                "help still offers a retired choice: {text}"
+            );
+            assert!(!row.keys.contains('g'), "help still binds g: {text}");
+        }
+        // And from every section's hint line.
+        for tab in Tab::ALL {
+            app.select_tab(tab);
+            assert!(
+                !tab.hints().contains("g graph"),
+                "{tab:?} still advertises g: {}",
+                tab.hints()
+            );
+        }
     }
 
     #[test]
@@ -3614,7 +3662,7 @@ mod key_tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3648,7 +3696,7 @@ mod key_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3716,7 +3764,7 @@ mod key_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3748,7 +3796,7 @@ mod key_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3798,7 +3846,7 @@ mod key_tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3967,6 +4015,20 @@ mod key_tests {
 mod cli_tests {
     use super::{build_app, Cli};
     use clap::Parser;
+
+    #[test]
+    fn a_legacy_cli_value_is_accepted_and_normalised_without_touching_stdout() {
+        let cfg = routwatch::config::Config::default();
+        let cli = Cli::parse_from(["routwatch", "--graph", "dots"]);
+        let app = build_app(&cli, &cfg).expect("a retired value is not a usage error");
+        assert_eq!(
+            app.graph,
+            routwatch::theme::GraphStyle::Braille,
+            "a retired flag value draws braille"
+        );
+        let notice = app.live_notice().expect("the frame carries one line");
+        assert!(notice.contains("retired"), "names the removal: {notice}");
+    }
 
     #[test]
     fn the_tui_write_gate_follows_the_flag_and_stays_off_without_it() {

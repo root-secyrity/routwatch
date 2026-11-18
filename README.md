@@ -56,7 +56,7 @@ every value in it is synthetic.
 
 ```text
  routwatch · Test Net · 00101 · LTE · ENDC off                                                   ● live · 0s · poll 0ms 
- 1 Dashboard │ 2 Bands │ 3 Traffic │ 4 Network │ 5 Clients │ 6 SMS │ 7 Device │ 8 DNS │ 9 Signal    full/dots           
+ 1 Dashboard │ 2 Bands │ 3 Traffic │ 4 Network │ 5 Clients │ 6 SMS │ 7 Device │ 8 DNS │ 9 Signal    full/braille        
 ┌ RADIO ───────────────────────────────────────────────────┐ ┌ LINK / SESSION ─────────────────────────────────────────┐
 │ B1 LTE · 2120/1930 MHz · 20/20 MHz · FDD · TM[4]         │ │ Test Net (00101) · connected · LTE · ENDC off           │
 │ PCI 481 · EARFCN DL:100 UL:18100 · TAC 516               │ │ wan 203.0.113.43 · uptime 6d 3h · since boot            │
@@ -83,7 +83,7 @@ every value in it is synthetic.
 │ ↓ down                                                                                 █         pk 4.0M · avg 4.0M  │
 │ ↑ up                                                                                   ▁         pk 200K · avg 200K  │
 │ -240s                       -180s                       -120s                        -60s                         now│
-│ traffic now · dots mode: g · window follows the map above                                                            │
+│ traffic now · window follows the map above                                                                           │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ CLIENTS · 3 · 5G ×2 · 2.4G ×1 ────────────────────────────────────────────┐ ┌ EVENTS / ERRORS ───────────────────────┐
 │ name                       ip              band    connected              │ │ errors 0 · warnings 0 · events 1       │
@@ -223,7 +223,7 @@ H122-373 (see [limits.md](docs/limits.md)); the simulator is where they are test
   turns the log off.
 
 The rest, including the `100006` band-write code, the small-terminal order and the
-graph colour floor, are stated in [`docs/limits.md`](docs/limits.md). Nothing there
+retired graph styles, are stated in [`docs/limits.md`](docs/limits.md). Nothing there
 is a wish list: each entry is something a firmware or a terminal actually did.
 
 ## Scan and a watched write

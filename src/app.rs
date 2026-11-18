@@ -93,7 +93,7 @@ impl Tab {
     pub fn hints(&self) -> &'static str {
         match self {
             Tab::Dashboard => {
-                "j/k · enter open · s sort · f filter · v view · g graph · r refresh · P pause · e report"
+                "j/k · enter open · s sort · f filter · v view · r refresh · P pause · e report"
             }
             Tab::Bands => {
                 "space tick · s save · a apply · u undo · j/k · n preset · x del · m mode · o nr · e report"
@@ -104,7 +104,7 @@ impl Tab {
             Tab::Sms => "j/k · Enter open · space mark · a all · d delete · m read · n page · R inbox",
             Tab::Device => "x dump json · b restart · R extras",
             Tab::Dns => "j/k choose · Enter apply · d type · D auto · e report",
-            Tab::Signal => "v view · g graph · e report",
+            Tab::Signal => "v view · e report",
         }
     }
 
@@ -614,18 +614,11 @@ pub struct SpeedContext {
 }
 
 impl App {
-    /// One place decides how every graph is coloured. `braille` is the flat
-    /// renderer the tool shipped before the ramp existed, so it keeps its
-    /// solid colour on purpose.
-    ///
-    /// `bg` is `Reset` on six themes, where the real background belongs to the
-    /// terminal and cannot be read. The ramp then anchors on a documented dark
-    /// assumption (`ASSUMED_DARK_BG`), which is why `docs/limits.md` says so.
+    /// One place decides how every graph is drawn. A series is one flat
+    /// colour: the plot never synthesises a shade, so nothing has to be
+    /// measured against an assumed background.
     pub fn chart_opts(&self) -> crate::ui::chart::ChartOpts {
         crate::ui::chart::ChartOpts {
-            fade: self.graph != GraphStyle::Braille,
-            bg: self.theme.bg,
-            terminal_palette: self.theme.defers_to_palette(),
             ascii: self.graph.is_ascii(),
             baseline: true,
         }
@@ -2182,7 +2175,7 @@ mod tests {
     fn a_successful_apply_remembers_the_mask_it_replaced() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2215,7 +2208,7 @@ mod tests {
         // real sequence is what this test replays, not a bare Success.
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2247,7 +2240,7 @@ mod tests {
         // "already active, nothing sent": there is no earlier mask to go back to.
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2267,7 +2260,7 @@ mod tests {
     fn a_failed_apply_leaves_the_undo_point_alone() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2288,7 +2281,7 @@ mod tests {
     fn the_countdown_opens_when_an_apply_lands() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2319,7 +2312,7 @@ mod tests {
     fn the_countdown_ending_writes_nothing() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2363,7 +2356,7 @@ mod tests {
     fn undo_restores_the_mask_without_writing() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2385,7 +2378,7 @@ mod tests {
     fn undo_is_refused_while_a_write_is_in_flight() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2408,7 +2401,7 @@ mod tests {
     fn undo_drops_bands_the_device_no_longer_lists() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2428,7 +2421,7 @@ mod tests {
     fn bands_draw_order_groups_by_class_and_keeps_every_band() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2455,7 +2448,7 @@ mod tests {
     fn an_unknown_band_is_ordered_last_not_hidden() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2468,7 +2461,7 @@ mod tests {
     fn the_cursor_ticks_the_band_it_is_drawn_on() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2487,7 +2480,7 @@ mod tests {
     fn bands_diff_names_the_change_in_both_directions() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2506,34 +2499,6 @@ mod tests {
     }
 
     #[test]
-    fn chart_opts_follow_the_style_and_the_theme() {
-        let mut a = App::new(
-            crate::theme::by_name("dark"),
-            GraphStyle::Dots,
-            View::Full,
-            100,
-            2000,
-        );
-        assert!(a.chart_opts().fade, "dots carries the ramp");
-        assert!(!a.chart_opts().terminal_palette);
-
-        a.graph = GraphStyle::Braille;
-        assert!(!a.chart_opts().fade, "braille stays a flat series");
-
-        let t = App::new(
-            crate::theme::by_name("terminal"),
-            GraphStyle::Dots,
-            View::Full,
-            100,
-            2000,
-        );
-        assert!(
-            t.chart_opts().terminal_palette,
-            "no colour is invented there"
-        );
-    }
-
-    #[test]
     fn tabs_cycle_both_ways() {
         assert_eq!(Tab::Dashboard.next(), Tab::Bands);
         assert_eq!(Tab::Dashboard.prev(), Tab::Signal);
@@ -2546,7 +2511,7 @@ mod tests {
     fn dns_presets_produce_intents() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2588,7 +2553,7 @@ mod tests {
     fn presets_save_dedupe_cycle_and_delete() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2637,7 +2602,7 @@ mod tests {
     fn preset_load_filters_to_bands_this_device_lists() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2670,7 +2635,7 @@ mod tests {
     fn history_is_bounded() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2686,7 +2651,13 @@ mod tests {
 
     #[test]
     fn stale_after_three_intervals() {
-        let mut app = App::new(Theme::get("terminal"), GraphStyle::Dots, View::Full, 100, 0);
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            0,
+        );
         assert!(!app.stale());
         app.last_ok = Some(Instant::now() - Duration::from_millis(5));
         assert!(app.stale(), "refresh_ms=0 makes any age stale");
@@ -2697,7 +2668,7 @@ mod tests {
         use crate::model::Client;
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2761,7 +2732,7 @@ mod tests {
     fn client_cursor_is_bounded_in_display_order() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2787,7 +2758,7 @@ mod tests {
     fn dns_input_becomes_a_confirmable_intent() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2810,7 +2781,7 @@ mod tests {
     fn input_editing_and_take() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2834,7 +2805,7 @@ mod tests {
     fn lite_is_a_toggle_and_sections_leave_it() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2869,7 +2840,7 @@ mod tests {
     fn demo_history_fills_the_charts_and_stops_at_the_cap() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2893,7 +2864,7 @@ mod tests {
     fn cycling_views_remembers_the_return_point() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2946,7 +2917,7 @@ mod tests {
     fn signal_history_caps_at_120() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2973,7 +2944,7 @@ mod tests {
     fn the_feed_keeps_the_selected_line_when_new_events_arrive() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            crate::theme::GraphStyle::Dots,
+            crate::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2997,7 +2968,7 @@ mod tests {
     fn a_running_feed_stays_on_the_newest_line() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            crate::theme::GraphStyle::Dots,
+            crate::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3017,7 +2988,7 @@ mod tests {
     fn the_feed_cursor_never_leaves_the_log() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            crate::theme::GraphStyle::Dots,
+            crate::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3040,7 +3011,7 @@ mod tests {
     fn event_log_is_bounded_and_ordered() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3056,7 +3027,7 @@ mod tests {
     fn extras_mark_blocked_inbox_as_warning() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3081,7 +3052,7 @@ mod tests {
     fn settings_adjustments_are_clamped() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3098,7 +3069,7 @@ mod tests {
     fn a_new_scan_resets_and_reports_its_progress() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3166,7 +3137,7 @@ mod tests {
     fn a_report_is_redacted_until_the_user_opts_in() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3183,7 +3154,7 @@ mod tests {
     fn a_confirmed_band_write_carries_its_preflight() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3259,7 +3230,7 @@ mod tests {
         // `Theme::get` is the public door (src/theme.rs:208); there is no by_id.
         App::new(
             crate::theme::Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,

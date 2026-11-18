@@ -69,17 +69,6 @@ pub fn dashboard(f: &mut Frame, area: Rect, app: &App) {
     crate::ui::dash::dashboard(f, area, app);
 }
 
-/// Name of the active graph style, for the panel title.
-#[cfg(test)]
-fn graph_style_name(style: crate::theme::GraphStyle) -> &'static str {
-    match style {
-        crate::theme::GraphStyle::Bars => "bars",
-        crate::theme::GraphStyle::Dots => "dots",
-        crate::theme::GraphStyle::Braille => "braille",
-        crate::theme::GraphStyle::Ascii => "ascii",
-    }
-}
-
 /// The time window a plot draws: one fixed span, whatever the poll period and
 /// however full the store is.
 ///
@@ -105,17 +94,11 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
     // No sample means no window: a "last 1s" title would be a claim about data
     // that does not exist yet.
     let title = match samples {
-        0 => format!("THROUGHPUT · {}", graph_style_name(app.graph)),
+        0 => format!("THROUGHPUT · {}", app.graph.name()),
         // One sample is a reading, not a window: naming a span here was a claim
         // about data that does not exist yet.
-        1 => format!(
-            "THROUGHPUT · {} · 1 sample, collecting",
-            graph_style_name(app.graph)
-        ),
-        _ => format!(
-            "THROUGHPUT · {} · last {secs}s",
-            graph_style_name(app.graph)
-        ),
+        1 => format!("THROUGHPUT · {} · 1 sample, collecting", app.graph.name()),
+        _ => format!("THROUGHPUT · {} · last {secs}s", app.graph.name()),
     };
     let block = panel(title, theme);
     let inner = block.inner(area);
@@ -268,7 +251,6 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
         &tx_plot,
         rx_max,
         tx_max,
-        app.graph.is_bars(),
         theme.ok,
         theme.accent,
         opts,
@@ -1574,7 +1556,6 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
             &app.history_dl,
             top.width.saturating_sub(4) as usize,
             2,
-            app.graph.is_bars(),
             t.ok,
             app.chart_opts(),
         ));
@@ -3284,11 +3265,11 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     // The traces own their rows: the label, value and domain sit on the line
     // above, so there is no gutter to reserve and the trace runs to the edge.
     let width = (inner.width as usize).max(8);
-    // A dot cell holds two columns of samples, so the series is resampled at
-    // the cell's own resolution and the renderer's two-per-cell pass leaves no
-    // gap. Bars and the ascii fallback take one sample per cell. Mapping the
-    // record straight in drew 120 samples as 60 cells in the right quarter.
-    let slots = if app.graph.is_bars() || app.graph.is_ascii() {
+    // A braille cell holds two columns of samples, so the series is resampled
+    // at the cell's own resolution and the renderer's two-per-cell pass leaves
+    // no gap. The ascii fallback takes one sample per cell. Mapping the record
+    // straight in drew 120 samples as 60 cells in the right quarter.
+    let slots = if app.graph.is_ascii() {
         width
     } else {
         width * 2
@@ -3324,7 +3305,6 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
                 &mapped,
                 width,
                 rows,
-                app.graph.is_bars(),
                 colour,
                 min,
                 max,
@@ -3454,7 +3434,7 @@ mod tests {
                 .expect("fixture snapshot");
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             crate::app::View::Full,
             100,
             2000,

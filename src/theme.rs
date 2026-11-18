@@ -19,53 +19,61 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphStyle {
-    Bars,
-    Dots,
+    /// One braille cell per two samples: the renderer every other one was a
+    /// variation of, and the default.
     Braille,
     /// Single-width ASCII glyphs, for terminals whose font draws braille or
     /// block characters wider than one cell.
     Ascii,
 }
 
-impl GraphStyle {
-    /// Strict form for CLI values: an unknown name must be a usage error, not
-    /// a silent fall back to dots.
-    pub fn try_parse(s: &str) -> Option<GraphStyle> {
-        match s.to_ascii_lowercase().as_str() {
-            "dots" | "dot" => Some(GraphStyle::Dots),
-            "bars" | "bar" => Some(GraphStyle::Bars),
-            "braille" | "btop" => Some(GraphStyle::Braille),
-            "ascii" | "text" => Some(GraphStyle::Ascii),
-            _ => None,
-        }
-    }
+/// The result of reading a `graph_style` setting or a `--graph` value: the
+/// style to draw, plus the one line that must be said when the file or script
+/// still names a renderer this build has retired.
+#[derive(Debug)]
+pub struct StyleChoice {
+    pub style: GraphStyle,
+    pub notice: Option<String>,
+}
 
-    pub fn parse(s: &str) -> GraphStyle {
-        Self::try_parse(s).unwrap_or(GraphStyle::Dots)
+impl GraphStyle {
+    /// Resolve a setting or flag value.
+    ///
+    /// A retired name is not an error: a config written by an older build must
+    /// still load, so `dots` and `bars` map to braille and hand back one line
+    /// naming what replaced them. A name this build never drew is an error that
+    /// names the values it does take, never a panic and never a silent fall
+    /// back.
+    pub fn resolve(value: &str) -> Result<StyleChoice, String> {
+        let v = value.trim().to_ascii_lowercase();
+        let style = match v.as_str() {
+            "braille" | "btop" => GraphStyle::Braille,
+            "ascii" | "text" => GraphStyle::Ascii,
+            "dots" | "dot" | "bars" | "bar" => {
+                return Ok(StyleChoice {
+                    style: GraphStyle::Braille,
+                    // One short line: the status bar shares its row with the
+                    // keys, and a notice that fills half of it clips them.
+                    notice: Some(format!("graph {v} retired; braille")),
+                });
+            }
+            other => {
+                return Err(format!(
+                    "unknown graph {other:?}; this build takes braille or ascii"
+                ));
+            }
+        };
+        Ok(StyleChoice {
+            style,
+            notice: None,
+        })
     }
 
     pub fn name(&self) -> &'static str {
         match self {
-            GraphStyle::Bars => "bars",
-            GraphStyle::Dots => "dots",
             GraphStyle::Braille => "braille",
             GraphStyle::Ascii => "ascii",
         }
-    }
-
-    pub fn next(&self) -> GraphStyle {
-        match self {
-            GraphStyle::Dots => GraphStyle::Bars,
-            GraphStyle::Bars => GraphStyle::Braille,
-            GraphStyle::Braille => GraphStyle::Dots,
-            // Not in the cycle: reaching it takes an explicit --graph ascii.
-            GraphStyle::Ascii => GraphStyle::Dots,
-        }
-    }
-
-    /// True for the block style, false for both braille names.
-    pub fn is_bars(self) -> bool {
-        matches!(self, GraphStyle::Bars)
     }
 
     /// True for the single-width fallback, which the chart draws with ASCII.
@@ -778,14 +786,39 @@ mod tests {
     }
 
     #[test]
-    fn graph_style_cycles() {
-        assert_eq!(GraphStyle::Dots.next(), GraphStyle::Bars);
-        assert_eq!(GraphStyle::Bars.next(), GraphStyle::Braille);
-        assert_eq!(GraphStyle::Braille.next(), GraphStyle::Dots);
-        assert_eq!(GraphStyle::parse("btop"), GraphStyle::Braille);
-        assert_eq!(GraphStyle::parse("ascii"), GraphStyle::Ascii);
-        assert_eq!(GraphStyle::Ascii.name(), "ascii");
-        assert_eq!(GraphStyle::Ascii.next(), GraphStyle::Dots);
+    fn a_removed_value_prints_one_notice_naming_what_replaced_it() {
+        for old in ["dots", "dot", "bars", "bar"] {
+            let choice = GraphStyle::resolve(old).expect("a retired name still resolves");
+            assert_eq!(choice.style, GraphStyle::Braille, "{old} maps to braille");
+            let notice = choice.notice.expect("a retired name says so");
+            assert!(
+                notice.contains(old),
+                "names the value it replaced: {notice}"
+            );
+            assert!(
+                notice.contains("retired"),
+                "says the renderer is gone: {notice}"
+            );
+            assert!(
+                notice.contains("braille"),
+                "names what is drawn instead: {notice}"
+            );
+            assert!(!notice.contains('\n'), "one line only: {notice:?}");
+        }
+        for live in ["braille", "btop", "ascii", "text"] {
+            let choice = GraphStyle::resolve(live).expect("a live name resolves");
+            assert!(choice.notice.is_none(), "{live} is still a choice");
+        }
+    }
+
+    #[test]
+    fn an_unknown_mode_value_is_rejected_with_a_clear_message_not_a_panic() {
+        let err = GraphStyle::resolve("neon").expect_err("an unknown name is an error");
+        assert!(err.contains("neon"), "names the value: {err}");
+        assert!(
+            err.contains("braille") && err.contains("ascii"),
+            "names the values this build takes: {err}"
+        );
     }
 
     const RYOKU_FIXTURE: &str = r##"{

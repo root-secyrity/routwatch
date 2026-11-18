@@ -28,7 +28,7 @@ fn app(samples: usize) -> App {
             .expect("fixture snapshot");
     let mut app = App::new(
         Theme::get("terminal"),
-        GraphStyle::Dots,
+        GraphStyle::Braille,
         crate::app::View::Full,
         100,
         2000,
@@ -135,8 +135,13 @@ fn newest_cell_colour(
 ) -> ratatui::style::Color {
     let y = row_index(frame, &format!("▍{metric}"));
     let cells = map_cells(frame, metric);
+    // A column is a character, not a byte: every glyph in the row is three
+    // bytes wide.
     let last = cells
-        .char_indices()
+        .chars()
+        .collect::<Vec<char>>()
+        .into_iter()
+        .enumerate()
         .rev()
         .find(|(_, c)| is_bar(*c))
         .map(|(i, _)| i)
@@ -344,8 +349,10 @@ fn the_body_is_filled_and_no_empty_run_exceeds_two_rows() {
 
 #[test]
 fn every_key_that_existed_still_works() {
+    // `g graph` is not in the list: the renderer has no choice left to cycle,
+    // so the key was retired with the modes it used to switch between.
     let hints = Tab::Dashboard.hints();
-    for key in ["v view", "g graph", "r refresh", "P pause", "e report"] {
+    for key in ["v view", "r refresh", "P pause", "e report"] {
         assert!(
             hints.contains(key),
             "{key} left the dashboard hints: {hints}"
@@ -354,7 +361,6 @@ fn every_key_that_existed_still_works() {
     let frame = render_to_string(&app(4), 200, 50);
     for key in [
         "v view",
-        "g graph",
         "r refresh",
         "P pause",
         "e report",
@@ -572,4 +578,72 @@ fn the_stats_field_names_min_max_avg_and_now() {
     assert!(row.contains("-96..-96"), "min..max: {row}");
     assert!(row.contains("avg -96"), "average: {row}");
     assert!(row.contains("now fair"), "state: {row}");
+}
+
+#[test]
+fn the_signal_map_keeps_its_height_glyphs_and_its_three_channels() {
+    // The height glyphs are the map's magnitude channel, not a renderer mode:
+    // they must survive the removal of the block renderer untouched.
+    let app = app(120);
+    let buf = buffer_of(&app, 120, 42);
+    let frame = render_to_string(&app, 120, 42);
+    for (metric, identity) in [("RSRP", ID_RSRP), ("RSRQ", ID_RSRQ), ("SINR", ID_SINR)] {
+        let cells = map_cells(&frame, metric);
+        let heights: std::collections::BTreeSet<char> =
+            cells.chars().filter(|c| is_bar(*c)).collect();
+        // The fixture walks two readings per metric, so two glyphs is the
+        // full height channel it can show here.
+        assert!(
+            heights.len() >= 2,
+            "{metric} lost its height channel: {cells}"
+        );
+        assert!(
+            cells.chars().all(|c| c == ' ' || is_bar(c)),
+            "{metric} paints a glyph outside the eight levels: {cells}"
+        );
+        // The chip column still carries the fixed identity colour.
+        let y = row_index(&frame, &format!("▍{metric}"));
+        let chip = buf[(2, y)].fg;
+        assert_eq!(chip, identity, "{metric} lost its identity chip colour");
+    }
+    // The state channel is colour, and one frame carries all three states.
+    let mut states: Vec<_> = ["RSRP", "RSRQ", "SINR"]
+        .iter()
+        .map(|m| newest_cell_colour(&frame, &buf, m))
+        .collect();
+    states.dedup();
+    assert!(
+        states.contains(&GOOD) || states.contains(&FAIR) || states.contains(&POOR),
+        "no state colour survived: {states:?}"
+    );
+}
+
+#[test]
+fn throughput_still_renders_and_still_shares_the_time_axis() {
+    // The strips were the block renderer's other caller; with it gone they must
+    // still draw braille on the map's own columns.
+    let frame = render_to_string(&app(120), 120, 42);
+    for row in [row_of(&frame, "↓ down"), row_of(&frame, "↑ up")] {
+        let painted: Vec<char> = row
+            .chars()
+            .filter(|c| !c.is_whitespace() && !"│↓↑·".contains(*c) && !c.is_ascii())
+            .collect();
+        assert!(!painted.is_empty(), "the strip paints nothing: {row}");
+        for ch in painted {
+            assert!(
+                is_bar(ch) || ('\u{2801}'..='\u{28ff}').contains(&ch),
+                "the strip paints {ch:?}, neither a bar nor braille: {row}"
+            );
+        }
+    }
+    let down_row = row_of(&frame, "↓ down");
+    let map_row = row_in(&frame, "SIGNAL MAP", "▍RSRP");
+    let a = map_row.chars().position(is_bar);
+    let b = down_row
+        .chars()
+        .position(|c| is_bar(c) || ('\u{2801}'..='\u{28ff}').contains(&c));
+    assert_eq!(
+        a, b,
+        "the same sample starts both plots:\nmap  {map_row}\ndown {down_row}"
+    );
 }

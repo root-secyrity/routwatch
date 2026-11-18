@@ -108,12 +108,12 @@ why each one is stated instead of hidden.
   columns the status line keeps one fact plus the keys, below 40 only the keys; the
   dashboard drops from four blocks to signal + speed + history (under 25 rows) and
   to one signal panel at the 24x6 floor, where `too small` names the size it needs.
-- **Graph colour assumes a dark terminal when the theme has no background of its
-  own**: six of the eight themes set `bg = Reset`, where the background belongs to
-  the terminal and cannot be read. The ramp then anchors on a stated dark
-  assumption, so the dimmest cells can be dimmer than the measured 4:1 floor on a
-  light terminal. `sky` and `paper` paint their own background and are measured
-  exactly.
+- **A retired graph style loads as braille**: `dots` and `bars` drew braille
+  cells with a colour ramp, and the ramp assumed a dark terminal on the six themes
+  whose background is `Reset`. Both names now resolve to braille, the series is
+  one flat colour, and the file or script that named one is told once
+  (`graph dots retired; braille`) instead of failing. A value this build
+  never drew is refused with the two it takes, braille or ascii.
 - **One renderer draws every plot**: `ui::chart` owns the braille area, the
   mirrored pair and the axis. `ui::widgets` no longer carries `spark` or
   `spark_scaled`; a panel that wants a trend calls `chart::spark_auto` (auto
@@ -124,10 +124,9 @@ why each one is stated instead of hidden.
   the session fills. A history longer than the panel is bucketed per cell with
   the maximum of that bucket, so a spike never widens a bar. A panel too narrow
   for three ticks prints only the window start and `now`.
-- **`bars` uses the height it is given**: a block sparkline used to be clamped to
-  one row whatever the caller asked for, so a three-row slot in the speed panel
-  left two rows empty. It now stacks eighths over the whole slot; `dots` and
-  `braille` are still the braille plots, and `braille` stays a flat colour.
+- **A trend fills the rows it is given**: `chart::spark_lines` draws a braille
+  plot of whatever height the caller passes, so a three-row slot in the speed
+  panel uses three rows instead of clamping to one and leaving two empty.
 - **The DNS write rewrites the whole DHCP document**: `/api/dhcp/settings` is a
   whole-document endpoint, so routwatch reads it immediately before writing and
   echoes every field back, changing only `PrimaryDns` and `SecondaryDns`. A

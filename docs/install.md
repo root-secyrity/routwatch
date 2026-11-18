@@ -51,9 +51,10 @@ refresh_ms = 2000
 timeout_ms = 3000
 theme = "terminal"      # follows your terminal / desktop theme
 view = "full"           # full · gauges · lite · dense
-graph_style = "dots"    # dots/bars colour each cell by height; braille is flat;
-                        # ascii is the single-width fallback for fonts that draw
-                        # braille or blocks wider than one cell
+graph_style = "braille" # braille is the renderer; ascii is the single-width
+                        # fallback for fonts that draw braille wider than one
+                        # cell. `dots` and `bars` from an older file still load:
+                        # they draw braille and say so once
 budget_gb = 100         # GB since the baseline; the router month counter is read when it exists
 ```
 

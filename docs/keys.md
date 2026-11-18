@@ -16,7 +16,6 @@ to has a row in the help table.
 | `j` `k` / `↑` `↓` | everywhere | move the selection: messages on SMS, bands on Bands, presets on DNS, clients elsewhere |
 | `v` / `V` | everywhere | cycle view: full → gauges → lite → dense |
 | `l` / `L` | everywhere | toggle lite, returning to the view you came from |
-| `g` | everywhere | graph style: dots → bars → braille |
 | `r` | everywhere | refresh now (`Shift+r` reads the extras on SMS/Device) |
 | `[` / `]` | everywhere | refresh period ∓0.5 s, applied at once |
 | `p` | everywhere except SMS | ping a host from this machine, not through the router |

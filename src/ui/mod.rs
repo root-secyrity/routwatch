@@ -182,7 +182,7 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
             "t cycles · system/ansi = terminal",
         ),
         ("view", app.view.name().to_string(), "v cycles"),
-        ("graph", app.graph.name().to_string(), "g cycles"),
+        ("graph", app.graph.name().to_string(), "config only"),
         ("refresh", format!("{} ms", app.refresh_ms), "[ / ] adjust"),
         ("budget", format!("{:.0} GB", app.budget_gb), "- / + adjust"),
         (
@@ -714,21 +714,27 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         used += text.chars().count();
         spans.push(Span::styled(text, Style::default().fg(t.accent)));
     }
-    if let Some(note) = app.live_notice() {
-        let text = format!(" · {}", truncate(note, area.width as usize / 2));
-        used += text.chars().count();
-        spans.push(Span::styled(text, Style::default().fg(t.accent)));
-    } else if let Some(err) = app.error_log.front() {
-        let text = format!(" · {}", truncate(err, area.width as usize / 2));
-        used += text.chars().count();
-        spans.push(Span::styled(text, Style::default().fg(t.danger)));
-    }
-
     // This section's own keys sit next to the global ones. They are the first
     // thing to give up space on a narrow terminal (never `q quit · ? help`).
     // `i events` is discoverability, not a requirement: it is advertised only
     // when the line can still hold it and still leave room for a hint.
     const GLOBAL_TAIL: &str = " · q quit · ? help";
+    // A notice is bounded by the keys behind it, not by half the row: half the
+    // row plus a router name and a key list still overflows 80 columns, and then
+    // the row ends mid-key.
+    let note_room = (area.width as usize)
+        .saturating_sub(used + GLOBAL_TAIL.chars().count() + 4)
+        .max(8);
+    if let Some(note) = app.live_notice() {
+        let text = format!(" · {}", truncate(note, note_room));
+        used += text.chars().count();
+        spans.push(Span::styled(text, Style::default().fg(t.accent)));
+    } else if let Some(err) = app.error_log.front() {
+        let text = format!(" · {}", truncate(err, note_room));
+        used += text.chars().count();
+        spans.push(Span::styled(text, Style::default().fg(t.danger)));
+    }
+
     let wide_tail = " · i events · q quit · ? help";
     let tail = if (area.width as usize) > used + wide_tail.chars().count() + 6 {
         wide_tail
@@ -1113,7 +1119,7 @@ mod tests {
     fn the_dashboard_names_its_window_and_draws_an_axis() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1148,7 +1154,7 @@ mod tests {
     fn a_short_history_keeps_every_bar_one_cell_wide() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1192,7 +1198,7 @@ mod tests {
     fn a_single_sample_says_collecting_and_draws_one_mark() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1224,7 +1230,7 @@ mod tests {
                 .expect("fixture snapshot");
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2959,7 +2965,7 @@ mod tests {
     fn the_speed_panel_renders_before_the_first_snapshot() {
         let mut app = App::new(
             crate::theme::Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3070,6 +3076,89 @@ mod tests {
                 );
             }
             assert!(!text.is_empty(), "no frame at {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn the_indicator_offers_no_choice_that_no_longer_exists() {
+        let mut app = fixture_app();
+        let text = render_to_string(&app, 120, 34);
+        let bar = text
+            .lines()
+            .find(|l| l.contains("Dashboard"))
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            bar.contains("full/braille"),
+            "the indicator names the one renderer: {bar}"
+        );
+        for gone in ["dots", "bars", "graph"] {
+            assert!(
+                !bar.contains(gone),
+                "the tab bar still offers {gone:?}: {bar}"
+            );
+        }
+        // The settings overlay keeps a readings row, not a cycle.
+        app.settings_open = true;
+        let text = render_to_string(&app, 120, 34);
+        assert!(text.contains("braille"), "\n{text}");
+        assert!(
+            !text.contains("g cycles") && !text.contains("cycle the graph"),
+            "no key is offered for a choice that is gone\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_mask_bitmap_and_the_radio_bars_keep_their_glyphs() {
+        // Removing a renderer must not touch the panels that use block glyphs
+        // for their own meaning.
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_supported = (1..=64).collect();
+        app.bands_selected = vec![1, 3, 20];
+        let bands = render_to_string(&app, 140, 40);
+        for glyph in ['█', '▒', '·'] {
+            assert!(bands.contains(glyph), "the mask lost {glyph:?}\n{bands}");
+        }
+        assert!(
+            bands.contains("█ ticked"),
+            "the mask legend still explains itself\n{bands}"
+        );
+
+        app.select_tab(Tab::Dashboard);
+        let dash = render_to_string(&app, 120, 42);
+        assert!(
+            dash.contains("▁▂▃▄▅▆▇█"),
+            "the map legend still names its eight levels\n{dash}"
+        );
+        let radio = dash
+            .lines()
+            .find(|l| l.contains("RSRP   -9"))
+            .unwrap_or_else(|| panic!("no radio gauge row\n{dash}"))
+            .to_string();
+        assert!(
+            radio.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)),
+            "the radio gauge lost its bar: {radio}"
+        );
+    }
+
+    #[test]
+    fn no_panic_from_40x12_to_240x60() {
+        let mut app = fixture_app();
+        for (w, h) in [
+            (40, 12),
+            (60, 20),
+            (80, 24),
+            (120, 34),
+            (160, 40),
+            (200, 50),
+            (240, 60),
+        ] {
+            for tab in Tab::ALL {
+                app.select_tab(tab);
+                let text = render_to_string(&app, w, h);
+                assert!(!text.is_empty(), "no frame for {tab:?} at {w}x{h}");
+            }
         }
     }
 

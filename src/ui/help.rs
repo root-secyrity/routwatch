@@ -89,11 +89,6 @@ pub fn rows() -> Vec<KeyRow> {
             full: "toggle lite and return to the view you came from",
         },
         KeyRow {
-            keys: "g",
-            short: "graph: dots/bars/braille",
-            full: "cycle the graph: dots -> bars -> braille",
-        },
-        KeyRow {
             keys: "i",
             short: "event feed",
             full: "event feed: j/k reads back, space pauses, Esc closes",

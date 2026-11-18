@@ -225,7 +225,6 @@ fn draw_tile(
             &values,
             area.width.saturating_sub(2) as usize,
             1,
-            false,
             tile.color,
             0,
             *span,
@@ -429,7 +428,7 @@ mod tests {
     use crate::theme::{by_name, GraphStyle};
 
     fn app() -> App {
-        let mut app = App::new(by_name("dark"), GraphStyle::Dots, View::Full, 100, 2000);
+        let mut app = App::new(by_name("dark"), GraphStyle::Braille, View::Full, 100, 2000);
         let mut snap = Snapshot::default();
         snap.signal.rsrp_dbm = Some(-95.0);
         snap.signal.sinr_db = Some(12.0);

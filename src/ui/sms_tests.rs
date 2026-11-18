@@ -16,7 +16,7 @@ fn app_with(rows: Vec<SmsMessage>) -> App {
         serde_json::from_str(include_str!("../../fixtures/sample-snapshot.json")).unwrap();
     let mut app = App::new(
         Theme::get("terminal"),
-        GraphStyle::Dots,
+        GraphStyle::Braille,
         View::Full,
         100,
         2000,

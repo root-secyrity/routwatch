@@ -805,11 +805,9 @@ fn throughput(f: &mut Frame, area: Rect, app: &App, mode: Mode) {
         .position(|v| *v > 0.0)
         .map(|i| (i as u64 * spacing).min(WINDOW_SECS));
     let footer = match last_traffic {
-        Some(0) => "traffic now · dots mode: g · window follows the map above".to_string(),
-        Some(age) => format!(
-            "idle now · last traffic {age}s ago · dots mode: g · window follows the map above"
-        ),
-        None => "no traffic in the window · dots mode: g".to_string(),
+        Some(0) => "traffic now · window follows the map above".to_string(),
+        Some(age) => format!("idle now · last traffic {age}s ago · window follows the map above"),
+        None => "no traffic in the window".to_string(),
     };
     if rows >= 5 {
         lines.push(Line::from(Span::styled(
@@ -1102,7 +1100,7 @@ mod tests {
     fn test_app() -> App {
         App::new(
             crate::theme::Theme::get("terminal"),
-            crate::theme::GraphStyle::Dots,
+            crate::theme::GraphStyle::Braille,
             crate::app::View::Full,
             0,
             2000,

@@ -1,4 +1,4 @@
-//! Shared chart rendering: one braille renderer, one ramp, one time window.
+//! Shared chart rendering: one braille renderer, one time window.
 //!
 //! Behaviour ported from the family's `graph` module (netwatch 0.40.0, MIT):
 //! a cell is coloured by how high it sits in the plot, the rx/tx pair grows
@@ -14,47 +14,10 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use std::collections::VecDeque;
 
-/// A five-stop colour ramp, sampled 0.0..=1.0 along the axis it colours.
-pub struct Ramp {
-    stops: Vec<Color>,
-}
-
-impl Ramp {
-    pub fn new(stops: Vec<Color>) -> Self {
-        Self { stops }
-    }
-
-    /// One colour, no gradient: what a series looks like with fade off.
-    pub fn flat(c: Color) -> Self {
-        Self { stops: vec![c] }
-    }
-
-    pub fn at(&self, f: f32) -> Color {
-        match self.stops.len() {
-            0 => Color::Reset,
-            1 => self.stops[0],
-            n => {
-                let t = f.clamp(0.0, 1.0) * (n - 1) as f32;
-                let i = t.floor() as usize;
-                if i >= n - 1 {
-                    return self.stops[n - 1];
-                }
-                lerp(self.stops[i], self.stops[i + 1], t - i as f32)
-            }
-        }
-    }
-}
-
 /// Cross-cutting preferences, built once per frame from `App::chart_opts`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChartOpts {
-    /// Colour each cell by its height in the plot.
-    pub fade: bool,
-    /// Theme background, the "fade to" anchor.
-    pub bg: Color,
-    /// True under the `terminal` theme, where no colour may be synthesised.
-    pub terminal_palette: bool,
-    /// Single-width ASCII glyphs instead of braille or blocks.
+    /// Single-width ASCII glyphs instead of braille.
     pub ascii: bool,
     /// Draw a floor dot under a zero sample, so quiet reads as quiet.
     pub baseline: bool,
@@ -63,184 +26,10 @@ pub struct ChartOpts {
 impl Default for ChartOpts {
     fn default() -> Self {
         Self {
-            fade: true,
-            bg: Color::Reset,
-            terminal_palette: false,
             ascii: false,
             baseline: true,
         }
     }
-}
-
-/// Bottom of the magnitude gradient: the fraction of the series colour a sample
-/// sitting on the baseline receives.
-const MIN_FADE_ALPHA: f32 = 0.30;
-/// Least contrast the dimmest stop may have with the background.
-const MIN_RAMP_CONTRAST: f64 = 4.0;
-/// Least contrast the series colour may have, so the stops above it can climb.
-const MIN_SERIES_CONTRAST: f64 = 6.0;
-/// What a ramp is measured against when the terminal owns the background.
-const ASSUMED_DARK_BG: (u8, u8, u8) = (0x1a, 0x1b, 0x26);
-
-/// The magnitude gradient: dim at the baseline, the series colour through the
-/// body, lightened at the peak. A cell's colour comes from how high it sits, so
-/// the shape stays legible where the fill is continuous.
-pub fn magnitude_ramp(base: Color, bg: Color) -> Ramp {
-    let (r, g, b) = to_rgb(base, (255, 255, 255));
-    let behind = to_rgb(bg, ASSUMED_DARK_BG);
-    let base = with_contrast(Color::Rgb(r, g, b), behind, MIN_SERIES_CONTRAST);
-    let floor = (0..=70)
-        .map(|step| MIN_FADE_ALPHA + step as f32 / 100.0)
-        .find(|&alpha| contrast(fade_color(base, bg, alpha), behind) >= MIN_RAMP_CONTRAST)
-        .unwrap_or(1.0);
-    // The peak moves away from the background, not toward white: on a light
-    // panel (paper) "brighter" fades into the page, and the measured contrast
-    // of the top stops fell to 2.5:1 before this.
-    let peak = away_from(behind);
-    Ramp::new(vec![
-        fade_color(base, bg, floor),
-        fade_color(base, bg, floor + (1.0 - floor) * 0.46),
-        base,
-        lerp(base, peak, 0.42),
-        lerp(base, peak, 0.76),
-    ])
-}
-
-/// The palette's own two steps, for the `terminal` theme: no colour is
-/// synthesised, so a 16-colour terminal gets the series token and its bright
-/// variant instead of an RGB blend.
-pub fn palette_ramp(base: Color) -> Ramp {
-    let bright = bright_token(base);
-    Ramp::new(vec![base, base, base, bright, bright])
-}
-
-fn bright_token(c: Color) -> Color {
-    match c {
-        Color::Black => Color::DarkGray,
-        Color::Red => Color::LightRed,
-        Color::Green => Color::LightGreen,
-        Color::Yellow => Color::LightYellow,
-        Color::Blue => Color::LightBlue,
-        Color::Cyan => Color::LightCyan,
-        Color::Gray => Color::White,
-        Color::DarkGray => Color::Gray,
-        Color::Indexed(n) if n < 8 => Color::Indexed(n + 8),
-        other => other,
-    }
-}
-
-/// `base` interpolated toward `bg` at `alpha`. RGB only.
-pub fn fade_color(base: Color, bg: Color, alpha: f32) -> Color {
-    let alpha = alpha.clamp(0.0, 1.0);
-    let (br, bgc, bb) = to_rgb(base, (255, 255, 255));
-    let (gr, gg, gb) = to_rgb(bg, (0, 0, 0));
-    Color::Rgb(
-        lerp_u8(gr, br, alpha),
-        lerp_u8(gg, bgc, alpha),
-        lerp_u8(gb, bb, alpha),
-    )
-}
-
-fn to_rgb(c: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
-    // xterm's palette values. Needed because the `dark` theme uses named
-    // colours: without the mapping every ramp would fade toward one fallback
-    // and every chart would read as "fade off".
-    match c {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Reset => fallback,
-        Color::Black => (0, 0, 0),
-        Color::Red => (170, 0, 0),
-        Color::Green => (0, 170, 0),
-        Color::Yellow => (170, 85, 0),
-        Color::Blue => (0, 0, 170),
-        Color::Magenta => (170, 0, 170),
-        Color::Cyan => (0, 170, 170),
-        Color::Gray => (170, 170, 170),
-        Color::DarkGray => (85, 85, 85),
-        Color::LightRed => (255, 85, 85),
-        Color::LightGreen => (85, 255, 85),
-        Color::LightYellow => (255, 255, 85),
-        Color::LightBlue => (85, 85, 255),
-        Color::LightMagenta => (255, 85, 255),
-        Color::LightCyan => (85, 255, 255),
-        Color::White => (255, 255, 255),
-        _ => fallback,
-    }
-}
-
-/// Linear blend, RGB only: a named colour comes back unchanged rather than
-/// guessing what the user's palette says it is.
-pub fn lerp(a: Color, b: Color, f: f32) -> Color {
-    match (rgb(a), rgb(b)) {
-        (Some((ar, ag, ab)), Some((br, bgc, bb))) => {
-            let f = f.clamp(0.0, 1.0);
-            Color::Rgb(lerp_u8(ar, br, f), lerp_u8(ag, bgc, f), lerp_u8(ab, bb, f))
-        }
-        _ => a,
-    }
-}
-
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t)
-        .round()
-        .clamp(0.0, 255.0) as u8
-}
-
-fn rgb(c: Color) -> Option<(u8, u8, u8)> {
-    match c {
-        Color::Rgb(r, g, b) => Some((r, g, b)),
-        _ => None,
-    }
-}
-
-/// WCAG relative luminance.
-fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
-    let linear = |v: u8| {
-        let v = v as f64 / 255.0;
-        if v <= 0.04045 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
-}
-
-/// WCAG contrast ratio.
-fn contrast(c: Color, behind: (u8, u8, u8)) -> f64 {
-    let a = luminance(to_rgb(c, behind));
-    let b = luminance(behind);
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
-}
-
-/// White on a dark background, black on a light one: the direction that adds
-/// contrast for a colour sitting on `behind`.
-fn away_from(behind: (u8, u8, u8)) -> Color {
-    if luminance(behind) < 0.18 {
-        Color::Rgb(255, 255, 255)
-    } else {
-        Color::Rgb(0, 0, 0)
-    }
-}
-
-/// `c`, moved away from the background only as far as `min` needs.
-fn with_contrast(c: Color, behind: (u8, u8, u8), min: f64) -> Color {
-    let away = away_from(behind);
-    (0..=100)
-        .map(|step| lerp(c, away, step as f32 / 100.0))
-        .find(|&moved| contrast(moved, behind) >= min)
-        .unwrap_or(away)
-}
-
-/// The ramp a renderer should paint with. `None` means "flat series".
-pub fn fade_ramp(base: Color, opts: ChartOpts) -> Option<Ramp> {
-    if !opts.fade {
-        return None;
-    }
-    if opts.terminal_palette {
-        return Some(palette_ramp(base));
-    }
-    Some(magnitude_ramp(base, opts.bg))
 }
 
 /// Braille dot bit per sub-row, left then right column of a cell.
@@ -251,18 +40,18 @@ const BRAILLE_BASE: u32 = 0x2800;
 /// Braille area plot at two samples per cell column, growing up from the
 /// bottom edge (`flip` grows down from the top: that is the mirrored half).
 ///
-/// `samples` is oldest-first. Every cell is coloured by its own height, so
-/// severity is pre-attentive: the spike is visible before the axis is read.
+/// `samples` is oldest-first, and the whole series is one colour: the shape
+/// carries the reading, so nothing about a cell depends on how high it sits.
 pub fn area_graph(
     buf: &mut Buffer,
     area: Rect,
     samples: &[u64],
     max: u64,
-    ramp: &Ramp,
+    color: Color,
     flip: bool,
     baseline: bool,
 ) {
-    area_graph_range(buf, area, samples, 0, max, ramp, flip, baseline);
+    area_graph_range(buf, area, samples, 0, max, color, flip, baseline);
 }
 
 /// [`area_graph`] over an explicit range, for a series with a physical domain
@@ -274,7 +63,7 @@ pub fn area_graph_range(
     samples: &[u64],
     min: u64,
     max: u64,
-    ramp: &Ramp,
+    color: Color,
     flip: bool,
     baseline: bool,
 ) {
@@ -318,21 +107,12 @@ pub fn area_graph_range(
             if bits == 0 {
                 continue;
             }
-            // The cell's vertical midpoint, measured along the direction of
-            // growth, so both halves of a mirrored pair brighten as traffic
-            // climbs.
-            let mid = (cy * 4 + 2) as f32;
-            let f = if flip {
-                mid / sub_h as f32
-            } else {
-                (sub_h as f32 - mid) / sub_h as f32
-            };
             let Some(ch) = char::from_u32(BRAILLE_BASE | bits as u32) else {
                 continue;
             };
             if let Some(cell) = buf.cell_mut((area.x + cx as u16, area.y + cy as u16)) {
                 cell.set_char(ch);
-                cell.set_style(Style::default().fg(ramp.at(f)));
+                cell.set_style(Style::default().fg(color));
             }
         }
     }
@@ -354,21 +134,17 @@ pub fn render_with_max(
     area: Rect,
     data: &[u64],
     max: u64,
-    bars: bool,
     base: Color,
     opts: ChartOpts,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let ramp = fade_ramp(base, opts).unwrap_or_else(|| Ramp::flat(base));
     if opts.ascii {
-        render_ascii(buf, area, data, max, &ramp, opts, false);
-    } else if bars {
-        render_bars(buf, area, data, max, &ramp, opts);
+        render_ascii(buf, area, data, max, base, opts, false);
     } else {
         let samples = two_per_column(data, area.width);
-        area_graph(buf, area, &samples, max, &ramp, false, opts.baseline);
+        area_graph(buf, area, &samples, max, base, false, opts.baseline);
     }
 }
 
@@ -377,14 +153,14 @@ pub fn render_with_max(
 /// character per cell here, so a line cannot wrap in the middle of a plot.
 const ASCII_LEVELS: [char; 9] = [' ', '.', ':', '-', '=', '+', '*', '#', '%'];
 
-/// One ASCII glyph per cell, coloured by height. `flip` hangs it from the top
-/// for the mirrored half.
+/// One ASCII glyph per cell. `flip` hangs it from the top for the mirrored
+/// half.
 fn render_ascii(
     buf: &mut Buffer,
     area: Rect,
     data: &[u64],
     max: u64,
-    ramp: &Ramp,
+    color: Color,
     opts: ChartOpts,
     flip: bool,
 ) {
@@ -411,45 +187,9 @@ fn render_ascii(
             if glyph == ' ' {
                 continue;
             }
-            let f = (from_bottom as f32 + 0.5) / cell_h as f32;
             if let Some(cell) = buf.cell_mut((x, area.y + cy as u16)) {
                 cell.set_char(glyph);
-                cell.set_style(Style::default().fg(ramp.at(f)));
-            }
-        }
-    }
-}
-
-/// Bottom-anchored eighths, one glyph per cell, coloured by height.
-fn render_bars(buf: &mut Buffer, area: Rect, data: &[u64], max: u64, ramp: &Ramp, opts: ChartOpts) {
-    const GLYPHS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    if max == 0 {
-        return;
-    }
-    let cell_w = area.width as usize;
-    let cell_h = area.height as usize;
-    let start = data.len().saturating_sub(cell_w);
-    let samples = &data[start..];
-    let offset = cell_w.saturating_sub(samples.len());
-    for (i, &v) in samples.iter().enumerate() {
-        let mut eighths = (v.min(max) as u128 * cell_h as u128 * 8 / max as u128) as usize;
-        if opts.baseline {
-            eighths = eighths.max(1);
-        } else if eighths == 0 {
-            continue;
-        }
-        let x = area.x + (offset + i) as u16;
-        for cy in 0..cell_h {
-            let from_bottom = cell_h - 1 - cy;
-            let level = eighths.saturating_sub(from_bottom * 8).min(8);
-            let glyph = GLYPHS[level];
-            if glyph == ' ' {
-                continue;
-            }
-            let f = (from_bottom as f32 + 0.5) / cell_h as f32;
-            if let Some(cell) = buf.cell_mut((x, area.y + cy as u16)) {
-                cell.set_char(glyph);
-                cell.set_style(Style::default().fg(ramp.at(f)));
+                cell.set_style(Style::default().fg(color));
             }
         }
     }
@@ -466,16 +206,11 @@ pub fn two_per_column(data: &[u64], width: u16) -> Vec<u64> {
 
 /// An in-text sparkline: the same renderer, converted back to `Line`s so it
 /// slots into a `Paragraph` beside its label.
-///
-/// `bars` is a one-row contract: a block sparkline is a row of eighths, and
-/// `height` is ignored for it. The dashboard passes 2 and the tests pin one
-/// line, so the distinction is kept here rather than at every call site.
 #[allow(clippy::too_many_arguments)]
 pub fn spark_lines(
     values: &VecDeque<f64>,
     width: usize,
     height: usize,
-    bars: bool,
     base: Color,
     min: u64,
     max: u64,
@@ -495,7 +230,7 @@ pub fn spark_lines(
         .collect();
     let mut buf = Buffer::empty(Rect::new(0, 0, width as u16, height as u16));
     let area = buf.area;
-    render_with_max(&mut buf, area, &data, max - min, bars, base, opts);
+    render_with_max(&mut buf, area, &data, max - min, base, opts);
     (0..height as u16)
         .map(|y| {
             let spans: Vec<Span<'static>> = (0..width as u16)
@@ -526,7 +261,6 @@ pub fn spark_lines_scaled(
     values: &VecDeque<f64>,
     width: usize,
     height: usize,
-    bars: bool,
     base: Color,
     min: f64,
     max: f64,
@@ -534,16 +268,7 @@ pub fn spark_lines_scaled(
 ) -> Vec<Line<'static>> {
     let span = (max - min).max(1.0);
     let shifted: VecDeque<f64> = values.iter().map(|v| v - min).collect();
-    spark_lines(
-        &shifted,
-        width,
-        height,
-        bars,
-        base,
-        0,
-        span.round() as u64,
-        opts,
-    )
+    spark_lines(&shifted, width, height, base, 0, span.round() as u64, opts)
 }
 
 /// [`spark_lines`] with the ceiling derived from the data.
@@ -551,12 +276,11 @@ pub fn spark_auto(
     values: &VecDeque<f64>,
     width: usize,
     height: usize,
-    bars: bool,
     base: Color,
     opts: ChartOpts,
 ) -> Vec<Line<'static>> {
     let max = values.iter().cloned().fold(0.0_f64, f64::max).max(1.0) as u64;
-    spark_lines(values, width, height, bars, base, 0, max, opts)
+    spark_lines(values, width, height, base, 0, max, opts)
 }
 
 /// Right-align `data` onto one time window of `slots` columns, taking the
@@ -716,7 +440,6 @@ pub fn render_mirrored_scaled(
     tx: &[u64],
     rx_max: u64,
     tx_max: u64,
-    bars: bool,
     rx_color: Color,
     tx_color: Color,
     opts: ChartOpts,
@@ -734,7 +457,6 @@ pub fn render_mirrored_scaled(
         },
         rx,
         rx_max,
-        bars,
         rx_color,
         opts,
         false,
@@ -748,7 +470,6 @@ pub fn render_mirrored_scaled(
         },
         tx,
         tx_max,
-        bars,
         tx_color,
         // The zero row the rx half draws is this half's floor too.
         ChartOpts {
@@ -766,7 +487,6 @@ fn render_half(
     area: Rect,
     data: &[u64],
     max: u64,
-    bars: bool,
     color: Color,
     opts: ChartOpts,
     flip: bool,
@@ -774,15 +494,8 @@ fn render_half(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let ramp = fade_ramp(color, opts).unwrap_or_else(|| Ramp::flat(color));
     if opts.ascii {
-        render_ascii(buf, area, data, max, &ramp, opts, flip);
-    } else if bars {
-        if flip {
-            render_bars_flipped(buf, area, data, max, &ramp, opts);
-        } else {
-            render_bars(buf, area, data, max, &ramp, opts);
-        }
+        render_ascii(buf, area, data, max, color, opts, flip);
     } else {
         // One sample owns one cell: both dot columns of the cell carry the same
         // value. Asking for two samples per cell instead stretched a short
@@ -791,7 +504,7 @@ fn render_half(
         let pad = (area.width as usize).saturating_sub(data.len());
         let mut samples: Vec<u64> = vec![0; pad * 2];
         samples.extend(data.iter().flat_map(|&v| [v, v]));
-        area_graph(buf, area, &samples, max, &ramp, flip, opts.baseline);
+        area_graph(buf, area, &samples, max, color, flip, opts.baseline);
     }
 }
 
@@ -850,110 +563,15 @@ pub fn time_axis(width: u16, secs: u64) -> String {
     time_axis_window(width, secs, secs)
 }
 
-/// Top-anchored blocks, for the mirrored half of a `bars` graph.
-///
-/// Three fill levels, not eight: the bottom-anchored eighths (`▁`..`▇`) have no
-/// top-anchored counterparts outside Symbols for Legacy Computing, whose font
-/// coverage is exactly what `bars` exists to avoid depending on. A coarser
-/// mirror beats a mirrored half made of tofu.
-fn render_bars_flipped(
-    buf: &mut Buffer,
-    area: Rect,
-    data: &[u64],
-    max: u64,
-    ramp: &Ramp,
-    opts: ChartOpts,
-) {
-    // `▔` 1/8, `▀` 1/2, `█` full: all in Block Elements.
-    const GLYPHS: [char; 3] = ['▔', '▀', '█'];
-    if max == 0 {
-        return;
-    }
-    let cell_w = area.width as usize;
-    let cell_h = area.height as usize;
-    let start = data.len().saturating_sub(cell_w);
-    let samples = &data[start..];
-    let offset = cell_w.saturating_sub(samples.len());
-    for (i, &v) in samples.iter().enumerate() {
-        let mut eighths = (v.min(max) as u128 * cell_h as u128 * 8 / max as u128) as usize;
-        if opts.baseline {
-            eighths = eighths.max(1);
-        } else if eighths == 0 {
-            continue;
-        }
-        let x = area.x + (offset + i) as u16;
-        for cy in 0..cell_h {
-            let level = eighths.saturating_sub(cy * 8).min(8);
-            let glyph = match level {
-                0 => continue,
-                1..=3 => GLYPHS[0],
-                4..=7 => GLYPHS[1],
-                _ => GLYPHS[2],
-            };
-            let f = (cy as f32 + 0.5) / cell_h as f32;
-            if let Some(cell) = buf.cell_mut((x, area.y + cy as u16)) {
-                cell.set_char(glyph);
-                cell.set_style(Style::default().fg(ramp.at(f)));
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn ramp_samples_endpoints_and_midpoint() {
-        let r = Ramp::new(vec![
-            Color::Rgb(0, 0, 0),
-            Color::Rgb(100, 0, 0),
-            Color::Rgb(200, 0, 0),
-        ]);
-        assert_eq!(r.at(0.0), Color::Rgb(0, 0, 0));
-        assert_eq!(r.at(1.0), Color::Rgb(200, 0, 0));
-        assert_eq!(r.at(0.5), Color::Rgb(100, 0, 0));
-        assert_eq!(Ramp::flat(Color::Red).at(0.9), Color::Red);
-    }
-
-    #[test]
-    fn magnitude_ramp_climbs_from_the_floor() {
-        let r = magnitude_ramp(Color::Green, Color::Rgb(0x10, 0x10, 0x10));
-        let floor = luminance_of(r.at(0.0));
-        let mid = luminance_of(r.at(0.5));
-        let top = luminance_of(r.at(1.0));
-        assert!(floor < mid, "ramp must climb: {floor} !< {mid}");
-        assert!(mid < top, "ramp must climb: {mid} !< {top}");
-    }
-
-    #[test]
-    fn the_dimmest_stop_stays_readable_on_the_background() {
-        let bg = Color::Rgb(0x10, 0x10, 0x10);
-        for base in [
-            Color::Green,
-            Color::Cyan,
-            Color::Yellow,
-            Color::Rgb(0xC6, 0x28, 0x28),
-        ] {
-            let r = magnitude_ramp(base, bg);
-            let c = contrast(r.at(0.0), (0x10, 0x10, 0x10));
-            assert!(c >= 4.0, "floor contrast {c:.2} under 4.0 for {base:?}");
-        }
-    }
-
-    #[test]
-    fn the_palette_ramp_invents_no_colour() {
-        let r = palette_ramp(Color::Green);
-        assert_eq!(r.at(0.0), Color::Green);
-        assert_eq!(r.at(1.0), Color::LightGreen);
-    }
-
-    #[test]
     fn a_full_sample_paints_the_whole_braille_cell() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
         let area = buf.area;
-        let r = Ramp::flat(Color::Green);
-        area_graph(&mut buf, area, &[1, 1], 1, &r, false, true);
+        area_graph(&mut buf, area, &[1, 1], 1, Color::Green, false, true);
         assert_eq!(
             buf[(0, 0)].symbol(),
             "\u{28ff}",
@@ -965,8 +583,7 @@ mod tests {
     fn a_zero_sample_still_draws_its_baseline() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
         let area = buf.area;
-        let r = Ramp::flat(Color::Green);
-        area_graph(&mut buf, area, &[0, 0], 1, &r, false, true);
+        area_graph(&mut buf, area, &[0, 0], 1, Color::Green, false, true);
         assert_eq!(buf[(0, 0)].symbol(), "\u{28c0}", "bottom row of dots");
     }
 
@@ -974,8 +591,7 @@ mod tests {
     fn without_a_baseline_an_empty_column_stays_empty() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
         let area = buf.area;
-        let r = Ramp::flat(Color::Green);
-        area_graph(&mut buf, area, &[0, 0], 1, &r, false, false);
+        area_graph(&mut buf, area, &[0, 0], 1, Color::Green, false, false);
         assert_eq!(buf[(0, 0)].symbol(), " ");
     }
 
@@ -988,7 +604,6 @@ mod tests {
             area,
             &[10, 10],
             10,
-            false,
             Color::Green,
             ChartOpts::default(),
         );
@@ -998,20 +613,35 @@ mod tests {
     }
 
     #[test]
-    fn a_bars_sparkline_is_one_row_of_eighths() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+    fn only_one_renderer_remains_and_its_glyphs_are_the_braille_family() {
+        // One renderer: the plot paints braille and nothing else, whatever the
+        // caller used to ask for.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 2));
         let area = buf.area;
         render_with_max(
             &mut buf,
             area,
-            &[1, 4, 8],
+            &[1, 2, 3, 4, 5, 6, 7, 8],
             8,
-            true,
             Color::Green,
             ChartOpts::default(),
         );
-        let row: String = (0..3).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert_eq!(row, "\u{2581}\u{2584}\u{2588}", "1/8, 4/8, 8/8");
+        let mut painted = 0usize;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                for ch in buf[(x, y)].symbol().chars() {
+                    if ch == ' ' {
+                        continue;
+                    }
+                    painted += 1;
+                    assert!(
+                        ('\u{2801}'..='\u{28ff}').contains(&ch),
+                        "{ch:?} is not a braille cell"
+                    );
+                }
+            }
+        }
+        assert!(painted > 0, "the plot painted nothing");
     }
 
     #[test]
@@ -1020,7 +650,7 @@ mod tests {
         for i in 0..40 {
             v.push_back(i as f64);
         }
-        let lines = spark_auto(&v, 20, 3, false, Color::Green, ChartOpts::default());
+        let lines = spark_auto(&v, 20, 3, Color::Green, ChartOpts::default());
         assert_eq!(lines.len(), 3);
         for line in &lines {
             assert_eq!(line.width(), 20);
@@ -1037,7 +667,7 @@ mod tests {
             ascii: true,
             ..ChartOpts::default()
         };
-        let lines = spark_auto(&v, 20, 3, false, Color::Green, opts);
+        let lines = spark_auto(&v, 20, 3, Color::Green, opts);
         assert_eq!(lines.len(), 3);
         for line in &lines {
             let text: String = line.spans.iter().map(|s| s.content.clone()).collect();
@@ -1061,7 +691,6 @@ mod tests {
             &[9, 9],
             9,
             9,
-            false,
             Color::Green,
             Color::Cyan,
             opts,
@@ -1087,7 +716,6 @@ mod tests {
             &[],
             9,
             9,
-            false,
             Color::Green,
             Color::Cyan,
             opts,
@@ -1109,33 +737,6 @@ mod tests {
             "the spike keeps exactly one cell: {out:?}"
         );
         assert!(out.iter().filter(|v| **v == 1).count() >= 94);
-    }
-
-    #[test]
-    fn bars_fill_the_requested_height() {
-        // A block sparkline fills the height the caller asks for: the renderer
-        // stacks eighths, so a three-row slot in the traffic and speed panels
-        // must draw three rows instead of clamping to one and leaving two empty.
-        let mut v: VecDeque<f64> = VecDeque::new();
-        for i in 0..10 {
-            v.push_back(i as f64);
-        }
-        let lines = spark_auto(&v, 10, 3, true, Color::Green, ChartOpts::default());
-        assert_eq!(lines.len(), 3, "bars use the height they are given");
-        let painted = |row: usize| -> usize {
-            lines[row]
-                .spans
-                .iter()
-                .flat_map(|s| s.content.chars())
-                .filter(|c| *c != ' ')
-                .count()
-        };
-        assert!(
-            painted(0) < painted(2),
-            "the bar grows upward: top {} bottom {}",
-            painted(0),
-            painted(2)
-        );
     }
 
     #[test]
@@ -1178,7 +779,6 @@ mod tests {
             &[9, 9],
             9,
             9,
-            false,
             Color::Green,
             Color::Cyan,
             opts,
@@ -1199,46 +799,12 @@ mod tests {
     }
 
     #[test]
-    fn a_bars_tx_half_paints_downward() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 3));
-        let plot = buf.area;
-        render_mirrored_scaled(
-            &mut buf,
-            plot,
-            &[9, 9],
-            &[9, 9],
-            9,
-            9,
-            true,
-            Color::Green,
-            Color::Cyan,
-            ChartOpts::default(),
-        );
-        // `bars` sends BOTH halves through the block renderer, so the rx half
-        // is a full block, not braille: a full sample fills its one row.
-        assert_eq!(buf[(1, 0)].symbol(), "█", "rx is a bottom-anchored block");
-        assert_eq!(buf[(1, 2)].symbol(), "█", "tx reaches the bottom edge");
-    }
-
-    #[test]
-    fn a_light_panel_keeps_its_peak_contrast() {
-        // paper's own background: the top of the ramp must move toward black,
-        // not toward white, or the peak washes out (measured 2.5:1 before).
-        let bg = (0xF5u8, 0xF5u8, 0xF2u8);
-        let r = magnitude_ramp(Color::Rgb(0x00, 0x64, 0x28), Color::Rgb(0xF5, 0xF5, 0xF2));
-        for f in [0.0f32, 0.5, 1.0] {
-            let c = contrast(r.at(f), bg);
-            assert!(c >= 4.0, "stop {f} under 4:1 on a light panel: {c:.2}");
-        }
-    }
-
-    #[test]
     fn a_braille_sparkline_paints_its_right_edge() {
         let mut v: VecDeque<f64> = VecDeque::new();
         for i in 0..50 {
             v.push_back(i as f64);
         }
-        let lines = spark_auto(&v, 20, 3, false, Color::Reset, ChartOpts::default());
+        let lines = spark_auto(&v, 20, 3, Color::Reset, ChartOpts::default());
         assert_eq!(lines.len(), 3);
         let text: String = lines
             .iter()
@@ -1267,16 +833,8 @@ mod tests {
         for _ in 0..40 {
             v.push_back(-96.0);
         }
-        let lines = spark_lines_scaled(
-            &v,
-            20,
-            4,
-            false,
-            Color::Reset,
-            -140.0,
-            -44.0,
-            ChartOpts::default(),
-        );
+        let lines =
+            spark_lines_scaled(&v, 20, 4, Color::Reset, -140.0, -44.0, ChartOpts::default());
         let painted_rows = lines
             .iter()
             .filter(|l| {
@@ -1292,16 +850,8 @@ mod tests {
     fn a_single_scaled_sample_is_visible_at_the_edge() {
         let mut v: VecDeque<f64> = VecDeque::new();
         v.push_back(-96.0);
-        let lines = spark_lines_scaled(
-            &v,
-            20,
-            2,
-            false,
-            Color::Reset,
-            -140.0,
-            -44.0,
-            ChartOpts::default(),
-        );
+        let lines =
+            spark_lines_scaled(&v, 20, 2, Color::Reset, -140.0, -44.0, ChartOpts::default());
         let last: String = lines
             .last()
             .unwrap()
@@ -1331,37 +881,5 @@ mod tests {
             5,
             "one sample still fills the requested width"
         );
-    }
-
-    #[test]
-    fn every_shipped_theme_keeps_its_ramp_readable() {
-        // The runtime assumes a dark background when the theme has none, and a
-        // light one when it paints its own: both directions must clear 4:1 at
-        // the floor, the body and the peak.
-        let themes = [
-            crate::theme::terminal(),
-            crate::theme::dark(),
-            crate::theme::ocean(),
-            crate::theme::solarized(),
-            crate::theme::dracula(),
-            crate::theme::nord(),
-            crate::theme::sky(),
-            crate::theme::paper(),
-        ];
-        for t in themes {
-            let behind = to_rgb(t.bg, ASSUMED_DARK_BG);
-            let r = magnitude_ramp(t.ok, t.bg);
-            for f in [0.0f32, 0.5, 1.0] {
-                let c = contrast(r.at(f), behind);
-                assert!(c >= MIN_RAMP_CONTRAST, "{} stop {f}: {c:.2}", t.id);
-            }
-        }
-    }
-
-    fn luminance_of(c: Color) -> f64 {
-        match c {
-            Color::Rgb(r, g, b) => luminance((r, g, b)),
-            other => luminance(to_rgb(other, (0, 0, 0))),
-        }
     }
 }
