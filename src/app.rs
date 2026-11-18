@@ -3,7 +3,7 @@
 
 use crate::config::BandPreset;
 use crate::headless::{Phase, PhaseState};
-use crate::model::{Client, DeviceExtras, Snapshot};
+use crate::model::{Client, DeviceExtras, SmsMessage, Snapshot};
 use crate::router::bands;
 use crate::theme::{GraphStyle, Theme};
 use crate::worker::{PingOutcome, SpeedRun};
@@ -91,7 +91,7 @@ impl Tab {
             Tab::Traffic => "d edit DNS · D auto DNS · b reset budget · e report",
             Tab::Network => "p ping host · T speed test · e report",
             Tab::Clients => "j/k select · s sort · c copy mac · e report",
-            Tab::Sms => "R read inbox",
+            Tab::Sms => "j/k · Enter open · space mark · a all · d delete · m read · n page · R inbox",
             Tab::Device => "x dump json · b restart · R extras",
             Tab::Dns => "j/k choose · Enter apply · d type · D auto · e report",
             Tab::Signal => "v view · g graph · e report",
@@ -352,6 +352,70 @@ pub struct BandLog {
     pub ok: bool,
 }
 
+/// Rows a page holds. Re-exported so the reader and the request body cannot
+/// drift: the number is the firmware's `ReadCount`, not a second opinion.
+pub use crate::router::client::SMS_PAGE;
+
+/// What the SMS tab holds between frames. Everything here is the reader's own
+/// state; the messages themselves live in `extras.sms_inbox`.
+#[derive(Debug, Clone, Default)]
+pub struct SmsState {
+    /// Row the reader is on, within the current page.
+    pub cursor: usize,
+    /// Message indices marked for a bulk operation.
+    pub selected: std::collections::BTreeSet<String>,
+    /// Index of the message whose body is open in the lower pane. Opening is a
+    /// read: nothing is written and nothing is marked read.
+    pub open: Option<String>,
+    /// Rows scrolled inside the open body.
+    pub scroll: u16,
+    /// 1-based page requested from the firmware.
+    pub page: u32,
+    /// Inbox total as the device answered it (sms-count), so paging and the
+    /// range label do not depend on the snapshot's counters being current.
+    pub total: Option<u32>,
+    /// Set when the firmware refused delete or set-read: the keys stay off and
+    /// the bar says why, because a refusal is not a retry.
+    pub blocked: Option<String>,
+    /// Last outcome line for this tab, memory only.
+    pub notice: Option<String>,
+    /// The question on screen, waiting for `y`.
+    pub confirm: Option<SmsPlan>,
+    /// A delete or mark-read is in flight; the keys wait for its report.
+    pub busy: bool,
+}
+
+impl SmsState {
+    pub fn page_or_one(&self) -> u32 {
+        if self.page == 0 {
+            1
+        } else {
+            self.page
+        }
+    }
+}
+
+/// A committed operation, held only until the user confirms it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsPlan {
+    pub op: crate::write::SmsOp,
+    pub indices: Vec<String>,
+}
+
+impl SmsPlan {
+    pub fn label(&self) -> String {
+        let verb = match self.op {
+            crate::write::SmsOp::Delete => "delete",
+            crate::write::SmsOp::MarkRead => "mark read",
+        };
+        if self.indices.len() == 1 {
+            format!("{verb} 1 message (index {})", self.indices[0])
+        } else {
+            format!("{verb} {} messages", self.indices.len())
+        }
+    }
+}
+
 /// What the device carried before a pending apply, whole. Captured at the
 /// confirmation, because the snapshot that supplied it is replaced by the next
 /// poll long before the verdict arrives.
@@ -433,6 +497,8 @@ pub struct App {
     pub last_apply: Option<LastApply>,
     /// Newest first, capped at `BAND_LOG_CAP`, memory only.
     pub band_log: VecDeque<BandLog>,
+    /// SMS reader: cursor, marks, the open message and the pending operation.
+    pub sms: SmsState,
     bands_initialised: bool,
     // --- M4 ---
     pub input: Option<Input>,
@@ -598,6 +664,7 @@ impl App {
             undo_mask: None,
             last_apply: None,
             band_log: VecDeque::new(),
+            sms: SmsState::default(),
             undo_full: None,
             watch_until: None,
             bands_initialised: false,
@@ -785,6 +852,33 @@ impl App {
         self.extras = Some(extras);
     }
 
+    /// One inbox page arrived: the rows replace what the tab shows, and the
+    /// cursor is clamped into the new list so it never points past the end.
+    pub fn on_sms_page(
+        &mut self,
+        page: u32,
+        messages: Vec<SmsMessage>,
+        total: Option<u32>,
+        error: Option<String>,
+    ) {
+        self.sms.page = page.max(1);
+        if total.is_some() {
+            self.sms.total = total;
+        }
+        let extras = self.extras.get_or_insert_with(DeviceExtras::default);
+        extras.sms_inbox = messages;
+        extras.sms_error = error;
+        self.sms.selected.clear();
+        self.sms.open = None;
+        self.sms.scroll = 0;
+        let len = self.sms_rows().len();
+        if len == 0 {
+            self.sms.cursor = 0;
+        } else {
+            self.sms.cursor = self.sms.cursor.min(len - 1);
+        }
+    }
+
     /// The SMS/Device tabs ask for extras once; `R` forces a refetch.
     pub fn needs_extras(&self) -> bool {
         self.extras.is_none() && !self.extras_requested
@@ -792,6 +886,252 @@ impl App {
 
     pub fn mark_extras_requested(&mut self) {
         self.extras_requested = true;
+    }
+
+    // --- SMS reader ---
+
+    /// The rows on the current page, from the last extras read.
+    pub fn sms_rows(&self) -> &[crate::model::SmsMessage] {
+        match &self.extras {
+            Some(e) => &e.sms_inbox,
+            None => &[],
+        }
+    }
+
+    /// `j`/`k`: a reader at the last row wraps to the first, so one key held
+    /// down never parks on a dead end.
+    pub fn sms_move(&mut self, delta: isize) {
+        let len = self.sms_rows().len();
+        if len == 0 {
+            self.sms.cursor = 0;
+            return;
+        }
+        let next = (self.sms.cursor as isize + delta).rem_euclid(len as isize);
+        self.sms.cursor = next as usize;
+    }
+
+    fn sms_current_index(&self) -> Option<String> {
+        self.sms_rows()
+            .get(self.sms.cursor)
+            .and_then(|m| m.index.clone())
+    }
+
+    /// `space`: mark or unmark the row under the cursor.
+    pub fn sms_toggle(&mut self) -> bool {
+        let Some(index) = self.sms_current_index() else {
+            return false;
+        };
+        if !self.sms.selected.remove(&index) {
+            self.sms.selected.insert(index);
+        }
+        true
+    }
+
+    /// `V`: mark every row on the page, or clear when they are all marked.
+    pub fn sms_select_all(&mut self) -> bool {
+        let indexes: Vec<String> = self
+            .sms_rows()
+            .iter()
+            .filter_map(|m| m.index.clone())
+            .collect();
+        if indexes.is_empty() {
+            return false;
+        }
+        let all_marked = indexes.iter().all(|i| self.sms.selected.contains(i));
+        if all_marked {
+            self.sms.selected.clear();
+        } else {
+            for index in indexes {
+                self.sms.selected.insert(index);
+            }
+        }
+        true
+    }
+
+    /// `Enter`/`o`: show the body. This is a pure read of state already in
+    /// memory: no request, and nothing is marked read.
+    pub fn sms_open(&mut self) -> bool {
+        match self.sms_current_index() {
+            Some(index) => {
+                self.sms.open = Some(index);
+                self.sms.scroll = 0;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn sms_close(&mut self) -> bool {
+        let had = self.sms.open.is_some();
+        self.sms.open = None;
+        self.sms.scroll = 0;
+        had
+    }
+
+    pub fn sms_scroll(&mut self, delta: i16) {
+        if self.sms.open.is_none() {
+            return;
+        }
+        let next = self.sms.scroll as i32 + delta as i32;
+        self.sms.scroll = next.max(0).min(u16::MAX as i32) as u16;
+    }
+
+    /// `n`/`p`: ask for another page. The total comes from the counters, which
+    /// are the only place this firmware states how many messages exist.
+    pub fn sms_total(&self) -> Option<u32> {
+        self.sms.total.or_else(|| {
+            self.snap
+                .as_ref()
+                .and_then(|s| s.sms.as_ref())
+                .map(|c| c.inbox)
+        })
+    }
+
+    pub fn sms_page_next(&mut self) -> bool {
+        let page = self.sms.page_or_one();
+        let len = self.sms_rows().len();
+        let more = len as u32 >= crate::router::client::SMS_PAGE;
+        match self.sms_total() {
+            Some(total) => {
+                if page * crate::router::client::SMS_PAGE >= total {
+                    return false;
+                }
+            }
+            None if !more => return false,
+            None => {}
+        }
+        self.sms.page = page + 1;
+        self.sms.selected.clear();
+        self.sms.cursor = 0;
+        self.sms.open = None;
+        true
+    }
+
+    pub fn sms_page_prev(&mut self) -> bool {
+        let page = self.sms.page_or_one();
+        if page <= 1 {
+            return false;
+        }
+        self.sms.page = page - 1;
+        self.sms.selected.clear();
+        self.sms.cursor = 0;
+        self.sms.open = None;
+        true
+    }
+
+    /// `1-40 of 45` for the footer, or `-` when nothing is known yet.
+    pub fn sms_range(&self) -> String {
+        let len = self.sms_rows().len() as u32;
+        if len == 0 {
+            return String::new();
+        }
+        let start = (self.sms.page_or_one() - 1) * crate::router::client::SMS_PAGE + 1;
+        let end = start + len - 1;
+        match self.sms_total() {
+            Some(total) => format!("{start}-{end} of {total}"),
+            None => format!("{start}-{end}"),
+        }
+    }
+
+    /// The indices a bulk operation would touch: the marks, or the cursor row
+    /// when nothing is marked.
+    fn sms_targets(&self) -> Vec<String> {
+        if !self.sms.selected.is_empty() {
+            return self.sms.selected.iter().cloned().collect();
+        }
+        self.sms_current_index().into_iter().collect()
+    }
+
+    /// Why a write is refused right now, or `None` when it may proceed. The key
+    /// handler prints this, so a refused `d` says why instead of doing nothing.
+    pub fn sms_plan_refusal(&self) -> Option<String> {
+        if let Some(why) = &self.sms.blocked {
+            return Some(why.clone());
+        }
+        if !self.allow_write {
+            return Some("writes are off: start with --allow-write".to_string());
+        }
+        if self.sms.busy {
+            return Some("an operation is still running".to_string());
+        }
+        None
+    }
+
+    /// `d`: ask before deleting. Builds the plan, never sends it.
+    pub fn sms_plan_delete(&mut self, all: bool) -> Option<SmsPlan> {
+        if self.sms_plan_refusal().is_some() {
+            return None;
+        }
+        let indexes = if all {
+            self.sms_rows()
+                .iter()
+                .filter_map(|m| m.index.clone())
+                .collect::<Vec<_>>()
+        } else {
+            self.sms_targets()
+        };
+        if indexes.is_empty() {
+            return None;
+        }
+        let plan = SmsPlan {
+            op: crate::write::SmsOp::Delete,
+            indices: indexes,
+        };
+        self.sms.confirm = Some(plan.clone());
+        Some(plan)
+    }
+
+    /// `m`: mark the open (or cursor) message read. Its own key, its own gate.
+    pub fn sms_plan_mark_read(&mut self) -> Option<SmsPlan> {
+        if self.sms_plan_refusal().is_some() {
+            return None;
+        }
+        let index = self.sms.open.clone().or_else(|| self.sms_current_index());
+        let index = index?;
+        let plan = SmsPlan {
+            op: crate::write::SmsOp::MarkRead,
+            indices: vec![index],
+        };
+        self.sms.confirm = Some(plan.clone());
+        Some(plan)
+    }
+
+    /// `n` or `Esc` in the dialogue: drop the plan, send nothing.
+    pub fn sms_cancel(&mut self) -> bool {
+        self.sms.confirm.take().is_some()
+    }
+
+    /// `y` in the dialogue: hand the plan out, once.
+    pub fn sms_take_plan(&mut self) -> Option<SmsPlan> {
+        self.sms.confirm.take()
+    }
+
+    /// Take one outcome into the tab: counts in the bar, failed rows kept, and a
+    /// refusal disables the keys instead of inviting a retry.
+    pub fn on_sms_report(&mut self, report: &crate::write::SmsReport) {
+        self.sms.busy = false;
+        self.sms.notice = Some(report.summary());
+        if let Some((_, code)) = &report.unsupported {
+            self.sms.blocked = Some(format!(
+                "this firmware refused {} ({code}); the keys stay off",
+                report.op.verb()
+            ));
+        }
+        let failed: std::collections::BTreeSet<String> =
+            report.failed.iter().map(|(i, _)| i.clone()).collect();
+        self.sms.selected.retain(|i| failed.contains(i));
+        if report.op == crate::write::SmsOp::Delete {
+            if let Some(open) = &self.sms.open {
+                if !failed.contains(open) && report.deleted > 0 {
+                    self.sms.open = None;
+                }
+            }
+            self.sms.scroll = 0;
+        }
+        let len = self.sms_rows().len();
+        if len > 0 && self.sms.cursor >= len {
+            self.sms.cursor = len - 1;
+        }
     }
 
     pub fn adjust_refresh(&mut self, delta: i64) {

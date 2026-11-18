@@ -76,6 +76,12 @@ pub enum Profile {
     /// The link is already down when the renew starts: switching it off first
     /// would be a no-op, so the only correct POST is the one that brings it back.
     RenewStartsDown,
+    /// An inbox with three messages, a working `sms-list`, and a delete path that
+    /// removes the row: the reader and the guarded delete have a router to talk to.
+    Sms,
+    /// The same inbox, but `sms/delete-sms` answers 100003 and nothing is removed,
+    /// which is how a firmware without the endpoint behaves.
+    SmsRefusesDelete,
 }
 
 /// How long `SwitchWarnsLate` takes to publish the new mask. Shorter than the
@@ -118,7 +124,9 @@ impl Profile {
             | Profile::RenewChanges
             | Profile::RenewKeeps
             | Profile::RenewRefuses
-            | Profile::RenewStartsDown => {}
+            | Profile::RenewStartsDown
+            | Profile::Sms
+            | Profile::SmsRefusesDelete => {}
         }
         match self {
             Profile::DhcpNoDns => routes.push(("/api/dhcp/feature-switch", FEATURE_DNS_HIDDEN)),
@@ -148,9 +156,22 @@ impl Profile {
             }
             routes.push(("/api/monitoring/month_statistics", BUSY_100004));
         }
+        if matches!(self, Profile::Sms | Profile::SmsRefusesDelete) {
+            for (path, body) in routes.iter_mut() {
+                if *path == "/api/sms/sms-count" {
+                    *body = SMS_COUNT;
+                }
+            }
+        }
         routes
     }
 }
+
+/// The counters a device with three stored messages answers.
+const SMS_COUNT: &str = r#"<response>
+<LocalUnread>2</LocalUnread><LocalInbox>3</LocalInbox><LocalOutbox>1</LocalOutbox>
+<LocalDraft>0</LocalDraft><LocalMax>500</LocalMax><NewMsg>0</NewMsg>
+</response>"#;
 
 const ROOT_HTML: &str =
     r#"<html><head><meta name="csrf_token" content="mocktoken"></head><body>login</body></html>"#;
@@ -215,6 +236,67 @@ const HOST_LIST: &str = r#"<response><Hosts>
 <Host><HostName>living-room-tv</HostName><IpAddress>192.168.8.101</IpAddress><MacAddress>02:00:00:00:00:01</MacAddress><WifiFrequency>5</WifiFrequency></Host>
 <Host><HostName>phone-1</HostName><IpAddress>192.168.8.102</IpAddress><MacAddress>02:00:00:00:00:02</MacAddress><WifiFrequency>5</WifiFrequency></Host>
 </Hosts></response>"#;
+
+/// The inbox a `Profile::Sms` mock keeps between requests. The bodies are
+/// synthetic on purpose: no real message text or phone number lives in this
+/// repository.
+#[derive(Debug, Clone)]
+struct SmsState {
+    rows: Vec<(String, String, String, bool)>,
+}
+
+impl Default for SmsState {
+    fn default() -> Self {
+        SmsState {
+            rows: vec![
+                (
+                    "4001".into(),
+                    "+0000000001".into(),
+                    "2026-01-02 03:04:05".into(),
+                    true,
+                ),
+                (
+                    "4002".into(),
+                    "+0000000002".into(),
+                    "2026-01-02 03:05:06".into(),
+                    true,
+                ),
+                (
+                    "4003".into(),
+                    "+0000000003".into(),
+                    "2026-01-02 03:06:07".into(),
+                    false,
+                ),
+            ],
+        }
+    }
+}
+
+impl SmsState {
+    fn list(&self, page: u32) -> String {
+        let per = crate::router::client::SMS_PAGE as usize;
+        let start = (page.max(1) as usize - 1) * per;
+        let rows: Vec<String> = self
+            .rows
+            .iter()
+            .skip(start)
+            .take(per)
+            .map(|(index, phone, date, unread)| {
+                format!(
+                    "<Message><Smstat>{}</Smstat><Index>{index}</Index><Phone>{phone}</Phone>\
+<Content>synthetic message {index}</Content><Date>{date}</Date><Sca></Sca>\
+<SaveType>0</SaveType><Priority>0</Priority><SmsType>2</SmsType></Message>",
+                    if *unread { 0 } else { 1 }
+                )
+            })
+            .collect();
+        format!(
+            "<response><Count>{}</Count><Messages>{}</Messages></response>",
+            self.rows.len(),
+            rows.join("")
+        )
+    }
+}
 
 /// The band state a switch profile keeps between requests. The real firmware is
 /// stateful in exactly this way, which is why a POST's answer and a later GET
@@ -405,6 +487,10 @@ pub struct MockCpe {
     posts: Arc<AtomicUsize>,
     /// POST `dialup/mobile-dataswitch` bodies that asked for the link to go down.
     link_downs: Arc<AtomicUsize>,
+    sms: Arc<Mutex<SmsState>>,
+    /// POST `sms/delete-sms` plus `sms/set-read`: the only two writes this round
+    /// adds, counted apart from `posts` because listing is a POST too.
+    sms_writes: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -436,6 +522,10 @@ impl MockCpe {
         let lk = Arc::clone(&link);
         let link_downs = Arc::new(AtomicUsize::new(0));
         let ld = Arc::clone(&link_downs);
+        let sms = Arc::new(Mutex::new(SmsState::default()));
+        let sm = Arc::clone(&sms);
+        let sms_writes = Arc::new(AtomicUsize::new(0));
+        let sw = Arc::clone(&sms_writes);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if flag.load(Ordering::SeqCst) {
@@ -449,8 +539,9 @@ impl MockCpe {
                     dhcp_posts: &dp,
                     posts: &po,
                     link_downs: &ld,
+                    sms_writes: &sw,
                 };
-                let _ = serve(stream, profile, &counters, &st, &dh, &lk);
+                let _ = serve(stream, profile, &counters, &st, &dh, &lk, &sm);
             }
         });
         MockCpe {
@@ -462,6 +553,8 @@ impl MockCpe {
             dhcp_posts,
             posts,
             link_downs,
+            sms,
+            sms_writes,
             thread: Some(thread),
         }
     }
@@ -497,6 +590,26 @@ impl MockCpe {
         self.posts.load(Ordering::SeqCst)
     }
 
+    /// POST `sms/delete-sms` and `sms/set-read` seen so far. A reader that only
+    /// opens and lists must leave this at zero.
+    pub fn sms_writes(&self) -> usize {
+        self.sms_writes.load(Ordering::SeqCst)
+    }
+
+    /// Rows the fake inbox holds right now: the proof a delete really removed
+    /// one instead of only answering OK.
+    pub fn sms_rows(&self) -> usize {
+        self.sms.lock().map(|s| s.rows.len()).unwrap_or(0)
+    }
+
+    /// Which rows the fake inbox still marks unread.
+    pub fn sms_unread(&self) -> Vec<bool> {
+        self.sms
+            .lock()
+            .map(|s| s.rows.iter().map(|r| r.3).collect())
+            .unwrap_or_default()
+    }
+
     /// POST `dialup/mobile-dataswitch` bodies that switched the link off. A renew
     /// on a link that is already down must leave this at zero.
     pub fn link_downs(&self) -> usize {
@@ -525,6 +638,16 @@ struct Counters<'a> {
     dhcp_posts: &'a AtomicUsize,
     posts: &'a AtomicUsize,
     link_downs: &'a AtomicUsize,
+    sms_writes: &'a AtomicUsize,
+}
+
+/// The text between `<tag>` and `</tag>` in a POST body, when it is there.
+fn first_tag(body: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = body.find(&open)? + open.len();
+    let end = body[start..].find(&close)? + start;
+    Some(body[start..end].to_string())
 }
 
 fn serve(
@@ -534,6 +657,7 @@ fn serve(
     state: &Mutex<SwitchState>,
     dhcp: &Mutex<DhcpState>,
     link: &Mutex<LinkState>,
+    sms: &Mutex<SmsState>,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -642,6 +766,8 @@ fn serve(
             | Profile::DhcpWithDns
     );
 
+    let is_sms = matches!(profile, Profile::Sms | Profile::SmsRefusesDelete);
+
     let is_renew = matches!(
         profile,
         Profile::RenewChanges
@@ -729,6 +855,36 @@ fn serve(
                 (200, "<response>OK</response>".to_string())
             }
         }
+        ("POST", "/api/sms/sms-list") if is_sms => {
+            let page = first_tag(&payload, "PageIndex")
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1);
+            (200, sms.lock().map(|s| s.list(page)).unwrap_or_default())
+        }
+        ("POST", "/api/sms/delete-sms") if is_sms => {
+            counters.sms_writes.fetch_add(1, Ordering::SeqCst);
+            if profile == Profile::SmsRefusesDelete {
+                (200, NO_RIGHT_100003.to_string())
+            } else {
+                let index = first_tag(&payload, "Index").unwrap_or_default();
+                if let Ok(mut s) = sms.lock() {
+                    s.rows.retain(|(i, ..)| *i != index);
+                }
+                (200, "<response>OK</response>".to_string())
+            }
+        }
+        ("POST", "/api/sms/set-read") if is_sms => {
+            counters.sms_writes.fetch_add(1, Ordering::SeqCst);
+            let index = first_tag(&payload, "Index").unwrap_or_default();
+            if let Ok(mut s) = sms.lock() {
+                for row in s.rows.iter_mut() {
+                    if row.0 == index {
+                        row.3 = false;
+                    }
+                }
+            }
+            (200, "<response>OK</response>".to_string())
+        }
         ("POST", "/api/user/login") => {
             counters.logins.fetch_add(1, Ordering::SeqCst);
             (200, "<response>OK</response>".to_string())
@@ -798,6 +954,8 @@ mod tests {
     use super::*;
     use crate::headless;
     use crate::router::HuaweiClient;
+    use crate::write::VerifyLimits;
+    use std::time::Duration;
 
     fn signed_in(profile: Profile) -> (MockCpe, HuaweiClient) {
         let mock = MockCpe::start(profile);
@@ -1155,5 +1313,138 @@ mod tests {
             1,
             "exactly one POST even though the device already matched"
         );
+    }
+
+    /// The reader's whole point: opening and listing cost reads, never a write.
+    #[test]
+    fn reading_the_inbox_posts_nothing() {
+        let mock = MockCpe::start(Profile::Sms);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+        let after_login = mock.posts();
+
+        let extras = headless::fetch_extras(&mut c);
+        assert_eq!(extras.sms_inbox.len(), 3, "{:?}", extras.sms_error);
+        // This firmware takes the list as a POST (the heart of the old bug), so
+        // `posts` must grow by exactly that one request and no write may run.
+        assert_eq!(
+            mock.posts() - after_login,
+            1,
+            "listing costs one POST on this firmware and nothing else"
+        );
+        assert_eq!(
+            mock.sms_writes(),
+            0,
+            "opening and listing must never delete or mark read"
+        );
+
+        assert_eq!(mock.sms_rows(), 3);
+        assert_eq!(mock.sms_unread(), vec![true, true, false]);
+    }
+
+    /// A delete is only a delete after the read-back says the row is gone.
+    #[test]
+    fn a_delete_is_removed_and_a_reread_confirms_it() {
+        let mock = MockCpe::start(Profile::Sms);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+
+        let cell = std::cell::RefCell::new(&mut c);
+        let limits = VerifyLimits {
+            reread: Duration::from_millis(10),
+            window: Duration::from_millis(400),
+        };
+        let reread = || -> Result<Vec<String>, crate::error::ApiError> {
+            let node = std::cell::RefCell::borrow_mut(&cell).sms_list(1)?;
+            Ok(crate::router::parse::parse_sms_list(&node)
+                .into_iter()
+                .filter_map(|m| m.index)
+                .collect())
+        };
+        let report = crate::write::run_delete(
+            &["4002".to_string()],
+            |i| {
+                std::cell::RefCell::borrow_mut(&cell)
+                    .sms_delete(i)
+                    .map(|_| ())
+            },
+            reread,
+            limits,
+            std::thread::sleep,
+        );
+        assert_eq!(report.deleted, 1, "{:?}", report.failed);
+        assert_eq!(mock.sms_rows(), 2, "the row must be gone from the device");
+    }
+
+    /// A firmware that refuses the path is reported as unsupported with its code,
+    /// and nothing is removed: a refusal is not a quiet success.
+    #[test]
+    fn a_firmware_without_the_delete_path_reports_100003() {
+        let mock = MockCpe::start(Profile::SmsRefusesDelete);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+
+        let cell = std::cell::RefCell::new(&mut c);
+        let limits = VerifyLimits {
+            reread: Duration::from_millis(10),
+            window: Duration::from_millis(200),
+        };
+        let reread = || -> Result<Vec<String>, crate::error::ApiError> {
+            let node = std::cell::RefCell::borrow_mut(&cell).sms_list(1)?;
+            Ok(crate::router::parse::parse_sms_list(&node)
+                .into_iter()
+                .filter_map(|m| m.index)
+                .collect())
+        };
+        let report = crate::write::run_delete(
+            &["4001".to_string()],
+            |i| {
+                std::cell::RefCell::borrow_mut(&cell)
+                    .sms_delete(i)
+                    .map(|_| ())
+            },
+            reread,
+            limits,
+            std::thread::sleep,
+        );
+        assert_eq!(report.deleted, 0);
+        let (index, why) = report.unsupported.clone().expect("the code must be named");
+        assert_eq!(index, "4001");
+        assert!(why.contains("100003"), "{why}");
+        assert_eq!(mock.sms_rows(), 3, "nothing may be removed");
+    }
+
+    /// Marking read is its own write, and the read-back is what proves it.
+    #[test]
+    fn mark_read_clears_the_flag_after_a_reread() {
+        let mock = MockCpe::start(Profile::Sms);
+        let mut c = HuaweiClient::new(mock.addr(), 2000);
+        c.login("admin", "demo").expect("mock login");
+
+        let cell = std::cell::RefCell::new(&mut c);
+        let limits = VerifyLimits {
+            reread: Duration::from_millis(10),
+            window: Duration::from_millis(400),
+        };
+        let reread = || -> Result<bool, crate::error::ApiError> {
+            let node = std::cell::RefCell::borrow_mut(&cell).sms_list(1)?;
+            Ok(crate::router::parse::parse_sms_list(&node)
+                .iter()
+                .find(|m| m.index.as_deref() == Some("4001"))
+                .is_some_and(|m| m.unread))
+        };
+        let report = crate::write::run_mark_read(
+            "4001",
+            |i| {
+                std::cell::RefCell::borrow_mut(&cell)
+                    .sms_set_read(i)
+                    .map(|_| ())
+            },
+            reread,
+            limits,
+            std::thread::sleep,
+        );
+        assert_eq!(report.deleted, 1, "{:?}", report.failed);
+        assert_eq!(mock.sms_unread(), vec![false, true, false]);
     }
 }

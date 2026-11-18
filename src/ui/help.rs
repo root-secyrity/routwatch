@@ -129,6 +129,31 @@ pub fn rows() -> Vec<KeyRow> {
             full: "bands: network mode / NR option",
         },
         KeyRow {
+            keys: "SMS: Enter",
+            short: "SMS: open a message",
+            full: "SMS: open the message under the cursor in the wrapped reader; Esc closes it. Opening never marks it read",
+        },
+        KeyRow {
+            keys: "SMS: space",
+            short: "SMS: mark / unmark",
+            full: "SMS: mark or unmark the row under the cursor; a marks every row and clears them again, and the mark count sits in the panel title",
+        },
+        KeyRow {
+            keys: "SMS: n / p",
+            short: "SMS: next / prev page",
+            full: "SMS: next / previous inbox page (20 rows a page, refused when there is no more)",
+        },
+        KeyRow {
+            keys: "SMS: d",
+            short: "SMS: delete, then y",
+            full: "SMS: delete the marked rows (or the one under the cursor); asks y first, needs a writable build, and reports every index that failed",
+        },
+        KeyRow {
+            keys: "SMS: m",
+            short: "SMS: mark read, then y",
+            full: "SMS: mark the open message read on the device; only by this key, never by opening it",
+        },
+        KeyRow {
             keys: "d / z",
             short: "DNS: type servers / DHCP",
             full: "DNS (8) and traffic: type servers / back to DHCP",

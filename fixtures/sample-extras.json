@@ -1,0 +1,33 @@
+{
+  "pin": {
+    "sim_state": "257",
+    "pin_state": "1",
+    "pin_retries": "3",
+    "puk_retries": "10"
+  },
+  "mobile_data": true,
+  "sms_inbox": [
+    {
+      "index": "4001",
+      "phone": "+0000000001",
+      "date": "2026-01-02 03:04:05",
+      "unread": true,
+      "content": "Synthetic message one: this body exists so the reader has something long and wrapped to show. It carries a second sentence, then a third, because a one-line body would prove nothing about word wrapping or about the room the detail pane gets on a 24-row frame."
+    },
+    {
+      "index": "4002",
+      "phone": "+0000000002",
+      "date": "2026-01-02 03:05:06",
+      "unread": true,
+      "content": "Synthetic message two."
+    },
+    {
+      "index": "4003",
+      "phone": "+0000000003",
+      "date": "2026-01-02 03:06:07",
+      "unread": false,
+      "content": "Synthetic message three, already read on the device."
+    }
+  ],
+  "sms_error": null
+}

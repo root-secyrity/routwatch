@@ -2345,6 +2345,55 @@ pub fn clients_tab(f: &mut Frame, area: Rect, app: &App) {
 
 // --------------------------------------------------------------------- sms
 
+/// Word wrap for a message body. Explicit newlines from the device are kept,
+/// and a word wider than the pane is the only thing ever split: a body is read,
+/// not cut to fit.
+pub(crate) fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if width == 0 {
+        return out;
+    }
+    for raw in text.split('\n') {
+        let mut line = String::new();
+        for word in raw.split_whitespace() {
+            push_word(&mut out, &mut line, width, word);
+        }
+        out.push(line);
+    }
+    out
+}
+
+fn push_word(out: &mut Vec<String>, line: &mut String, width: usize, word: &str) {
+    if line.is_empty() {
+        if word.chars().count() <= width {
+            line.push_str(word);
+            return;
+        }
+        let mut rest = word;
+        while rest.chars().count() > width {
+            let cut = rest
+                .char_indices()
+                .nth(width)
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+            out.push(rest[..cut].to_string());
+            rest = &rest[cut..];
+        }
+        line.push_str(rest);
+        return;
+    }
+    if line.chars().count() + 1 + word.chars().count() <= width {
+        line.push(' ');
+        line.push_str(word);
+    } else {
+        out.push(std::mem::take(line));
+        push_word(out, line, width, word);
+    }
+}
+
+/// The inbox list, the detail pane under it, and the counters above both when
+/// the body is tall enough. Selection, the open message and the page all live in
+/// `app.sms`; this function draws state, it never fetches or writes.
 pub fn sms_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let Some(s) = &app.snap else {
@@ -2354,126 +2403,255 @@ pub fn sms_tab(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     };
-    let [counters_area, inbox_area] =
-        Layout::vertical([Constraint::Length(8), Constraint::Min(4)]).areas(area);
-
-    let mut lines = Vec::new();
-    match &s.sms {
-        Some(c) => {
-            lines.push(kv(
-                "inbox",
-                format!("{} ({} unread)", c.inbox, c.unread),
-                Style::default().fg(t.fg),
-                t.dim,
-            ));
-            lines.push(kv(
-                "outbox",
-                c.outbox.to_string(),
-                Style::default().fg(t.fg),
-                t.dim,
-            ));
-            lines.push(kv(
-                "draft",
-                c.draft.to_string(),
-                Style::default().fg(t.fg),
-                t.dim,
-            ));
-            lines.push(kv(
-                "capacity",
-                c.max.to_string(),
-                Style::default().fg(t.fg),
-                t.dim,
-            ));
-        }
-        None => lines.push(Line::from(Span::styled(
-            "counters unavailable",
-            Style::default().fg(t.dim),
-        ))),
+    if area.height < 3 || area.width < 6 {
+        return;
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "sending is not enabled in this build",
-        Style::default().fg(t.dim),
-    )));
-    f.render_widget(
-        Paragraph::new(lines).block(panel("COUNTERS".into(), t)),
-        counters_area,
-    );
 
-    let mut body = Vec::new();
-    match &app.extras {
-        None => body.push(Line::from(Span::styled(
+    // Counters are a nicety: the reader gets the height when the frame is short.
+    let (counters_area, rest) = if area.height >= 20 {
+        let [c, r] = Layout::vertical([Constraint::Length(6), Constraint::Min(4)]).areas(area);
+        (Some(c), r)
+    } else {
+        (None, area)
+    };
+    if let Some(ca) = counters_area {
+        let mut lines = Vec::new();
+        match &s.sms {
+            Some(c) => {
+                lines.push(kv(
+                    "inbox",
+                    format!("{} ({} unread)", c.inbox, c.unread),
+                    Style::default().fg(t.fg),
+                    t.dim,
+                ));
+                lines.push(kv(
+                    "outbox",
+                    c.outbox.to_string(),
+                    Style::default().fg(t.fg),
+                    t.dim,
+                ));
+                lines.push(kv(
+                    "draft",
+                    c.draft.to_string(),
+                    Style::default().fg(t.fg),
+                    t.dim,
+                ));
+                lines.push(kv(
+                    "capacity",
+                    c.max.to_string(),
+                    Style::default().fg(t.fg),
+                    t.dim,
+                ));
+            }
+            None => lines.push(Line::from(Span::styled(
+                "counters unavailable",
+                Style::default().fg(t.dim),
+            ))),
+        }
+        f.render_widget(Paragraph::new(lines).block(panel("COUNTERS".into(), t)), ca);
+    }
+
+    let (list_area, detail_area) = if rest.height >= 12 {
+        let list_h = ((rest.height as u32 * 4) / 10).clamp(4, 20) as u16;
+        let [l, d] = Layout::vertical([Constraint::Length(list_h), Constraint::Min(4)]).areas(rest);
+        (l, Some(d))
+    } else {
+        (rest, None)
+    };
+
+    sms_list(f, list_area, app, t);
+    if let Some(da) = detail_area {
+        sms_detail(f, da, app, t);
+    }
+}
+
+fn sms_list(f: &mut Frame, area: Rect, app: &App, t: &crate::theme::Theme) {
+    let mut title = String::from("INBOX");
+    let range = app.sms_range();
+    if !range.is_empty() {
+        title.push_str(&format!(" · {range}"));
+    }
+    if !app.sms.selected.is_empty() {
+        title.push_str(&format!(" · {} selected", app.sms.selected.len()));
+    }
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    if let Some(err) = app.extras.as_ref().and_then(|x| x.sms_error.as_ref()) {
+        lines.push(Line::from(Span::styled(
+            format!("blocked: {err}"),
+            Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            "the request carries the Ascending field this firmware needs, so the answer above",
+            Style::default().fg(t.fg),
+        )));
+        lines.push(Line::from(Span::styled(
+            "is the device's own: nothing was written and nothing was marked read.",
+            Style::default().fg(t.fg),
+        )));
+    } else if app.extras.is_none() {
+        lines.push(Line::from(Span::styled(
             if app.extras_requested {
                 "reading inbox…"
             } else {
                 "press R to read the inbox"
             },
             Style::default().fg(t.dim),
-        ))),
-        Some(x) => {
-            if let Some(err) = &x.sms_error {
-                body.push(Line::from(Span::styled(
-                    format!("blocked: {err}"),
-                    Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
-                )));
-                body.push(Line::from(""));
-                body.push(Line::from(Span::styled(
-                    "the counters work, the message bodies do not: this firmware refuses",
+        )));
+    } else if app.sms_rows().is_empty() {
+        lines.push(Line::from(Span::styled(
+            "inbox is empty",
+            Style::default().fg(t.dim),
+        )));
+    } else {
+        // Optional columns go before the text does: an index is always shown,
+        // the date and then the sender are dropped as the pane narrows.
+        // A column keeps one blank cell after it, so a value that fills its
+        // width exactly can never run into the next one.
+        let show_date = inner_w >= 68;
+        let show_from = inner_w >= 44;
+        let fixed = 2 + 6 + if show_from { 18 } else { 0 } + if show_date { 20 } else { 0 };
+        let text_w = inner_w.saturating_sub(fixed).max(4);
+        let mut head = vec![Span::styled("    idx  ", Style::default().fg(t.dim))];
+        if show_from {
+            head.push(Span::styled(pad("from", 18), Style::default().fg(t.dim)));
+        }
+        if show_date {
+            head.push(Span::styled(pad("date", 20), Style::default().fg(t.dim)));
+        }
+        head.push(Span::styled("text", Style::default().fg(t.dim)));
+        lines.push(Line::from(head));
+
+        let rows = app.sms_rows();
+        let offset = if app.sms.cursor >= inner_h.saturating_sub(1) {
+            app.sms.cursor + 2 - inner_h
+        } else {
+            0
+        };
+        let room = inner_h.saturating_sub(1);
+        for (i, m) in rows.iter().enumerate().skip(offset).take(room) {
+            let index = m.index.as_deref().unwrap_or("-");
+            let marked = app.sms.selected.contains(index);
+            let at_cursor = i == app.sms.cursor;
+            let mut spans = vec![
+                Span::styled(
+                    if marked { "* " } else { "  " },
+                    Style::default().fg(if marked { t.accent } else { t.dim }),
+                ),
+                Span::styled(
+                    if m.unread { "● " } else { "  " },
+                    Style::default().fg(if m.unread { t.accent } else { t.dim }),
+                ),
+                Span::styled(
+                    pad(index, 6),
+                    Style::default().fg(if at_cursor { t.accent } else { t.fg }),
+                ),
+            ];
+            if show_from {
+                spans.push(Span::styled(
+                    pad(m.phone.as_deref().unwrap_or("-"), 18),
                     Style::default().fg(t.fg),
-                )));
-                body.push(Line::from(Span::styled(
-                    "sms/sms-list as a malformed request (error 100005).",
-                    Style::default().fg(t.fg),
-                )));
-                body.push(Line::from(""));
-                body.push(Line::from(Span::styled(
-                    "read them at http://192.168.8.1 → SMS, or with the HUAWEI AI Life app.",
+                ));
+            }
+            if show_date {
+                spans.push(Span::styled(
+                    pad(m.date.as_deref().unwrap_or("-"), 20),
+                    Style::default().fg(t.dim),
+                ));
+            }
+            let flat = m
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            spans.push(Span::styled(
+                truncate(&flat, text_w),
+                Style::default().fg(t.fg),
+            ));
+            let mut line = Line::from(spans);
+            if at_cursor {
+                line = line.style(Style::default().bg(t.selected));
+            }
+            lines.push(line);
+        }
+    }
+    f.render_widget(Paragraph::new(lines).block(panel(title, t)), area);
+}
+
+fn sms_detail(f: &mut Frame, area: Rect, app: &App, t: &crate::theme::Theme) {
+    let open = app.sms.open.as_ref().and_then(|want| {
+        app.sms_rows()
+            .iter()
+            .find(|m| m.index.as_deref() == Some(want.as_str()))
+    });
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    let title;
+    match open {
+        None => {
+            title = "MESSAGE".to_string();
+            lines.push(Line::from(Span::styled(
+                "no message open · Enter opens the row under the cursor",
+                Style::default().fg(t.dim),
+            )));
+            lines.push(Line::from(Span::styled(
+                "sending is not enabled in this build",
+                Style::default().fg(t.dim),
+            )));
+        }
+        Some(m) => {
+            let body = m.content.as_deref().unwrap_or("");
+            let wrapped = wrap_words(body, inner_w.max(1));
+            title = format!("MESSAGE · index {}", m.index.as_deref().unwrap_or("-"));
+            let head = vec![
+                Span::styled(
+                    format!("index {} · ", m.index.as_deref().unwrap_or("-")),
+                    Style::default().fg(t.dim),
+                ),
+                Span::styled(
+                    m.phone.as_deref().unwrap_or("-").to_string(),
                     Style::default().fg(t.accent),
+                ),
+                Span::styled(
+                    format!(" · {}", m.date.as_deref().unwrap_or("-")),
+                    Style::default().fg(t.dim),
+                ),
+                Span::styled(
+                    format!(
+                        " · {} chars · {} lines · {}",
+                        body.chars().count(),
+                        wrapped.len(),
+                        if m.unread { "unread" } else { "read" }
+                    ),
+                    Style::default().fg(t.dim),
+                ),
+            ];
+            lines.push(Line::from(head));
+            lines.push(Line::from(""));
+            // Scroll stays inside the pane: the header never scrolls away, so
+            // the reader always knows which message is on screen.
+            let room = inner_h.saturating_sub(3);
+            let scroll = (app.sms.scroll as usize).min(wrapped.len().saturating_sub(1));
+            for line in wrapped.iter().skip(scroll).take(room) {
+                lines.push(Line::from(Span::styled(
+                    line.clone(),
+                    Style::default().fg(t.fg),
                 )));
-            } else if x.sms_inbox.is_empty() {
-                body.push(Line::from(Span::styled(
-                    "inbox is empty",
+            }
+            if wrapped.len() > scroll + room {
+                lines.push(Line::from(Span::styled(
+                    format!("… {} more lines", wrapped.len() - scroll - room),
                     Style::default().fg(t.dim),
                 )));
-            } else {
-                body.push(Line::from(Span::styled(
-                    format!("{:<8} {:<16} {:<18} {}", "index", "phone", "date", "text"),
-                    Style::default().fg(t.dim),
-                )));
-                for m in x
-                    .sms_inbox
-                    .iter()
-                    .take(inbox_area.height.saturating_sub(2) as usize)
-                {
-                    body.push(Line::from(vec![
-                        Span::styled(
-                            if m.unread { "● " } else { "  " },
-                            Style::default().fg(if m.unread { t.accent } else { t.dim }),
-                        ),
-                        Span::styled(
-                            pad(m.phone.as_deref().unwrap_or("-"), 16),
-                            Style::default().fg(t.fg),
-                        ),
-                        Span::styled(
-                            pad(m.date.as_deref().unwrap_or("-"), 18),
-                            Style::default().fg(t.dim),
-                        ),
-                        Span::styled(
-                            truncate(
-                                m.content.as_deref().unwrap_or(""),
-                                inbox_area.width.saturating_sub(48) as usize,
-                            ),
-                            Style::default().fg(t.fg),
-                        ),
-                    ]));
-                }
             }
         }
     }
-    f.render_widget(
-        Paragraph::new(body).block(panel("INBOX".into(), t)),
-        inbox_area,
-    );
+    f.render_widget(Paragraph::new(lines).block(panel(title, t)), area);
 }
 
 // --------------------------------------------------------------------- dns

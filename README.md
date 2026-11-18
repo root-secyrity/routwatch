@@ -103,6 +103,27 @@ question.
   `--allow-write` on the CLI. `--dry-run` prints the exact payload and sends nothing.
 - Band changes drop the link for 10–30 seconds. The UI says so before you do it.
 
+## SMS: read, mark read, delete
+
+Section 6 lists the inbox with a cursor and a selection, and opens a message in a
+wrapped reader underneath (`Enter`, `Esc` to close). Opening writes nothing: no
+read receipt, no POST.
+
+```sh
+routwatch sms list                 # inbox, page by page, full text per row
+routwatch sms list --folder draft --json --limit 50
+routwatch sms read 4001            # the body on stdout, uncut
+routwatch sms delete 4001 --allow-write --yes
+routwatch sms delete --all --allow-write        # prints the plan, sends nothing
+```
+
+Delete and mark-read are the only SMS writes. Both need the same gate as band
+changes: `--allow-write` on the CLI, `--dry-run` (or no `--yes`) to see the payload,
+and `y` inside the TUI. Every delete is verified by re-reading the inbox and
+reported per index, and a firmware that refuses the path is reported as
+"unsupported (100003)", not as done. Neither path has been measured on the
+H122-373 (see [limits.md](docs/limits.md)); the simulator is where they are tested.
+
 ## Limits, the short list
 
 - **5G per-field metrics can be empty** on some firmware: the signal panel shows
@@ -123,6 +144,10 @@ question.
   also lists the ping measured before the transfer and the one measured during it,
   so bufferbloat is visible next to the rate. `routwatch speedtest --history`
   prints the saved rows and `--no-save` keeps a run out of the file.
+- **SMS delete is verified, not assumed**: each index is posted on its own and the
+  verdict comes from re-reading the inbox, so a refusal is listed with its code
+  and a half-finished bulk delete says which rows failed. Delete and mark-read
+  have not been measured on a real H122-373 yet; the inbox itself has.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
   (`0600`, last 1440 rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`

@@ -616,6 +616,34 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
             ));
         }
     }
+    // SMS: the marks, the last outcome and a refusal all belong on this row.
+    // The list title repeats the count, because a pane can be scrolled away.
+    if app.tab == crate::app::Tab::Sms {
+        if !app.sms.selected.is_empty() {
+            spans.push(Span::styled(
+                format!(" · {} selected", app.sms.selected.len()),
+                Style::default().fg(t.accent),
+            ));
+        }
+        if app.sms.busy {
+            spans.push(Span::styled(
+                " · working…".to_string(),
+                Style::default().fg(t.warn),
+            ));
+        }
+        if let Some(line) = &app.sms.notice {
+            spans.push(Span::styled(
+                format!(" · {line}"),
+                Style::default().fg(t.accent),
+            ));
+        }
+        if let Some(why) = &app.sms.blocked {
+            spans.push(Span::styled(
+                format!(" · {why}"),
+                Style::default().fg(t.danger),
+            ));
+        }
+    }
     let mut used = spans
         .iter()
         .map(|s| s.content.chars().count())
@@ -960,6 +988,9 @@ pub fn tab_from_key(c: char) -> Option<Tab> {
 pub fn view_note(app: &App) -> String {
     app.view.name().to_string()
 }
+
+#[cfg(test)]
+mod sms_tests;
 
 #[cfg(test)]
 mod tests {

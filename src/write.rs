@@ -757,6 +757,204 @@ pub fn renew_ip(
     }
 }
 
+/// The two codes that mean "this box has no such operation", not "try again".
+/// Huawei's published table names 100002 ERROR_NOT_SUPPORT and 100003
+/// ERROR_NO_RIGHT; a delete refused with either is a capability answer, and the
+/// caller must disable its keys instead of retrying.
+pub const SMS_UNSUPPORTED_CODES: [u32; 2] = [100002, 100003];
+
+/// Which SMS operation a plan or a report belongs to. The two share the gate,
+/// the confirmation and the read-back window, and differ only in what counts as
+/// settled: a row that is gone, or a row the device now reports as read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmsOp {
+    Delete,
+    MarkRead,
+}
+
+impl SmsOp {
+    pub fn verb(&self) -> &'static str {
+        match self {
+            SmsOp::Delete => "deleted",
+            SmsOp::MarkRead => "marked read",
+        }
+    }
+}
+
+/// What the reread proved, per row. `deleted` is the verified count only, never
+/// the number of POSTs that came back OK: an answer is not a result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsReport {
+    pub op: SmsOp,
+    pub attempted: usize,
+    pub deleted: usize,
+    /// (index, reason) for every row that is not proven settled.
+    pub failed: Vec<(String, String)>,
+    /// (index, code) when the firmware refused the whole operation.
+    pub unsupported: Option<(String, String)>,
+    pub rereads: u32,
+}
+
+impl SmsReport {
+    fn new(op: SmsOp, attempted: usize) -> Self {
+        SmsReport {
+            op,
+            attempted,
+            deleted: 0,
+            failed: Vec::new(),
+            unsupported: None,
+            rereads: 0,
+        }
+    }
+
+    /// One line for the status bar: both counts, always.
+    pub fn summary(&self) -> String {
+        let mut line = format!("{} {} of {}", self.op.verb(), self.deleted, self.attempted);
+        if !self.failed.is_empty() {
+            line.push_str(&format!(" · {} failed", self.failed.len()));
+        }
+        if let Some((_, code)) = &self.unsupported {
+            line.push_str(&format!(" · unsupported ({code})"));
+        }
+        line
+    }
+
+    /// Per-row detail, for the CLI and the write log.
+    pub fn details(&self) -> Vec<String> {
+        self.failed
+            .iter()
+            .map(|(index, why)| format!("index {index}: {why}"))
+            .collect()
+    }
+
+    pub fn settled(&self) -> bool {
+        self.failed.is_empty() && self.unsupported.is_none()
+    }
+}
+
+/// Is this refusal the firmware saying the operation does not exist?
+fn unsupported_code(e: &ApiError) -> Option<String> {
+    // The code is what says "this box has no such path", whichever variant the
+    // transport mapped it to (100002 not-support, 100003 no-right).
+    let code = match e {
+        ApiError::Unsupported(c)
+        | ApiError::Denied(c)
+        | ApiError::Invalid(c)
+        | ApiError::Busy(c)
+        | ApiError::Router(c) => *c,
+        _ => return None,
+    };
+    SMS_UNSUPPORTED_CODES
+        .contains(&code)
+        .then(|| code.to_string())
+}
+
+/// Delete the rows one index at a time, then prove it with one reread loop.
+///
+/// The firmware takes a single index per request, so a bulk delete is a loop
+/// with a result per row; the first refusal that names the operation stops it,
+/// because carrying on would keep writing to a path this box does not have.
+pub fn run_delete<D, R, S>(
+    indexes: &[String],
+    mut post: D,
+    reread: R,
+    limits: VerifyLimits,
+    sleep: S,
+) -> SmsReport
+where
+    D: FnMut(&str) -> Result<(), ApiError>,
+    R: FnMut() -> Result<Vec<String>, ApiError>,
+    S: FnMut(Duration),
+{
+    let mut report = SmsReport::new(SmsOp::Delete, indexes.len());
+    let mut posted: Vec<String> = Vec::new();
+    for (at, index) in indexes.iter().enumerate() {
+        match post(index) {
+            Ok(()) => posted.push(index.clone()),
+            Err(e) => {
+                if let Some(code) = unsupported_code(&e) {
+                    report
+                        .failed
+                        .push((index.clone(), format!("unsupported ({code})")));
+                    report.unsupported = Some((index.clone(), code));
+                    for skipped in &indexes[at + 1..] {
+                        report
+                            .failed
+                            .push((skipped.clone(), "not attempted".to_string()));
+                    }
+                    break;
+                }
+                report
+                    .failed
+                    .push((index.clone(), format!("refused ({e})")));
+            }
+        }
+    }
+    if posted.is_empty() {
+        return report;
+    }
+    let (hit, attempts, last_err) = poll_with(
+        reread,
+        |present: &Vec<String>| !present.iter().any(|i| posted.contains(i)),
+        limits,
+        sleep,
+    );
+    report.rereads = attempts;
+    if hit.is_some() {
+        report.deleted += posted.len();
+    } else {
+        for index in &posted {
+            let why = match &last_err {
+                Some(e) => format!("still present ({e})"),
+                None => "still present".to_string(),
+            };
+            report.failed.push((index.clone(), why));
+        }
+    }
+    report
+}
+
+/// Mark one message read, then prove it: the reread must report it not unread.
+/// The flag is a device fact, so this is the same poll the band write uses.
+pub fn run_mark_read<D, R, S>(
+    index: &str,
+    mut post: D,
+    reread: R,
+    limits: VerifyLimits,
+    sleep: S,
+) -> SmsReport
+where
+    D: FnMut(&str) -> Result<(), ApiError>,
+    R: FnMut() -> Result<bool, ApiError>,
+    S: FnMut(Duration),
+{
+    let mut report = SmsReport::new(SmsOp::MarkRead, 1);
+    if let Err(e) = post(index) {
+        match unsupported_code(&e) {
+            Some(code) => {
+                report
+                    .failed
+                    .push((index.to_string(), format!("unsupported ({code})")));
+                report.unsupported = Some((index.to_string(), code));
+            }
+            None => report
+                .failed
+                .push((index.to_string(), format!("refused ({e})"))),
+        }
+        return report;
+    }
+    let (hit, attempts, _) = poll_with(reread, |still_unread: &bool| !*still_unread, limits, sleep);
+    report.rereads = attempts;
+    match hit {
+        Some(_) => report.deleted = 1,
+        None => report.failed.push((
+            index.to_string(),
+            "still unread after the write".to_string(),
+        )),
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

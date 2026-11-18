@@ -203,6 +203,8 @@ enum Cmd {
         inbox: bool,
         #[arg(long)]
         json: bool,
+        #[command(subcommand)]
+        op: Option<SmsCmd>,
     },
     /// Device details including SIM state and the mobile-data switch
     Device {
@@ -332,6 +334,10 @@ enum Cmd {
         /// only: nothing is written back)
         #[arg(long, value_name = "FILE")]
         history_fixture: Option<PathBuf>,
+        /// Render the SMS and Device panes from a saved DeviceExtras JSON
+        /// (review only: nothing is written back)
+        #[arg(long, value_name = "FILE")]
+        extras_fixture: Option<PathBuf>,
         /// Layout review: open the apply-confirm modal (sends nothing)
         #[arg(long, hide = true)]
         demo_confirm: bool,
@@ -342,6 +348,49 @@ enum Cmd {
         /// screenshots and for checking a theme without a terminal
         #[arg(long)]
         ansi: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SmsCmd {
+    /// List one inbox page; every row is printed whole (no clipping)
+    List {
+        /// inbox, outbox or draft
+        #[arg(long, default_value = "inbox", value_name = "FOLDER")]
+        folder: String,
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Stop after this many rows
+        #[arg(long, value_name = "N")]
+        limit: Option<u32>,
+        /// Page number, 1-based
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+    },
+    /// Print one message body in full, exactly as the device stored it
+    Read {
+        /// The value of the message's Index field
+        index: String,
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete messages - destructive, needs --allow-write and --yes
+    Delete {
+        /// Indexes to delete, one per argument
+        indexes: Vec<String>,
+        /// Delete every message in the inbox
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        allow_write: bool,
+        /// Confirm the delete; without it the command prints the plan only
+        #[arg(long)]
+        yes: bool,
+        /// Print the plan and send nothing
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -1183,7 +1232,36 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 other => Err(ApiError::WriteFailed(other.label())),
             }
         }
-        Some(Cmd::Sms { inbox, json }) => {
+        Some(Cmd::Sms { inbox, json, op }) => {
+            if let Some(op) = op {
+                let cfg = cfg.clone();
+                return match op {
+                    SmsCmd::List {
+                        folder,
+                        json,
+                        limit,
+                        page,
+                    } => sms_list_cmd(&cfg, cli.password_stdin, &folder, page, limit, json),
+                    SmsCmd::Read { index, json } => {
+                        sms_read_cmd(&cfg, cli.password_stdin, &index, json)
+                    }
+                    SmsCmd::Delete {
+                        indexes,
+                        all,
+                        allow_write,
+                        yes,
+                        dry_run,
+                    } => sms_delete_cmd(
+                        &cfg,
+                        cli.password_stdin,
+                        &indexes,
+                        all,
+                        allow_write,
+                        yes,
+                        dry_run,
+                    ),
+                };
+            }
             let mut client = connect(&cfg, cli.password_stdin)?;
             let counters = client
                 .get("sms/sms-count")
@@ -1671,6 +1749,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             ref size,
             ref fixture,
             ref history_fixture,
+            ref extras_fixture,
             demo_confirm,
             demo_settings,
             ansi,
@@ -1699,6 +1778,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 snap = routwatch::report::redacted(&snap);
             }
             app.on_snapshot(snap, 0);
+            if let Some(p) = extras_fixture {
+                let raw = std::fs::read_to_string(p)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
+                let extras: routwatch::model::DeviceExtras = serde_json::from_str(&raw)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
+                app.on_extras(extras);
+                app.mark_extras_requested();
+            }
             if let Some(p) = history_fixture {
                 let text = std::fs::read_to_string(p)
                     .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
@@ -1842,6 +1929,251 @@ fn read_stdin_password(enabled: bool) -> Result<Option<String>, ApiError> {
 
 fn read_password(cfg: &config::Config, stdin_password: Option<&str>) -> Result<String, ApiError> {
     config::resolve_password(&cfg.router.password, stdin_password).map(|(password, _)| password)
+}
+
+/// BoxType the firmware accepts for each folder name. Inbox is the only value
+/// measured on the device; outbox and draft are the firmware's own numbering
+/// and stay unverified (docs/limits.md says so).
+fn sms_box(folder: &str) -> Result<u8, ApiError> {
+    match folder {
+        "inbox" => Ok(1),
+        "outbox" => Ok(2),
+        "draft" => Ok(3),
+        other => Err(ApiError::Config(format!(
+            "unknown SMS folder {other:?}: use inbox, outbox or draft"
+        ))),
+    }
+}
+
+fn sms_list_cmd(
+    cfg: &config::Config,
+    stdin_password: bool,
+    folder: &str,
+    page: u32,
+    limit: Option<u32>,
+    json: bool,
+) -> Result<(), ApiError> {
+    let box_type = sms_box(folder)?;
+    let mut client = connect(cfg, stdin_password)?;
+    let mut rows = Vec::new();
+
+    let mut page = page.max(1);
+    let first = page;
+    loop {
+        match client.sms_list_in(page, box_type) {
+            Ok(node) => {
+                let mut batch = parse::parse_sms_list(&node);
+                if batch.is_empty() {
+                    break;
+                }
+                rows.append(&mut batch);
+                if let Some(cap) = limit {
+                    if rows.len() as u32 >= cap {
+                        break;
+                    }
+                }
+                page += 1;
+                if page - first >= 24 {
+                    break;
+                }
+            }
+            Err(e) => {
+                client.logout();
+                return Err(ApiError::WriteFailed(format!(
+                    "{folder} page {page}: {e} ({})",
+                    e.class()
+                )));
+            }
+        }
+    }
+    if let Some(cap) = limit {
+        rows.truncate(cap as usize);
+    }
+    client.logout();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "folder": folder,
+                "page": first,
+                "messages": rows,
+            }))
+            .unwrap()
+        );
+        return Ok(());
+    }
+    println!("{folder} page {first}: {} messages", rows.len());
+    for m in &rows {
+        // The text is printed whole: clipping belongs to the TUI, never to a
+        // command whose output someone may pipe into a file.
+        println!(
+            "{}  {}  {}  {}{}",
+            m.index.as_deref().unwrap_or("-"),
+            m.phone.as_deref().unwrap_or("-"),
+            m.date.as_deref().unwrap_or("-"),
+            if m.unread { "unread  " } else { "" },
+            m.content.as_deref().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+fn sms_read_cmd(
+    cfg: &config::Config,
+    stdin_password: bool,
+    index: &str,
+    json: bool,
+) -> Result<(), ApiError> {
+    let mut client = connect(cfg, stdin_password)?;
+    let mut found = None;
+    for page in 1..=25u32 {
+        match client.sms_list(page) {
+            Ok(node) => {
+                let rows = parse::parse_sms_list(&node);
+                if rows.is_empty() {
+                    break;
+                }
+                found = rows.into_iter().find(|m| m.index.as_deref() == Some(index));
+                if found.is_some() {
+                    break;
+                }
+            }
+            Err(e) => {
+                client.logout();
+                return Err(ApiError::WriteFailed(format!("inbox page {page}: {e}")));
+            }
+        }
+    }
+    client.logout();
+    let Some(m) = found else {
+        // A missing index is a failure the caller can act on, never an empty
+        // success that looks like an empty message.
+        eprintln!("routwatch: no message with index {index} in the inbox");
+        return Err(ApiError::Quiet(1));
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "index": m.index,
+                "phone": m.phone,
+                "date": m.date,
+                "unread": m.unread,
+                "content": m.content,
+            }))
+            .unwrap()
+        );
+    } else {
+        // Nothing is wrapped, shortened or re-ordered here: the terminal owns
+        // direction and width, so the reader copies what the device stored.
+        print!("{}", m.content.as_deref().unwrap_or(""));
+        println!();
+    }
+    Ok(())
+}
+
+fn sms_delete_cmd(
+    cfg: &config::Config,
+    stdin_password: bool,
+    indexes: &[String],
+    all: bool,
+    allow_write: bool,
+    yes: bool,
+    dry_run: bool,
+) -> Result<(), ApiError> {
+    if !dry_run && !allow_write {
+        eprintln!(
+            "sms delete writes to the router: pass --allow-write, or --dry-run to see the plan"
+        );
+        return Err(ApiError::Quiet(3));
+    }
+    let mut client = connect(cfg, stdin_password)?;
+    let mut targets: Vec<String> = indexes.to_vec();
+    if all || targets.is_empty() {
+        // The plan is read from the device, not assumed: every index the inbox
+        // answers with, page after page.
+        targets.clear();
+        for page in 1..=25u32 {
+            match client.sms_list(page) {
+                Ok(node) => {
+                    let rows = parse::parse_sms_list(&node);
+                    if rows.is_empty() {
+                        break;
+                    }
+                    for m in rows {
+                        if let Some(i) = m.index {
+                            targets.push(i);
+                        }
+                    }
+                }
+                Err(e) => {
+                    client.logout();
+                    return Err(ApiError::WriteFailed(format!("inbox page {page}: {e}")));
+                }
+            }
+        }
+    }
+    if targets.is_empty() {
+        client.logout();
+        println!("nothing to delete: the inbox is empty");
+        return Ok(());
+    }
+    if dry_run || !yes {
+        client.logout();
+        if dry_run {
+            println!("plan: delete {} messages", targets.len());
+        } else {
+            println!("plan: delete {} messages", targets.len());
+            eprintln!("nothing was sent: pass --yes to confirm the delete");
+            return Err(ApiError::Quiet(3));
+        }
+        for i in &targets {
+            println!("  index {i}");
+        }
+        return Ok(());
+    }
+
+    let cell = std::cell::RefCell::new(&mut client);
+    let limits = routwatch::write::VerifyLimits::from_secs(cfg.app.verify_secs);
+    let sleep = |d: std::time::Duration| std::thread::sleep(d);
+    let reread = || -> Result<Vec<String>, ApiError> {
+        let mut seen = Vec::new();
+        for page in 1..=25u32 {
+            let node = std::cell::RefCell::borrow_mut(&cell).sms_list(page)?;
+            let rows = parse::parse_sms_list(&node);
+            if rows.is_empty() {
+                break;
+            }
+            for m in &rows {
+                if let Some(i) = &m.index {
+                    seen.push(i.clone());
+                }
+            }
+        }
+        Ok(seen)
+    };
+    let report = routwatch::write::run_delete(
+        &targets,
+        |i| {
+            std::cell::RefCell::borrow_mut(&cell)
+                .sms_delete(i)
+                .map(|_| ())
+        },
+        reread,
+        limits,
+        sleep,
+    );
+    std::cell::RefCell::borrow_mut(&cell).logout();
+    println!("{}", report.summary());
+    for line in report.details() {
+        println!("  {line}");
+    }
+    if !report.settled() {
+        // A delete that was not read back is a failure, whatever the POST said.
+        return Err(ApiError::Quiet(1));
+    }
+    Ok(())
 }
 
 fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, ApiError> {
@@ -2099,6 +2431,13 @@ fn drain(app: &mut App, rx: &Receiver<Ev>) {
             Ev::SpeedProgress(id, p) => app.on_speed_progress(id, p),
             Ev::SpeedDone(id, res) => app.on_speed_done(id, res.map(|b| *b)),
             Ev::Extras(extras) => app.on_extras(*extras),
+            Ev::SmsPage {
+                page,
+                messages,
+                total,
+                error,
+            } => app.on_sms_page(page, messages, total, error),
+            Ev::SmsReport(report) => app.on_sms_report(&report),
             Ev::Phase { phase, state } => app.on_phase(phase, state),
             Ev::Notice(msg) => {
                 app.note(msg.clone());
@@ -2329,6 +2668,7 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
     }
 
     let on_bands = app.tab == Tab::Bands;
+    let on_sms = app.tab == Tab::Sms;
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
     // Letters answer in either case: the reference tools (syswatch, diskwatch)
     // accept `v` exactly like `V`. Shift keeps its own meaning where one exists
@@ -2385,7 +2725,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             ));
         }
         KeyCode::Char('?') => app.help = !app.help,
-        KeyCode::Esc => app.help = false,
+        // Esc closes the overlay first; the sections below get it afterwards.
+        KeyCode::Esc if app.help => app.help = false,
         KeyCode::Char('v') => app.cycle_view(),
         KeyCode::Char('l') => app.toggle_lite(),
         KeyCode::Char('g') => app.graph = app.graph.next(),
@@ -2410,7 +2751,7 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             app.paused = !app.paused;
             let _ = tx.send(WorkerCmd::Pause(app.paused));
         }
-        KeyCode::Char('p') => {
+        KeyCode::Char('p') if app.tab != Tab::Sms => {
             app.open_input(InputKind::PingHost);
         }
         // --- Traffic / DNS tab ---
@@ -2505,6 +2846,56 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         KeyCode::Tab => app.select_tab(app.tab.next()),
         KeyCode::BackTab => app.select_tab(app.tab.prev()),
+        // --- SMS tab: the reader answers to its own keys and nothing else ---
+        KeyCode::Char(' ') if on_sms && app.sms.confirm.is_none() => {
+            app.sms_toggle();
+        }
+        KeyCode::Char('a') if on_sms && app.sms.confirm.is_none() => {
+            app.sms_select_all();
+        }
+        KeyCode::Char('d') if on_sms && app.sms.confirm.is_none() => {
+            if app.sms_plan_delete(false).is_none() {
+                if let Some(why) = app.sms_plan_refusal() {
+                    app.note(why);
+                }
+            }
+        }
+        KeyCode::Char('m') if on_sms && app.sms.confirm.is_none() => {
+            if app.sms_plan_mark_read().is_none() {
+                if let Some(why) = app.sms_plan_refusal() {
+                    app.note(why);
+                }
+            }
+        }
+        KeyCode::Char('y') if on_sms && app.sms.confirm.is_some() => {
+            if let Some(plan) = app.sms_take_plan() {
+                app.sms.busy = true;
+                let _ = tx.send(WorkerCmd::SmsOp(plan));
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Esc if on_sms && app.sms.confirm.is_some() => {
+            app.sms_cancel();
+        }
+        KeyCode::Char('n') if on_sms => {
+            if app.sms_page_next() {
+                let _ = tx.send(WorkerCmd::SmsList(app.sms.page));
+            }
+        }
+        KeyCode::Char('p') if on_sms => {
+            if app.sms_page_prev() {
+                let _ = tx.send(WorkerCmd::SmsList(app.sms.page));
+            }
+        }
+        KeyCode::Enter | KeyCode::Char('o') if on_sms => {
+            if !app.sms_open() {
+                app.note("no message under the cursor");
+            }
+        }
+        KeyCode::Esc if on_sms => {
+            app.sms_close();
+        }
+        KeyCode::PageDown => app.sms_scroll(8),
+        KeyCode::PageUp => app.sms_scroll(-8),
         // --- Bands tab ---
         KeyCode::Char(' ') if on_bands => {
             app.band_toggle();
@@ -2520,7 +2911,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         // --- selection movement ---
         KeyCode::Down | KeyCode::Char('j') => {
-            if on_bands {
+            if on_sms {
+                app.sms_move(1);
+            } else if on_bands {
                 app.band_cursor_move(1);
             } else if app.tab == Tab::Dns {
                 app.dns_preset_move(1);
@@ -2529,7 +2922,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if on_bands {
+            if on_sms {
+                app.sms_move(-1);
+            } else if on_bands {
                 app.band_cursor_move(-1);
             } else if app.tab == Tab::Dns {
                 app.dns_preset_move(-1);
