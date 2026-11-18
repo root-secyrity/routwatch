@@ -350,6 +350,14 @@ enum Cmd {
         /// Layout review: open the settings overlay
         #[arg(long, hide = true)]
         demo_settings: bool,
+        /// Layout review: open the first SMS message in the detail pane
+        /// (sends nothing)
+        #[arg(long, hide = true)]
+        demo_open: bool,
+        /// Fill the signal and throughput charts with N synthetic samples
+        /// (review only: nothing is read from the router and nothing is written)
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        demo_history: usize,
         /// Emit real ANSI colours instead of plain symbols - for README
         /// screenshots and for checking a theme without a terminal
         #[arg(long)]
@@ -1758,6 +1766,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             ref extras_fixture,
             demo_confirm,
             demo_settings,
+            demo_open,
+            demo_history,
             ansi,
         }) => {
             let (w, h) = parse_size(size)?;
@@ -1809,6 +1819,10 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             if demo_settings {
                 app.settings_open = true;
             }
+            if demo_open {
+                app.sms_open();
+            }
+            app.demo_history(demo_history);
             if ansi {
                 print!("{}", ui::render_ansi(&app, w, h));
             } else {

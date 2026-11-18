@@ -1418,6 +1418,56 @@ impl App {
         }
     }
 
+    /// Fill the five series the charts read with `samples` synthetic points
+    /// around the current reading, so `preview --demo-history` can show a full
+    /// window without a router. Deterministic: the same arguments render the
+    /// same frame, and the cap is the one `on_snapshot` applies.
+    pub fn demo_history(&mut self, samples: usize) {
+        if samples == 0 {
+            return;
+        }
+        let mut seed = 0x2026_1118u64;
+        // xorshift64: a wobble that depends on the counter, not on the clock.
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 1000) as f64 / 1000.0
+        };
+        let dl = self.history_dl.back().copied().unwrap_or(1.0e6).max(1.0);
+        let ul = self.history_ul.back().copied().unwrap_or(1.0e5).max(1.0);
+        let rsrp = self.history_rsrp.back().copied().unwrap_or(-90.0);
+        let rsrq = self.history_rsrq.back().copied().unwrap_or(-8.0);
+        let sinr = self.history_sinr.back().copied().unwrap_or(12.0);
+        for i in 0..samples {
+            let phase = i as f64 * 0.17;
+            let swing = 0.25 + 0.6 * phase.sin().abs() + 0.15 * noise();
+            self.history_dl.push_back(dl * swing);
+            self.history_ul
+                .push_back(ul * (0.5 + 0.5 * (phase * 1.7).sin().abs()));
+            // Clamped to the fixed domains the signal charts draw with, so a
+            // sample never falls outside the scale and leaves a hole in the row.
+            self.history_rsrp.push_back(
+                (rsrp + 14.0 * (phase * 0.6).sin() + 3.0 * noise()).clamp(-139.0, -45.0),
+            );
+            self.history_rsrq
+                .push_back((rsrq + 6.0 * (phase * 0.45).cos() + 2.0 * noise()).clamp(-19.5, -3.5));
+            self.history_sinr
+                .push_back((sinr + 10.0 * (phase * 0.8).sin() + 3.0 * noise()).clamp(-9.0, 29.0));
+        }
+        for q in [
+            &mut self.history_dl,
+            &mut self.history_ul,
+            &mut self.history_rsrp,
+            &mut self.history_rsrq,
+            &mut self.history_sinr,
+        ] {
+            while q.len() > HISTORY {
+                q.pop_front();
+            }
+        }
+    }
+
     /// `a` in the Bands tab: needs a non-empty selection and nothing in flight.
     pub fn begin_confirm(&mut self) -> bool {
         if self.bands_selected.is_empty() || self.write.is_busy() {
@@ -2813,6 +2863,30 @@ mod tests {
         app.view = View::Dense;
         app.select_tab(Tab::Signal);
         assert_eq!(app.view, View::Full);
+    }
+
+    #[test]
+    fn demo_history_fills_the_charts_and_stops_at_the_cap() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Dots,
+            View::Full,
+            100,
+            2000,
+        );
+        app.demo_history(120);
+        assert_eq!(app.history_rsrp.len(), 120);
+        assert_eq!(app.history_sinr.len(), 120);
+        assert_eq!(app.history_dl.len(), 120);
+        assert!(
+            app.history_dl.iter().all(|v| *v >= 0.0),
+            "a synthetic rate is never negative"
+        );
+        app.demo_history(HISTORY * 2);
+        assert_eq!(app.history_rsrp.len(), HISTORY, "capped like on_snapshot");
+        assert_eq!(app.history_dl.len(), HISTORY);
+        app.demo_history(0);
+        assert_eq!(app.history_dl.len(), HISTORY, "0 leaves the series alone");
     }
 
     #[test]

@@ -12,7 +12,7 @@
       "phone": "+0000000001",
       "date": "2026-01-02 03:04:05",
       "unread": true,
-      "content": "Synthetic message one: this body exists so the reader has something long and wrapped to show. It carries a second sentence, then a third, because a one-line body would prove nothing about word wrapping or about the room the detail pane gets on a 24-row frame."
+      "content": "Synthetic message one: this body exists so the reader has something long and wrapped to show. It carries a second sentence, then a third, because a one-line body would prove nothing about word wrapping or about the room the detail pane gets on a 24-row frame. A fourth sentence keeps two more wrapped lines on screen, so a frame captured for the README shows the pane working rather than a body that stops near the top. The last sentence names the build in words only, because nothing here is a real message."
     },
     {
       "index": "4002",
