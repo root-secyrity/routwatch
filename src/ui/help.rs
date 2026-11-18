@@ -66,7 +66,7 @@ pub fn rows() -> Vec<KeyRow> {
         KeyRow {
             keys: "S / ,",
             short: "settings overlay",
-            full: "settings: theme, view, graph, refresh, budget; w saves",
+            full: "settings: theme, view, refresh, budget; w saves",
         },
         KeyRow {
             keys: "[ / ]",
