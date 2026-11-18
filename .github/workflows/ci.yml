@@ -157,7 +157,7 @@ jobs:
             # A layout review must work with no config at all - point it at an
             # absent path so the behaviour stays locked.
             $BIN preview --tab bands --fixture fixtures/sample-snapshot.json \
-              --config /tmp/absent/config.toml --size 100x20 | grep -q presets
+              --config /tmp/absent/config.toml --size 100x20 | grep -qi presets
             # doctor reports *on* the file, so it needs a real one (0600), and
             # a placeholder credential: a "failed" check exits 3 by design.
             $BIN --config /tmp/rt.toml --generate-config
