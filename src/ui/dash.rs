@@ -753,19 +753,35 @@ fn clients(f: &mut Frame, area: Rect, app: &App, wide: bool) {
         return;
     }
     if inner >= 3 {
+        // The header names only the columns the rows carry: at the height that
+        // drops the durations, a "connected" column would sit over blanks.
         lines.push(Line::from(Span::styled(
-            format!(
-                " {} {} {} connected",
-                pad("name", 26),
-                pad("ip", 15),
-                pad("band", 7)
-            ),
+            if wide {
+                format!(
+                    " {} {} {} connected",
+                    pad("name", 26),
+                    pad("ip", 15),
+                    pad("band", 7)
+                )
+            } else {
+                format!(" {} {} {}", pad("name", 26), pad("ip", 15), pad("band", 7))
+            },
             Style::default().fg(t.dim),
         )));
     }
-    let room = if inner >= 3 { inner - 2 } else { 1 };
+    let header = usize::from(inner >= 3);
+    // The footer is a nicety; a client row is the data. When the panel is one
+    // row too short for both, the footer goes, so the title never claims a
+    // count the panel does not show.
+    let mut room = inner.saturating_sub(header + 1);
+    let mut footer = inner >= 3;
+    if rows.len() > room && inner.saturating_sub(header) >= rows.len() {
+        room = inner - header;
+        footer = false;
+    }
+    let visible = rows.len().min(room);
     let sel = app.dash_sel.min(rows.len().saturating_sub(1));
-    for (i, c) in rows.iter().enumerate().take(room) {
+    for (i, c) in rows.iter().enumerate().take(visible) {
         let selected = i == sel;
         let style = if selected {
             Style::default()
@@ -794,18 +810,17 @@ fn clients(f: &mut Frame, area: Rect, app: &App, wide: bool) {
             style,
         )));
     }
-    if rows.len() > room && inner < 3 {
+    if rows.len() > visible && !footer {
         lines.push(Line::from(Span::styled(
-            format!(" +{} more", rows.len() - room),
+            format!(" +{} more", rows.len() - visible),
             Style::default().fg(t.dim),
         )));
     }
-    if inner >= 3 {
+    if footer {
         lines.push(Line::from(Span::styled(
             format!(
-                " j/k move · enter opens a client · s sort · f filter · {} of {} shown",
-                rows.len(),
-                app.snap.as_ref().map(|s| s.clients.len()).unwrap_or(0)
+                " j/k move · enter opens a client · s sort · f filter · {visible} of {} shown",
+                rows.len()
             ),
             Style::default().fg(t.dim),
         )));

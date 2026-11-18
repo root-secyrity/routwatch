@@ -330,3 +330,32 @@ fn no_panic_from_40x12_to_240x60() {
         assert_eq!(frame.lines().count(), h as usize, "{w}x{h}");
     }
 }
+
+#[test]
+fn a_clients_panel_one_row_short_drops_the_footer_not_a_client() {
+    // 120x34 leaves the bottom band five rows: border, header, three clients.
+    // The footer is the line that goes, because the title already counts what
+    // the panel must show.
+    let frame = render_to_string(&app(4), 120, 34);
+    for name in ["living-room-tv", "phone-1", "(unnamed)"] {
+        assert!(
+            frame.contains(name),
+            "a client row was dropped for the footer:\n{frame}"
+        );
+    }
+    assert!(
+        !frame.contains("of 3 shown"),
+        "the footer took the row a client needed:\n{frame}"
+    );
+    // The duration column goes with the footer, so the header must not name it.
+    let clients = frame
+        .lines()
+        .find(|l| l.contains("CLIENTS ·"))
+        .expect("clients panel");
+    assert!(clients.contains("CLIENTS · 3"), "{clients}");
+    let header = row_of(&frame, "name")
+        .split("band")
+        .next()
+        .expect("band column");
+    assert!(!header.contains("connected"), "{header}");
+}

@@ -1093,14 +1093,9 @@ fn apply_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     ]));
 
     out.push(Line::from(Span::styled(
-        truncate(
-            if app.bands_unchanged() {
-                "[a] re-apply · [u] undo · [A] re-apply (forced)"
-            } else {
-                "[a] apply · [u] undo · [A] re-apply"
-            },
-            width,
-        ),
+        // One label for both states: the keys are the same, and the medium
+        // column is 38 cells wide, so a longer string would be cut.
+        truncate("[a] apply · [u] undo · [A] re-apply", width),
         Style::default().fg(t.accent),
     )));
 
