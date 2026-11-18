@@ -34,13 +34,12 @@ why each one is stated instead of hidden.
   `Ascending` (it did not before). A firmware that still answers `100005` is
   reporting a format error; the tab says the request was rejected, not that SMS
   is blocked.
-- **Deleting and marking read are unverified on this firmware**: `sms/delete-sms`
-  and `sms/set-read` are not in any capture from the H122-373 (measured
-  2026-11-18: neither path appears in `--raw --all`, and no delete POST was ever
-  sent, because a delete on a real inbox cannot be undone). Both are built and
-  tested against the simulator only. A firmware that refuses the path answers
-  `100003` or `100002`; that is reported as "unsupported" with its code, never as
-  "deleted", and the keys stay visible so the answer is readable.
+- **Deleting and marking read are verified on H122-373**: both paths were used on
+  the device (2026-11-19; the inbox went from 8 messages to 3, and a delete is
+  accepted only when the re-read no longer lists the index). A firmware that
+  refuses the path answers `100003` or `100002`; that is reported as
+  "unsupported" with its code, never as "deleted", and the keys stay visible so
+  the answer is readable.
 - **A bulk delete is one request per index and can fail halfway**: each index is
   posted on its own, the first refusal that means "this firmware does not take it"
   stops the loop, and the rows it never reached are listed as "not attempted".

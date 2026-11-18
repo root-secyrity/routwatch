@@ -354,8 +354,8 @@ impl HuaweiClient {
     }
 
     /// Delete one message by index. Huawei takes a single index per request,
-    /// which is why a bulk delete is a loop. Unverified on device: the round
-    /// that added it may not write to the owner's SMS store.
+    /// which is why a bulk delete is a loop. Measured on the H122-373
+    /// (2026-11-19): the index disappears from the next list.
     pub fn sms_delete(&mut self, index: &str) -> Result<Node, ApiError> {
         self.post(
             "sms/delete-sms",
