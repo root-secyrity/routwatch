@@ -129,7 +129,7 @@ router ends up covered by CI. Distributions and optional helpers are listed in
 Two maps of the codebase, in English and Arabic: one for the architecture, one
 for a fetch cycle and the two verified writes it can carry (a band mask, an SMS
 delete). Both are generated with Archify from the source at
-commit `48ed795444182e048b7d2f69b62c9f66967e97fb`, and every claim drawn inside the HTML carries the source line it
+commit `89e79313001eaba7698d54b1da27babdd265521d`, and every claim drawn inside the HTML carries the source line it
 came from.
 
 | Arabic | English |
