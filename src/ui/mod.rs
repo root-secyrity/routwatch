@@ -132,6 +132,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if !matches!(app.write, crate::write::WriteState::Idle) {
         draw_write_modal(f, area, app);
     }
+    if let Some(plan) = &app.sms.confirm {
+        draw_sms_modal(f, area, app, plan);
+    }
     // Before settings, so an open settings overlay still wins.
     if app.reset_confirm {
         draw_reset_modal(f, area, app);
@@ -394,6 +397,59 @@ fn draw_write_modal(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(colour).add_modifier(Modifier::BOLD),
             ))
             .border_style(Style::default().fg(colour)),
+    );
+    let h = (para.line_count(inner_w) as u16).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(para, rect);
+}
+
+/// The SMS confirmation, in the same shape as the band write modal: the plan,
+/// what it does to the router, and the two keys that answer it.
+fn draw_sms_modal(f: &mut Frame, area: Rect, app: &App, plan: &crate::app::SmsPlan) {
+    use crate::write::SmsOp;
+    let t = &app.theme;
+    let deleting = plan.op == SmsOp::Delete;
+    let title = if deleting {
+        " delete messages? "
+    } else {
+        " mark read? "
+    };
+    let mut body = vec![plan.label(), String::new()];
+    for index in plan.indices.iter().take(8) {
+        body.push(format!("  index {index}"));
+    }
+    if plan.indices.len() > 8 {
+        body.push(format!("  … and {} more", plan.indices.len() - 8));
+    }
+    body.push(String::new());
+    if deleting {
+        body.push("a deleted message cannot be recovered".into());
+        body.push("every delete is verified by re-reading the inbox".into());
+    } else {
+        body.push("the flag is set on the router, then read back".into());
+    }
+    body.push(String::new());
+    body.push("y confirm   ·   n / Esc cancel".into());
+
+    let w = 68.min(area.width);
+    let inner_w = w.saturating_sub(2);
+    let lines: Vec<Line> = body
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, Style::default().fg(t.fg))))
+        .collect();
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::bordered()
+            .title(Span::styled(
+                title,
+                Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
+            ))
+            .border_style(Style::default().fg(t.warn)),
     );
     let h = (para.line_count(inner_w) as u16).min(area.height);
     let rect = Rect {

@@ -101,6 +101,9 @@ question.
   (`mask verified`), so a silent revert is visible.
 - Band/DNS/restart changes need the in-TUI `a` → `y` confirmation, or
   `--allow-write` on the CLI. `--dry-run` prints the exact payload and sends nothing.
+- Pressing `d` (or `m`) opens a confirmation panel that lists the indexes it will
+  touch and warns that a deleted message cannot be recovered; `y` sends, `n` or
+  `Esc` cancels without a POST.
 - The TUI itself starts read-only: `routwatch --allow-write` is what opens the write
   keys (Bands `a`, SMS `d` and `m`). Without it those keys answer
   `writes are off: start with --allow-write` and send nothing.

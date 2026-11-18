@@ -373,3 +373,84 @@ fn no_panic_from_40x12_to_240x60() {
         }
     }
 }
+
+#[test]
+fn a_delete_plan_is_drawn_as_a_modal_with_both_answers() {
+    let mut app = app_with(three());
+    app.allow_write = true;
+    app.sms_toggle();
+    app.sms_move(1);
+    app.sms_toggle();
+    app.sms_plan_delete(false).expect("a plan under the gate");
+    let text = render_to_string(&app, 120, 34);
+    assert!(text.contains("delete messages?"), "{text}");
+    assert!(text.contains("delete 2 messages"), "{text}");
+    assert!(
+        text.contains("index 101") && text.contains("index 102"),
+        "{text}"
+    );
+    assert!(
+        text.contains("a deleted message cannot be recovered"),
+        "the warning must be on screen"
+    );
+    assert!(
+        text.contains("y confirm") && text.contains("n / Esc cancel"),
+        "both keys must be named"
+    );
+
+    app.sms_cancel();
+    let after = render_to_string(&app, 120, 34);
+    assert!(
+        !after.contains("delete messages?"),
+        "the modal must go when the dialogue is cancelled"
+    );
+}
+
+#[test]
+fn a_long_plan_is_cut_after_eight_indexes_and_says_how_many_more() {
+    let rows: Vec<_> = (1..=11)
+        .map(|i| message(&format!("{}", 200 + i), "body"))
+        .collect();
+    let mut app = app_with(rows);
+    app.allow_write = true;
+    app.sms_select_all();
+    app.sms_plan_delete(false).expect("a plan under the gate");
+    let text = render_to_string(&app, 120, 34);
+    assert!(text.contains("delete 11 messages"), "{text}");
+    assert!(text.contains("and 3 more"), "{text}");
+    assert_eq!(
+        text.matches("  index ").count(),
+        8,
+        "the list stops at eight rows"
+    );
+}
+
+#[test]
+fn the_mark_read_plan_has_its_own_title_and_no_delete_warning() {
+    let mut app = app_with(three());
+    app.allow_write = true;
+    app.sms_open();
+    app.sms_plan_mark_read().expect("a plan under the gate");
+    let text = render_to_string(&app, 120, 34);
+    assert!(text.contains("mark read?"), "{text}");
+    assert!(text.contains("mark read 1 message (index 101)"), "{text}");
+    assert!(
+        !text.contains("cannot be recovered"),
+        "marking read is reversible; the delete warning must not appear"
+    );
+    assert!(text.contains("y confirm"), "{text}");
+}
+
+#[test]
+fn the_modal_never_overflows_a_small_frame() {
+    let mut app = app_with(three());
+    app.allow_write = true;
+    app.sms_select_all();
+    app.sms_plan_delete(false).expect("plan");
+    for w in [40u16, 60, 80] {
+        for h in [12u16, 16, 20] {
+            let text = render_to_string(&app, w, h);
+            assert_eq!(text.lines().count(), h as usize, "{w}x{h}");
+        }
+    }
+}
