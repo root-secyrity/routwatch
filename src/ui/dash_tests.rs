@@ -2,12 +2,25 @@
 //!
 //! These tests read the frame the way a person does: the plot rows are found by
 //! their labels, and a column is a character position. Nothing here reaches the
-//! network, and nothing asserts a colour, because the glyph has to carry the
-//! reading on its own.
+//! network. The map's three channels are checked separately: the glyph height
+//! must carry the reading without colour, and the colour is read from the
+//! buffer where the state channel lives.
 
 use crate::app::{App, Tab};
 use crate::theme::{GraphStyle, Theme};
+use crate::ui::dash::{GAP_W, GUTTER_W, STATS_W};
 use crate::ui::{render_to_string, tab_from_key};
+use ratatui::style::Color;
+
+/// The three identity colours, fixed by the panel contract and never taken from
+/// the theme: a metric keeps its chip colour on every frame.
+const ID_RSRP: Color = Color::Rgb(0x6c, 0xb2, 0xff);
+const ID_RSRQ: Color = Color::Rgb(0x31, 0xc8, 0xde);
+const ID_SINR: Color = Color::Rgb(0xc4, 0x8f, 0xec);
+/// The state colours: green good, amber fair, red poor.
+const GOOD: Color = Color::Rgb(0x74, 0xdf, 0x7c);
+const FAIR: Color = Color::Rgb(0xf4, 0xb1, 0x3c);
+const POOR: Color = Color::Rgb(0xff, 0x6a, 0x5a);
 
 fn app(samples: usize) -> App {
     let snap: crate::model::Snapshot =
@@ -72,23 +85,63 @@ fn row_in<'a>(frame: &'a str, panel: &str, needle: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no row {needle:?} under {panel:?}:\n{frame}"))
 }
 
-/// The plot cells of a heatmap row: everything between the label field and the
-/// statistics column. The row pads the label to six columns, so the field pad is
-/// part of the gutter and not part of cell zero.
-fn map_cells<'a>(frame: &'a str, metric: &str) -> &'a str {
-    let row = row_in(frame, "SIGNAL MAP", metric);
-    let start = row.find(metric).expect("metric") + metric.len();
-    let rest = &row[start..];
-    let pad = 6usize.saturating_sub(metric.len());
-    let rest = rest.get(pad..).unwrap_or_default();
-    let end = rest.find("  min ").unwrap_or(rest.len());
-    &rest[..end]
+/// The plot cells of a map row, in the full-width layout: border, an eight
+/// column gutter, the cells, two blank columns, then the 28 column statistics
+/// field and the far border. `map_cells` reads the cells by position, so a
+/// gutter that silently widens cannot pass as cell zero.
+fn map_cells(frame: &str, metric: &str) -> String {
+    let row = row_in(frame, "SIGNAL MAP", &format!("▍{metric}"));
+    let chars: Vec<char> = row.chars().collect();
+    assert_eq!(chars.first(), Some(&'│'), "the row is inside the panel");
+    assert_eq!(chars.last(), Some(&'│'), "the row ends at the far border");
+    let start = 1 + GUTTER_W;
+    let end = chars.len() - 1 - STATS_W - GAP_W;
+    assert!(end > start, "the row is wide enough for a plot: {row:?}");
+    chars[start..end].iter().collect()
 }
 
-fn first_drawn(text: &str) -> usize {
-    text.chars()
-        .position(|c| !c.is_whitespace())
-        .unwrap_or(usize::MAX)
+/// The eight levels a cell can stand for, plus blank for no sample.
+const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+fn is_bar(c: char) -> bool {
+    BARS.contains(&c)
+}
+
+/// The frame as a buffer, for the one channel text cannot carry: colour.
+fn buffer_of(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|f| crate::ui::draw(f, app))
+        .expect("draw dashboard");
+    terminal.backend().buffer().clone()
+}
+
+/// Row index of the line holding `needle`, so a buffer lookup starts from the
+/// frame and not from a hardcoded corner of it.
+fn row_index(frame: &str, needle: &str) -> u16 {
+    frame
+        .lines()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no row holds {needle:?}:\n{frame}")) as u16
+}
+
+/// The colour of the last drawn cell in a map row: the newest reading of that
+/// metric, and the cell whose state the statistics field names as `now`.
+fn newest_cell_colour(
+    frame: &str,
+    buf: &ratatui::buffer::Buffer,
+    metric: &str,
+) -> ratatui::style::Color {
+    let y = row_index(frame, &format!("▍{metric}"));
+    let cells = map_cells(frame, metric);
+    let last = cells
+        .char_indices()
+        .rev()
+        .find(|(_, c)| is_bar(*c))
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| panic!("no reading drawn for {metric}"));
+    buf[(1 + GUTTER_W as u16 + last as u16, y)].fg
 }
 
 #[test]
@@ -117,17 +170,19 @@ fn seven_zones_and_no_duplicate_figure() {
 #[test]
 fn signal_map_and_throughput_share_one_time_axis() {
     let frame = render_to_string(&app(40), 120, 42);
-    let down_line = row_of(&frame, "↓ down");
-    let down = down_line[down_line.find("↓ down").unwrap() + "↓ down".len()..]
-        .trim_end_matches(['│', ' '])
-        .to_string();
-    let rsrp = map_cells(&frame, "RSRP").to_string();
-    let a = first_drawn(&rsrp);
-    let b = first_drawn(&down);
-    assert_ne!(a, usize::MAX);
+    let down_row = row_of(&frame, "↓ down");
+    let map_row = row_in(&frame, "SIGNAL MAP", "▍RSRP");
+    // Absolute column of the first drawn cell in each row: the two plots must
+    // start their bar on the same column, not merely look similar.
+    let b = down_row.chars().position(is_bar);
+    let a = map_row.chars().position(is_bar);
+    let (a, b) = (
+        a.expect("the map draws a bar"),
+        b.expect("the strip draws a bar"),
+    );
     assert_eq!(
         a, b,
-        "the same sample must start the same column in both plots:\nmap  {rsrp}\ndown {down}"
+        "the same sample must start the same column in both plots:\nmap  {map_row}\ndown {down_row}"
     );
 }
 
@@ -164,16 +219,16 @@ fn the_window_stays_240s_while_the_cell_granularity_adapts() {
 fn an_empty_cell_is_no_sample_not_good_and_not_the_neighbour() {
     // Ten polls at 2 s are twenty seconds of a 240-second window: the left of
     // the plot is blank, and blank is a space, not the newest reading copied
-    // back and not a "good" cell.
+    // back and not a poor bar.
     let frame = render_to_string(&app(10), 200, 50);
-    let rsrp = map_cells(&frame, "RSRP").to_string();
-    let filled = rsrp.chars().filter(|c| "▓▒░".contains(*c)).count();
+    let rsrp = map_cells(&frame, "RSRP");
+    let filled = rsrp.chars().filter(|c| is_bar(*c)).count();
     assert!(filled > 0);
     assert!(
         filled < rsrp.chars().count() / 4,
         "a 20 s record must not fill a 240 s window: {rsrp:?}"
     );
-    let first = rsrp.chars().position(|c| "▓▒░".contains(c)).unwrap();
+    let first = rsrp.chars().position(is_bar).unwrap();
     assert!(
         first > rsrp.chars().count() / 2,
         "the short record belongs at the right edge, found it at {first}"
@@ -193,23 +248,29 @@ fn a_bucket_shows_its_worst_sample_not_its_average() {
             .push_back(if i == 60 { -130.0 } else { -60.0 });
     }
     let frame = render_to_string(&a, 200, 50);
-    let rsrp = map_cells(&frame, "RSRP").to_string();
-    let glyphs: Vec<char> = rsrp.chars().filter(|c| "▓▒░".contains(*c)).collect();
-    let poor = glyphs.iter().filter(|c| **c == '░').count();
-    assert!(poor >= 1, "one deep dip must survive the bucket: {rsrp:?}");
+    let rsrp = map_cells(&frame, "RSRP");
+    let glyphs: Vec<char> = rsrp.chars().filter(|c| is_bar(*c)).collect();
+    let dip = glyphs.iter().filter(|c| **c == '▁').count();
+    assert!(dip >= 1, "one deep dip must survive the bucket: {rsrp:?}");
     assert!(
-        poor * 4 < glyphs.len(),
+        dip * 4 < glyphs.len(),
         "the dip is one sample, not half the window: {rsrp:?}"
     );
 }
 
 #[test]
-fn the_quality_glyphs_are_distinct_without_color() {
+fn the_bar_height_alone_separates_the_readings() {
+    // The magnitude channel has to survive a terminal that draws every colour
+    // the same, so one frame of three readings carries at least three heights.
     let frame = render_to_string(&app(120), 200, 50);
-    let rsrp = map_cells(&frame, "RSRP").to_string();
-    for glyph in ['▓', '▒', '░'] {
-        assert!(rsrp.contains(glyph), "missing {glyph} in {rsrp:?}");
-    }
+    let rsrp = map_cells(&frame, "RSRP");
+    let mut heights: Vec<char> = rsrp.chars().filter(|c| is_bar(*c)).collect();
+    heights.sort_unstable();
+    heights.dedup();
+    assert!(
+        heights.len() >= 3,
+        "three readings, three heights, got {heights:?} in {rsrp:?}"
+    );
 }
 
 #[test]
@@ -358,4 +419,157 @@ fn a_clients_panel_one_row_short_drops_the_footer_not_a_client() {
         .next()
         .expect("band column");
     assert!(!header.contains("connected"), "{header}");
+}
+
+/// One reading per series, so the frame carries exactly the samples named.
+fn one_sample(rsrp: f64, rsrq: f64, sinr: f64) -> App {
+    let mut a = app(0);
+    a.history_rsrp.push_back(rsrp);
+    a.history_rsrq.push_back(rsrq);
+    a.history_sinr.push_back(sinr);
+    a
+}
+
+#[test]
+fn the_map_row_is_eight_gutter_columns_then_eighty_cells_then_the_stats_field() {
+    let frame = render_to_string(&app(120), 120, 42);
+    let row = row_of(&frame, "▍RSRP");
+    let chars: Vec<char> = row.chars().collect();
+    assert_eq!(chars.len(), 120, "the panel is the full width: {row}");
+    assert_eq!(chars[0], '│', "left border: {row}");
+    assert_eq!(
+        (chars[1], chars[2]),
+        (' ', '▍'),
+        "chip sits after one blank"
+    );
+    assert_eq!(chars[3..7].iter().collect::<String>(), "RSRP");
+    assert_eq!((chars[7], chars[8]), (' ', ' '), "gutter closes with two");
+    let cells: String = chars[1 + GUTTER_W..1 + GUTTER_W + 80].iter().collect();
+    assert_eq!(cells.chars().count(), 80, "eighty cells at 120 columns");
+    assert!(
+        cells.chars().any(is_bar),
+        "the row draws readings inside its cells"
+    );
+    let gap: String = chars[1 + GUTTER_W + 80..1 + GUTTER_W + 80 + GAP_W]
+        .iter()
+        .collect();
+    assert_eq!(gap, "  ", "two blank columns before the statistics");
+    let stats: String = chars[1 + GUTTER_W + 80 + GAP_W..119].iter().collect();
+    assert_eq!(stats.chars().count(), STATS_W);
+    assert!(
+        stats.contains("avg"),
+        "the field starts with data: {stats:?}"
+    );
+    assert_eq!(chars[119], '│', "right border: {row}");
+}
+
+#[test]
+fn the_three_measured_readings_get_three_states_and_three_heights() {
+    // The owner's snapshot: -96 dBm RSRP, -6 dB RSRQ and 1 dB SINR. Under the
+    // old three-density encoding all three were the same red; the normalised
+    // value puts each one in its own state and its own height.
+    let a = one_sample(-96.0, -6.0, 1.0);
+    let frame = render_to_string(&a, 120, 42);
+    let buf = buffer_of(&a, 120, 42);
+    for (metric, bar, colour, state) in [
+        ("RSRP", '▄', FAIR, "now fair"),
+        ("RSRQ", '▇', GOOD, "now good"),
+        ("SINR", '▃', POOR, "now poor"),
+    ] {
+        let row = row_of(&frame, &format!("▍{metric}"));
+        assert!(row.contains(state), "{metric} must name {state}: {row}");
+        let cells = map_cells(&frame, metric);
+        assert_eq!(
+            cells.chars().filter(|c| is_bar(*c)).count(),
+            1,
+            "{metric}: one sample, one cell: {cells:?}"
+        );
+        assert!(cells.contains(bar), "{metric} height: {cells:?}");
+        assert_eq!(
+            newest_cell_colour(&frame, &buf, metric),
+            colour,
+            "{metric} state colour"
+        );
+    }
+}
+
+#[test]
+fn the_identity_chip_keeps_its_colour_on_an_empty_row() {
+    let a = app(0);
+    let frame = render_to_string(&a, 120, 42);
+    let buf = buffer_of(&a, 120, 42);
+    for (metric, colour) in [("RSRP", ID_RSRP), ("RSRQ", ID_RSRQ), ("SINR", ID_SINR)] {
+        let y = row_index(&frame, &format!("▍{metric}"));
+        assert_eq!(buf[(2, y)].symbol(), "▍", "{metric} chip exists");
+        assert_eq!(buf[(2, y)].fg, colour, "{metric} chip colour");
+        assert_eq!(buf[(3, y)].fg, colour, "{metric} label colour");
+        let cells = map_cells(&frame, metric);
+        assert!(
+            cells.chars().all(|c| c == ' '),
+            "no sample draws nothing, not a poor bar: {cells:?}"
+        );
+    }
+}
+
+#[test]
+fn one_normalised_value_colours_and_sizes_a_cell() {
+    // 0.66 of the RSRP range is -76.64 dBm: -77 is still fair, -76 is good,
+    // and both sit at the same bar height. A colour taken from a separate
+    // threshold table would put the two on the same side of the line.
+    for (value, colour) in [(-77.0, FAIR), (-76.0, GOOD)] {
+        let a = one_sample(value, -6.0, 1.0);
+        let frame = render_to_string(&a, 120, 42);
+        let buf = buffer_of(&a, 120, 42);
+        assert!(
+            map_cells(&frame, "RSRP").contains('▆'),
+            "{value} dBm must sit at the same height"
+        );
+        assert_eq!(
+            newest_cell_colour(&frame, &buf, "RSRP"),
+            colour,
+            "{value} dBm state"
+        );
+    }
+}
+
+#[test]
+fn the_legend_names_the_three_channels() {
+    let frame = render_to_string(&app(120), 120, 42);
+    for word in [
+        "▁▂▃▄▅▆▇█",
+        "level in its own range",
+        "green good",
+        "amber fair",
+        "red poor",
+        "blank = no sample",
+    ] {
+        assert!(frame.contains(word), "legend is missing {word:?}:\n{frame}");
+    }
+}
+
+#[test]
+fn the_legend_shrinks_by_words_and_never_ends_mid_word() {
+    // The three state words are the reason the legend exists, so every width
+    // keeps them and drops the explanation instead of cutting a word in half.
+    for (w, h) in [(60u16, 24u16), (80, 24), (120, 42), (200, 50)] {
+        let frame = render_to_string(&app(120), w, h);
+        let row = row_of(&frame, "last 240s");
+        let text = row.trim_matches(['│', ' ']);
+        for word in ["good", "fair", "poor"] {
+            assert!(text.contains(word), "{w}x{h} lost {word:?}: {row:?}");
+        }
+        assert!(
+            text.ends_with("sample") || text.ends_with("blank") || text.ends_with("poor"),
+            "{w}x{h} ends mid-word: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn the_stats_field_names_min_max_avg_and_now() {
+    let frame = render_to_string(&one_sample(-96.0, -6.0, 1.0), 120, 42);
+    let row = row_of(&frame, "▍RSRP");
+    assert!(row.contains("-96..-96"), "min..max: {row}");
+    assert!(row.contains("avg -96"), "average: {row}");
+    assert!(row.contains("now fair"), "state: {row}");
 }

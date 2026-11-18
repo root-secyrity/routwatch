@@ -1138,8 +1138,8 @@ mod tests {
             "the ruler spans the window"
         );
         assert!(
-            frame.contains("min ") && frame.contains("avg ") && frame.contains("max "),
-            "the map carries its own statistics"
+            frame.contains("-100..-81  avg -91  now fair"),
+            "the map carries its own statistics: range, average and the state of the newest reading"
         );
         assert!(!frame.contains("120 samples"), "the old claim is gone");
     }

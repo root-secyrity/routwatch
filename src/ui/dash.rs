@@ -9,24 +9,49 @@
 //! A cell holds the worst sample it covers, not the average: a heatmap exists
 //! to show the dip, and the average erases exactly that. A cell with no sample
 //! is blank, never the neighbour's value and never a colour.
+//!
+//! The signal map encodes three separate channels: the row's identity (a chip
+//! and its label, one fixed cool colour per metric), the magnitude (the bar
+//! height on that metric's fixed range) and the state (the cell colour alone).
+//! Height and colour both read one normalised value, so a cell cannot be tall
+//! and red at the same time.
 
 use crate::app::{App, WINDOW_SECS};
-use crate::theme::{step_glyph, step_word, Theme, RSRP_DOMAIN, RSRQ_DOMAIN, SINR_DOMAIN};
+use crate::theme::{step_word, RSRP_DOMAIN, RSRQ_DOMAIN, SINR_DOMAIN};
 use crate::ui::chart::slot_of;
 use crate::ui::tabs::{panel, truncate};
 use crate::ui::widgets::{bitrate, bytes, dur, pad};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::collections::VecDeque;
 
-/// Columns the statistics block needs: "  min -103 · avg -91 · max -72" is 30,
-/// so the widths it is subtracted from must never count on less.
-const STATS_W: usize = 31;
-/// Label column of a plot row: " RSRP  " / " ↓ down".
-const LABEL_W: usize = 7;
+/// Blank columns between a plot and the statistics field beside it.
+pub(crate) const GAP_W: usize = 2;
+/// The statistics field: "{min}..{max}  avg {avg}  now {state}".
+pub(crate) const STATS_W: usize = 28;
+/// The gutter of every plot row: " ▍RSRP  ", one blank, the chip, four
+/// letters, two blanks. The chip is the identity channel and is drawn even when
+/// the row holds no sample.
+pub(crate) const GUTTER_W: usize = 8;
+/// Left field of a row: the gutter. The throughput rows keep the same field so
+/// one sample lands in the same column in both plots.
+const LABEL_W: usize = GUTTER_W;
+
+/// The eight heights of the magnitude channel.
+const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Identity colours: a metric keeps its chip and label colour on every frame,
+/// whatever its readings say.
+const ID_RSRP: Color = Color::Rgb(0x6c, 0xb2, 0xff);
+const ID_RSRQ: Color = Color::Rgb(0x31, 0xc8, 0xde);
+const ID_SINR: Color = Color::Rgb(0xc4, 0x8f, 0xec);
+/// State colours: the cell colour is the only channel that carries state.
+const STATE_GOOD: Color = Color::Rgb(0x74, 0xdf, 0x7c);
+const STATE_FAIR: Color = Color::Rgb(0xf4, 0xb1, 0x3c);
+const STATE_POOR: Color = Color::Rgb(0xff, 0x6a, 0x5a);
 
 /// How a width decides what the dashboard can afford.
 #[derive(Debug, Clone, Copy)]
@@ -51,8 +76,44 @@ fn sample_secs(app: &App) -> u64 {
 /// window is spread over them, so a narrow terminal gets coarser cells instead
 /// of a shorter window.
 fn grid(width: usize, stats: bool) -> usize {
-    let stats_w = if stats { STATS_W } else { 0 };
-    width.saturating_sub(LABEL_W + stats_w).max(4)
+    let reserve = if stats { GAP_W + STATS_W } else { 0 };
+    width.saturating_sub(LABEL_W + reserve).max(4)
+}
+
+/// One reading on its metric's fixed range: (bar height 0..7, state 2/1/0).
+///
+/// This is the only place the map turns a value into a drawing: the height and
+/// the state colour both read this one `t`, so they cannot disagree.
+fn channel(value: f32, domain: (f32, f32)) -> (usize, u8) {
+    let (lo, hi) = domain;
+    let span = (hi - lo).max(f32::MIN_POSITIVE);
+    let t = ((value - lo) / span).clamp(0.0, 1.0);
+    // A reading at the top of the range is the eighth bar, not a ninth one.
+    let level = ((t * 8.0).floor() as usize).min(BARS.len() - 1);
+    let state = if t < 0.33 {
+        0
+    } else if t < 0.66 {
+        1
+    } else {
+        2
+    };
+    (level, state)
+}
+
+fn state_color(state: u8) -> Color {
+    match state {
+        2 => STATE_GOOD,
+        1 => STATE_FAIR,
+        _ => STATE_POOR,
+    }
+}
+
+fn state_word_of(state: u8) -> &'static str {
+    match state {
+        2 => "good",
+        1 => "fair",
+        _ => "poor",
+    }
 }
 
 /// Seconds one cell stands for: the window over the columns it landed on. The
@@ -115,27 +176,10 @@ fn age_of(slot: usize, cells: usize) -> u64 {
     (cells.saturating_sub(1 + slot)) as u64 * WINDOW_SECS / cells.max(1) as u64
 }
 
-fn min_avg_max(cells: &[Option<f32>], unit: &str, ceil: bool) -> Option<String> {
-    let vals: Vec<f32> = cells.iter().filter_map(|v| *v).collect();
-    if vals.is_empty() {
-        return None;
-    }
-    let min = vals.iter().copied().fold(f32::INFINITY, f32::min);
-    let max = vals.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let avg = vals.iter().sum::<f32>() / vals.len() as f32;
-    let f = |v: f32| {
-        if ceil {
-            format!("{:.0}", v.ceil())
-        } else {
-            format!("{v:.0}")
-        }
-    };
-    Some(format!(
-        "  min {}{unit} · avg {}{unit} · max {}{unit}",
-        f(min),
-        f(avg),
-        f(max)
-    ))
+/// The ruler on the cell grid: the ticks are placed over the columns the cells
+/// occupy, so a tick sits under the sample it names instead of over the gutter.
+fn axis_line(cells: usize, record: u64) -> String {
+    format!("{:LABEL_W$}{}", "", five_ticks(cells, record))
 }
 
 /// Five ticks across the window, one per quarter plus wherever the record
@@ -452,6 +496,78 @@ fn inner_rows(area: Rect) -> usize {
     area.height.saturating_sub(2) as usize
 }
 
+/// The statistics field of one map row: the range the cells cover, their
+/// average, and the state of the newest reading. It is derived from the cells,
+/// so it describes what the row draws and nothing else.
+fn stats_field(cells: &[Option<f32>], domain: (f32, f32)) -> Option<String> {
+    let vals: Vec<f32> = cells.iter().filter_map(|v| *v).collect();
+    if vals.is_empty() {
+        return None;
+    }
+    let min = vals.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = vals.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let avg = vals.iter().sum::<f32>() / vals.len() as f32;
+    let now = cells.iter().rev().find_map(|v| *v)?;
+    let (_, state) = channel(now, domain);
+    Some(format!(
+        "{min:.0}..{max:.0}  avg {avg:.0}  now {}",
+        state_word_of(state)
+    ))
+}
+
+/// The legend of the map, in the widest form that fits: the three channel words
+/// are the point of this panel, so they are the last thing dropped, and a word
+/// is never cut in half by the panel edge.
+fn map_legend(width: usize, cells: usize, dim: Style) -> Line<'static> {
+    let head = format!(" last {WINDOW_SECS}s · {} · ", cell_label(cells));
+    let build = |range_words: &'static str,
+                 names: [&'static str; 3],
+                 tail: &'static str|
+     -> Line<'static> {
+        let colours = [STATE_GOOD, STATE_FAIR, STATE_POOR];
+        let mut spans = vec![
+            Span::styled(head.clone(), dim),
+            Span::styled("▁▂▃▄▅▆▇█", dim),
+        ];
+        if !range_words.is_empty() {
+            spans.push(Span::styled(range_words, dim));
+        }
+        for (i, name) in names.iter().enumerate() {
+            if name.is_empty() {
+                continue;
+            }
+            spans.push(Span::styled(" · ", dim));
+            spans.push(Span::styled(*name, Style::default().fg(colours[i])));
+        }
+        if !tail.is_empty() {
+            spans.push(Span::styled(tail, dim));
+        }
+        Line::from(spans)
+    };
+    let variants = [
+        build(
+            " level in its own range",
+            ["green good", "amber fair", "red poor"],
+            " · blank = no sample",
+        ),
+        build(
+            " level in its own range",
+            ["good", "fair", "poor"],
+            " · blank = no sample",
+        ),
+        build(" level", ["good", "fair", "poor"], " · blank"),
+        build("", ["good", "fair", "poor"], ""),
+    ];
+    let mut last = build("", ["good", "fair", "poor"], "");
+    for line in variants {
+        if line.width() <= width {
+            return line;
+        }
+        last = line;
+    }
+    last
+}
+
 /// ③ SIGNAL MAP: three metrics over the full width, one window, one clock.
 fn signal_map(f: &mut Frame, area: Rect, app: &App, mode: Mode) {
     let t = &app.theme;
@@ -467,13 +583,14 @@ fn signal_map(f: &mut Frame, area: Rect, app: &App, mode: Mode) {
     let record = (filled as u64 * WINDOW_SECS.div_ceil(cells as u64)).min(WINDOW_SECS);
 
     let mut lines: Vec<Line> = Vec::new();
+    let dim = Style::default().fg(t.dim);
     let legend = if filled == 0 {
-        format!(" waiting for the first sample · {}", cell_label(cells))
+        Line::from(Span::styled(
+            format!(" waiting for the first sample · {}", cell_label(cells)),
+            dim,
+        ))
     } else {
-        format!(
-            " last {WINDOW_SECS}s · {} · ▓ good  ▒ fair  ░ poor  · blank = no sample",
-            cell_label(cells)
-        )
+        map_legend(width, cells, dim)
     };
     // A narrow panel drops SINR, then RSRQ, before it drops the ruler: a metric
     // with no row is honest, an axis with no row is not.
@@ -484,43 +601,57 @@ fn signal_map(f: &mut Frame, area: Rect, app: &App, mode: Mode) {
     } else {
         1
     };
-    let metric = |label: &str, cells: &[Option<f32>], step: &dyn Fn(f32) -> u8| -> Line<'static> {
-        let glyphs = cell_row(cells, step, t);
-        let mut spans = vec![
-            Span::styled(format!(" {label:<6}"), Style::default().fg(t.dim)),
-            Span::styled(glyphs, Style::default().fg(t.fg)),
-        ];
-        if mode.stats {
-            if let Some(stats) = min_avg_max(cells, "", false) {
-                // Exactly the column grid reserved for it: a wider string would
-                // push the line past the panel edge and ratatui would cut the
-                // last figure instead.
-                let room = width.saturating_sub(LABEL_W + cells.len());
-                spans.push(Span::styled(
-                    format!("{stats:>room$}"),
-                    Style::default().fg(t.dim),
-                ));
+    let metric = |label: &'static str,
+                  id: Color,
+                  domain: (f32, f32),
+                  cells: &[Option<f32>]|
+     -> Line<'static> {
+        // The gutter is the identity channel: it is drawn on every frame, even
+        // when the row has no sample and every cell is blank.
+        let mut spans = vec![Span::styled(
+            format!(" ▍{label}  "),
+            Style::default().fg(id),
+        )];
+        for cell in cells {
+            match cell {
+                Some(v) => {
+                    let (level, state) = channel(*v, domain);
+                    spans.push(Span::styled(
+                        BARS[level].to_string(),
+                        Style::default().fg(state_color(state)),
+                    ));
+                }
+                None => spans.push(Span::raw(" ")),
             }
+        }
+        if mode.stats {
+            let field = stats_field(cells, domain)
+                .map(|s| s.chars().take(STATS_W).collect::<String>())
+                .unwrap_or_default();
+            spans.push(Span::styled(
+                format!("  {field:<STATS_W$}"),
+                Style::default().fg(t.dim),
+            ));
         }
         Line::from(spans)
     };
-    lines.push(Line::from(Span::styled(legend, Style::default().fg(t.dim))));
+    lines.push(legend);
     if rows >= metrics + 3 {
         lines.push(Line::from(""));
     }
-    lines.push(metric("RSRP", &rsrp, &|v| t.rsrp_step(v)));
+    lines.push(metric("RSRP", ID_RSRP, RSRP_DOMAIN, &rsrp));
     if metrics >= 2 {
-        lines.push(metric("RSRQ", &rsrq, &|v| t.rsrq_step(v)));
+        lines.push(metric("RSRQ", ID_RSRQ, RSRQ_DOMAIN, &rsrq));
     }
     if metrics >= 3 {
-        lines.push(metric("SINR", &sinr, &|v| t.sinr_step(v)));
+        lines.push(metric("SINR", ID_SINR, SINR_DOMAIN, &sinr));
     }
     if rows >= metrics + 4 {
         lines.push(Line::from(""));
     }
     if rows >= metrics + 2 {
         lines.push(Line::from(Span::styled(
-            format!(" {}", five_ticks(width.saturating_sub(1), record)),
+            axis_line(cells, record),
             Style::default().fg(t.dim),
         )));
     }
@@ -537,16 +668,6 @@ fn signal_map(f: &mut Frame, area: Rect, app: &App, mode: Mode) {
         Paragraph::new(lines).block(panel(format!("SIGNAL MAP · {WINDOW_SECS}s"), t)),
         area,
     );
-}
-
-fn cell_row(cells: &[Option<f32>], step: &dyn Fn(f32) -> u8, _t: &Theme) -> String {
-    cells
-        .iter()
-        .map(|cell| match cell {
-            Some(v) => step_glyph(step(*v)),
-            None => ' ',
-        })
-        .collect()
 }
 
 /// The conclusion the samples actually support: the worst reading, how long the
@@ -654,16 +775,15 @@ fn throughput(f: &mut Frame, area: Rect, app: &App, mode: Mode) {
             compact_bps(avg * 8.0)
         );
         let note = if mode.stats {
-            // One blank column before the statistics, and never past the border:
-            // a right-aligned string wider than its column would eat the plot.
-            let room = STATS_W - 2;
-            let body: String = note.chars().take(room).collect();
-            format!(" {body:>room$} ")
+            // The same reserved field the map uses, so both plots start their
+            // bar on the same column.
+            let body: String = note.chars().take(STATS_W).collect();
+            format!("  {body:>STATS_W$}")
         } else {
             format!("  {note}")
         };
         Line::from(vec![
-            Span::styled(format!(" {label}"), Style::default().fg(t.dim)),
+            Span::styled(format!(" {label:<7}"), Style::default().fg(t.dim)),
             Span::styled(glyphs, Style::default().fg(t.accent)),
             Span::styled(note, Style::default().fg(t.dim)),
         ])
@@ -674,7 +794,7 @@ fn throughput(f: &mut Frame, area: Rect, app: &App, mode: Mode) {
     }
     if rows >= 3 {
         lines.push(Line::from(Span::styled(
-            format!(" {}", five_ticks(width.saturating_sub(1), record)),
+            axis_line(cells, record),
             Style::default().fg(t.dim),
         )));
     }
