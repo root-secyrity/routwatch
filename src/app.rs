@@ -14,6 +14,11 @@ use std::time::{Duration, Instant};
 
 pub const HISTORY: usize = 120;
 
+/// The Bands write log keeps this many settled operations in memory. It is a
+/// session record, not a file: nothing is written to disk and a restart forgets
+/// it, which is why the panel says "session only".
+pub const BAND_LOG_CAP: usize = 32;
+
 /// How long the status bar keeps offering the revert after a band write lands.
 /// A radio that restarts takes a while to show the damage, so the offer outlives
 /// the banner: the countdown writes nothing when it ends.
@@ -81,7 +86,7 @@ impl Tab {
         match self {
             Tab::Dashboard => "v view · g graph · r refresh · P pause · e report",
             Tab::Bands => {
-                "space tick · j/k · a apply · u undo · n preset · s save · x del · m mode · o nr · e report"
+                "space tick · s save · a apply · u undo · j/k · n preset · x del · m mode · o nr · e report"
             }
             Tab::Traffic => "d edit DNS · D auto DNS · b reset budget · e report",
             Tab::Network => "p ping host · T speed test · e report",
@@ -336,6 +341,17 @@ pub struct LastApply {
     pub at: Instant,
 }
 
+/// One settled band operation, kept for the Bands log panel. `verdict` is the
+/// text the write layer produced, so the render shows the same words the header
+/// banner used instead of parsing English.
+#[derive(Debug, Clone)]
+pub struct BandLog {
+    pub at: Instant,
+    pub what: String,
+    pub verdict: String,
+    pub ok: bool,
+}
+
 /// What the device carried before a pending apply, whole. Captured at the
 /// confirmation, because the snapshot that supplied it is replaced by the next
 /// poll long before the verdict arrives.
@@ -415,6 +431,8 @@ pub struct App {
     /// The same point with its mode and option, which is what `u` writes back.
     pub undo_full: Option<UndoPoint>,
     pub last_apply: Option<LastApply>,
+    /// Newest first, capped at `BAND_LOG_CAP`, memory only.
+    pub band_log: VecDeque<BandLog>,
     bands_initialised: bool,
     // --- M4 ---
     pub input: Option<Input>,
@@ -579,6 +597,7 @@ impl App {
             write_sent: false,
             undo_mask: None,
             last_apply: None,
+            band_log: VecDeque::new(),
             undo_full: None,
             watch_until: None,
             bands_initialised: false,
@@ -803,8 +822,16 @@ impl App {
     /// The order the grid draws: low, mid, high, other, ascending inside each
     /// class. `band_cursor` indexes this, so `j`/`k` walk the picture the user
     /// is looking at, not the firmware's list order.
+    /// Every band the panel can show: what the device advertises plus what the
+    /// tick list holds. A ticked band the device never listed must still be
+    /// drawn, because dropping it would hide the one row that says so.
     pub fn bands_in_draw_order(&self) -> Vec<u32> {
         let mut v = self.bands_supported.clone();
+        for b in &self.bands_selected {
+            if !v.contains(&(*b as u32)) {
+                v.push(*b as u32);
+            }
+        }
         v.sort_by_key(|b| (bands::class_of(*b as u8), *b));
         v
     }
@@ -1038,6 +1065,20 @@ impl App {
         self.write_sent = false;
     }
 
+    /// Record one settled band write for the session log. Ring, not file: the
+    /// oldest entry goes when the cap is reached.
+    pub fn note_band_op(&mut self, what: String, verdict: String, ok: bool) {
+        self.band_log.push_front(BandLog {
+            at: Instant::now(),
+            what,
+            verdict,
+            ok,
+        });
+        while self.band_log.len() > BAND_LOG_CAP {
+            self.band_log.pop_back();
+        }
+    }
+
     pub fn settle_write(&mut self, state: WriteState) {
         match &state {
             WriteState::Pending { .. } | WriteState::Verifying { .. } => {
@@ -1068,6 +1109,11 @@ impl App {
                             },
                             at: Instant::now(),
                         });
+                        self.note_band_op(
+                            format!("apply {} bands", bands.len()),
+                            note.clone(),
+                            true,
+                        );
                     }
                 }
                 self.pending_undo = None;
@@ -1079,6 +1125,9 @@ impl App {
                     LogLevel::Error,
                     format!("write failed · {} · {err}", intent.label()),
                 );
+                if matches!(intent, WriteIntent::ApplyBands { .. }) {
+                    self.note_band_op(intent.label().to_string(), err.clone(), false);
+                }
                 self.pending_undo = None;
                 self.pending_undo_full = None;
                 self.write_sent = false;

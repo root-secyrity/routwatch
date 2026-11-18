@@ -601,6 +601,21 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(t.dim),
         ),
     ];
+    // Bands: the mask and the write's own progress belong on this row. The
+    // panel spells the same keys above, but this row survives when the panel is
+    // too short to draw one, and the mask is what `a` is about.
+    if app.tab == crate::app::Tab::Bands && area.width >= 80 {
+        spans.push(Span::styled(
+            format!(" · 0x{}", app.band_mask_hex()),
+            Style::default().fg(t.dim),
+        ));
+        if app.write.is_busy() {
+            spans.push(Span::styled(
+                format!(" · {}", app.write.label()),
+                Style::default().fg(t.warn),
+            ));
+        }
+    }
     let mut used = spans
         .iter()
         .map(|s| s.content.chars().count())
@@ -1345,17 +1360,19 @@ mod tests {
         app.bands_selected = vec![1, 20];
         let text = render_to_string(&app, 100, 24);
         // Structural filter, never a word search: a grid row is the only line
-        // whose class column (chars 10..16) holds one of the four padded labels.
-        // A `warn` line mentions "high" too and must never enter this check.
+        // that opens with one of the four padded class labels. A `warn` line
+        // mentions "high" too and must never enter this check.
+        const LEAD: usize = 5;
+        const CELL: usize = 5;
         let grid: Vec<String> = text
             .lines()
             .filter(|l| {
                 let chars: Vec<char> = l.chars().collect();
-                if chars.len() <= 16 {
+                if chars.len() <= LEAD {
                     return false;
                 }
-                let cls: String = chars[10..16].iter().collect();
-                ["low   ", "mid   ", "high  ", "other "].contains(&cls.as_str())
+                let cls: String = chars[..LEAD].iter().collect();
+                ["low  ", "mid  ", "high ", "other"].contains(&cls.as_str())
             })
             .map(|l| l.to_string())
             .collect();
@@ -1366,8 +1383,8 @@ mod tests {
                 let starts_cell = *ch == '[' || (*ch == 'B' && i > 0 && chars[i - 1] != '[');
                 if starts_cell {
                     assert!(
-                        i >= 16 && (i - 16) % 6 == 0,
-                        "band token at char {i} is off the 6-column grid: {line}"
+                        i >= LEAD && (i - LEAD).is_multiple_of(CELL),
+                        "band token at char {i} is off the {CELL}-column grid: {line}"
                     );
                 }
             }
@@ -1925,7 +1942,7 @@ mod tests {
         let after = render_to_string(&app, 120, 30);
         assert_eq!(app.view, View::Full);
         assert_ne!(lite, after, "the body must change, not just the tab bar");
-        assert!(after.contains("BANDS"), "\n{after}");
+        assert!(after.contains("SERVING CELL"), "\n{after}");
     }
 
     #[test]
@@ -1933,10 +1950,10 @@ mod tests {
         let mut app = fixture_app();
         app.select_tab(Tab::Bands);
         let text = render_to_string(&app, 120, 30);
-        assert!(text.contains("presets"), "preset row missing\n{text}");
+        assert!(text.contains("PRESETS"), "preset region missing\n{text}");
         assert!(text.contains("B1+B3"), "ready-made merge missing\n{text}");
         assert!(
-            text.contains("= device, nothing to apply"),
+            text.contains("= device · nothing to apply"),
             "the ticked row must spell the merge and its diff\n{text}"
         );
         assert!(
@@ -2886,5 +2903,211 @@ mod tests {
         assert_eq!(crate::ui::tabs::age_label(1_000, 1_030), "30s ago");
         assert_eq!(crate::ui::tabs::age_label(1_000, 1_600), "10m ago");
         assert_eq!(crate::ui::tabs::age_label(1_000, 7_400), "1h ago");
+    }
+
+    #[test]
+    fn bands_layout_draws_the_seven_regions() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        for (w, h) in [(120, 38), (200, 50), (130, 30)] {
+            let text = render_to_string(&app, w, h);
+            for needle in [
+                "1 SERVING CELL",
+                "2 BAND MATRIX",
+                "3 MASK BITS",
+                "4 APPLY",
+                "5 PRESETS",
+                "6 WRITE LOG",
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "{needle:?} missing at {w}x{h}\n{text}"
+                );
+            }
+            let status = text.lines().last().unwrap_or_default();
+            assert!(status.contains("q quit"), "status row lost at {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn bands_layout_stacks_below_a_hundred_columns() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let text = render_to_string(&app, 80, 24);
+        for needle in ["1 SERVING CELL", "2 BAND MATRIX", "4 APPLY", "6 WRITE LOG"] {
+            assert!(text.contains(needle), "{needle:?} missing at 80x24\n{text}");
+        }
+        // The stacked tier draws plain blocks: a border would eat two of four rows.
+        assert!(
+            !text.contains("┌ 1 SERVING CELL"),
+            "the stacked tier must not spend rows on borders\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_layout_never_paints_outside_the_panel() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        for (w, h) in [(80, 24), (60, 20), (40, 12), (24, 10)] {
+            let text = render_to_string(&app, w, h);
+            for line in text.lines() {
+                let n = line.chars().count();
+                assert!(
+                    n <= w as usize,
+                    "a {n}-char row cannot fit {w} columns: {line:?}"
+                );
+            }
+            assert!(!text.is_empty(), "no frame at {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn bands_mask_draws_all_sixty_four_bits() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_supported = (1..=64).collect();
+        app.bands_selected = vec![1, 2, 3];
+        let wide = render_to_string(&app, 120, 38);
+        let drawn = |t: &str, per_row: usize| {
+            t.lines()
+                .filter(|l| l.chars().filter(|c| "█▒·".contains(*c)).count() >= per_row)
+                .count()
+        };
+        let rows = drawn(&wide, 32);
+        assert_eq!(
+            rows, 2,
+            "64 bits are two rows of 32 in a wide panel\n{wide}"
+        );
+        let narrow = render_to_string(&app, 60, 30);
+        let narrow_rows = drawn(&narrow, 16);
+        assert!(
+            narrow_rows >= rows,
+            "a narrow panel wraps the mask onto more rows, never fewer\n{narrow}"
+        );
+    }
+
+    #[test]
+    fn bands_chips_mark_only_what_the_device_cannot_do() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        // B66 is ticked but the device never advertised it; B5 is advertised
+        // and unticked, so the mask shows the advertised-not-ticked mark.
+        app.bands_supported = vec![1, 3, 5];
+        app.bands_selected = vec![1, 66];
+        let text = render_to_string(&app, 120, 38);
+        assert!(
+            text.contains("[B66]!"),
+            "a ticked band the device lacks is marked\n{text}"
+        );
+        assert!(
+            text.contains("▒"),
+            "an advertised band is not blank\n{text}"
+        );
+        assert!(
+            !text.contains("B5!"),
+            "an advertised band is never marked missing\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_delta_names_both_directions() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.bands_selected.retain(|b| *b != 5);
+        app.bands_selected.push(66);
+        let text = render_to_string(&app, 120, 38);
+        assert!(text.contains("-B5"), "the dropped band is named\n{text}");
+        assert!(text.contains("+B66"), "the added band is named\n{text}");
+        assert!(
+            text.contains("2 changes to apply"),
+            "the count is named\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_write_log_keeps_the_newest_and_caps_its_ring() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        for i in 0..40 {
+            app.note_band_op(format!("op {i}"), "ok".into(), true);
+        }
+        assert_eq!(app.band_log.len(), crate::app::BAND_LOG_CAP);
+        assert_eq!(app.band_log.front().map(|e| e.what.as_str()), Some("op 39"));
+        let text = render_to_string(&app, 120, 38);
+        assert!(
+            text.contains("session only · not persisted"),
+            "the log lies about itself\n{text}"
+        );
+    }
+
+    #[test]
+    fn bands_presets_show_two_rows_each_and_the_device_note() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.band_presets = vec![crate::config::BandPreset::new(&[1, 3])];
+        app.bands_supported = vec![1, 3];
+        let text = render_to_string(&app, 130, 34);
+        assert!(
+            text.contains("1:B1+B3"),
+            "the preset name and index\n{text}"
+        );
+        assert!(
+            text.contains("2 bands · device"),
+            "the preset's own count\n{text}"
+        );
+        assert!(text.contains("PRESETS"), "the region is titled\n{text}");
+    }
+
+    #[test]
+    fn bands_status_row_carries_the_mask_only_for_bands() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        let status = render_to_string(&app, 160, 30)
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            status.contains(&format!("0x{}", app.band_mask_hex())),
+            "the mask a applies belongs on the status row: {status}"
+        );
+        app.select_tab(Tab::Traffic);
+        let other = render_to_string(&app, 160, 30)
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !other.contains(&format!("0x{}", app.band_mask_hex())),
+            "the mask is a Bands fact, not a global one: {other}"
+        );
+    }
+
+    #[test]
+    fn bands_signal_strip_follows_the_history_it_is_given() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Bands);
+        app.history_rsrp.clear();
+        assert!(
+            !render_to_string(&app, 120, 38).contains("sig  "),
+            "no samples, no strip"
+        );
+        for dbm in [-90.0, -95.0, -100.0] {
+            app.history_rsrp.push_back(dbm);
+        }
+        let text = render_to_string(&app, 120, 38);
+        let strip = text
+            .lines()
+            .find(|l| l.contains("sig  "))
+            .expect("the strip is drawn once samples exist");
+        const GLYPHS: &str = "▁▂▃▄▅▆▇█";
+        let cells = strip
+            .split("sig  ")
+            .nth(1)
+            .unwrap_or_default()
+            .chars()
+            .take_while(|c| GLYPHS.contains(*c))
+            .count();
+        assert_eq!(cells, 3, "one cell per sample, no invented points: {strip}");
     }
 }
