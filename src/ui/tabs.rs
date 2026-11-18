@@ -63,66 +63,14 @@ pub fn body(f: &mut Frame, area: Rect, app: &App) {
 
 // ---------------------------------------------------------------- dashboard
 
-/// Four blocks want 25 rows. Below that each tier drops the least useful block
-/// instead of squeezing all four into one row each.
+/// The dashboard lives in its own module: seven regions, one time window, and
+/// one clock shared by the two plots. This entry point only decides nothing.
 pub fn dashboard(f: &mut Frame, area: Rect, app: &App) {
-    // The instrument band needs its own rows; without them the blocks below
-    // keep the whole area rather than every panel losing a row.
-    if area.height >= crate::ui::tiles::HEIGHT + 20 {
-        let [band, rest] = Layout::vertical([
-            Constraint::Length(crate::ui::tiles::HEIGHT),
-            Constraint::Min(20),
-        ])
-        .areas(area);
-        crate::ui::tiles::instruments(f, band, app);
-        dashboard_blocks(f, rest, app);
-        return;
-    }
-    dashboard_blocks(f, area, app);
-}
-
-fn dashboard_blocks(f: &mut Frame, area: Rect, app: &App) {
-    if area.height >= 25 {
-        dashboard_roomy(f, area, app);
-    } else if area.height >= 14 {
-        dashboard_compact(f, area, app);
-    } else {
-        dashboard_tight(f, area, app);
-    }
-}
-
-/// Minimum height: one panel that still answers "is the link alive?".
-fn dashboard_tight(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    f.render_widget(
-        Paragraph::new(signal_lines(app))
-            .wrap(Wrap { trim: true })
-            .block(panel("SIGNAL".into(), theme)),
-        area,
-    );
-}
-
-/// Short terminal: signal, speed and the throughput history; no 5G/connection
-/// blocks, no host or error lists - they are a `2`/`5` key away.
-fn dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    let [top, graph] = Layout::vertical([Constraint::Length(8), Constraint::Min(4)]).areas(area);
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(top);
-    f.render_widget(
-        Paragraph::new(signal_lines(app))
-            .wrap(Wrap { trim: true })
-            .block(panel("SIGNAL · 4G".into(), theme)),
-        left,
-    );
-    f.render_widget(
-        Paragraph::new(speed_lines(app)).block(panel("SPEED".into(), theme)),
-        right,
-    );
-    throughput_panel(f, graph, app);
+    crate::ui::dash::dashboard(f, area, app);
 }
 
 /// Name of the active graph style, for the panel title.
+#[cfg(test)]
 fn graph_style_name(style: crate::theme::GraphStyle) -> &'static str {
     match style {
         crate::theme::GraphStyle::Bars => "bars",
@@ -132,17 +80,21 @@ fn graph_style_name(style: crate::theme::GraphStyle) -> &'static str {
     }
 }
 
-/// The time window a plot draws: the record capacity times the sample period.
+/// The time window a plot draws: one fixed span, whatever the poll period and
+/// however full the store is.
 ///
 /// A plot is sized by this window and the panel, never by the samples on hand:
 /// the same span of seconds must cover the same columns whether the record is
 /// empty, half full or full, and a tick names an instant inside the window.
-fn plot_window(app: &App) -> u64 {
-    (crate::app::HISTORY as u64 * app.refresh_ms.max(1) / 1000).max(1)
+/// The store is sized to cover the window at the fastest poll, so the window
+/// can stay fixed while the poll interval moves.
+fn plot_window(_app: &App) -> u64 {
+    crate::app::WINDOW_SECS
 }
 
 /// The throughput plot: rx above the zero row, tx below it, one scale, one
 /// time window, and an axis that names the window actually drawn.
+#[cfg(test)]
 fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
@@ -398,102 +350,6 @@ fn narrow_axis(width: u16, secs: u64) -> String {
     } else {
         "now".to_string()
     }
-}
-
-fn dashboard_roomy(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    let [top, mid, graph, bottom] = Layout::vertical([
-        Constraint::Length(8),
-        Constraint::Length(5),
-        Constraint::Length(9),
-        Constraint::Min(3),
-    ])
-    .areas(area);
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
-
-    f.render_widget(
-        Paragraph::new(signal_lines(app))
-            .wrap(Wrap { trim: true })
-            .block(panel("SIGNAL · 4G".into(), theme)),
-        left,
-    );
-    let speed = Paragraph::new(speed_lines(app)).block(panel("SPEED".into(), theme));
-    f.render_widget(speed, right);
-
-    let [a, b] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(mid);
-    f.render_widget(
-        Paragraph::new(nr_lines(app)).block(panel("5G".into(), theme)),
-        a,
-    );
-    f.render_widget(
-        Paragraph::new(connection_lines(app)).block(panel("CONNECTION".into(), theme)),
-        b,
-    );
-
-    throughput_panel(f, graph, app);
-
-    // Bottom: the two things a router page never shows side by side - hosts and errors.
-    let [c, d] =
-        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(bottom);
-    let mut hosts = vec![Line::from(Span::styled(
-        format!("{} {} {}", pad("name", 26), pad("ip", 15), "band"),
-        Style::default().fg(theme.dim),
-    ))];
-    if let Some(s) = &app.snap {
-        for c in s
-            .clients
-            .iter()
-            .take(bottom.height.saturating_sub(3) as usize)
-        {
-            hosts.push(Line::from(vec![
-                Span::styled(
-                    pad(c.name.as_deref().unwrap_or("(unnamed)"), 26),
-                    Style::default().fg(theme.fg),
-                ),
-                Span::styled(
-                    pad(c.ip.as_deref().unwrap_or("-"), 15),
-                    Style::default().fg(theme.accent),
-                ),
-                Span::styled(
-                    c.freq.clone().unwrap_or_default(),
-                    Style::default().fg(theme.dim),
-                ),
-            ]));
-        }
-        if s.clients.is_empty() {
-            hosts.push(Line::from(Span::styled(
-                "no associated hosts",
-                Style::default().fg(theme.dim),
-            )));
-        }
-    }
-    f.render_widget(
-        Paragraph::new(hosts).block(panel(
-            format!(
-                "CLIENTS · {}",
-                app.snap.as_ref().map(|s| s.clients.len()).unwrap_or(0)
-            ),
-            theme,
-        )),
-        c,
-    );
-
-    let mut errs = Vec::new();
-    for e in app.error_log.iter().take(2) {
-        errs.push(Line::from(Span::styled(
-            truncate(e, d.width.saturating_sub(4) as usize),
-            Style::default().fg(theme.warn),
-        )));
-    }
-    if errs.is_empty() {
-        errs.push(Line::from(Span::styled(
-            "no errors this session",
-            Style::default().fg(theme.dim),
-        )));
-    }
-    f.render_widget(Paragraph::new(errs).block(panel("ERRORS".into(), theme)), d);
 }
 
 fn last(v: &std::collections::VecDeque<f64>) -> f64 {
@@ -802,7 +658,7 @@ fn mode_label(code: &str) -> &str {
 /// Frequency and duplex per LTE band. The snapshot's signal block carries no
 /// frequency column, so the panel reads the band number into this table; a band
 /// it does not list renders "-" rather than a guess.
-fn band_radio(band: u8) -> Option<(&'static str, &'static str)> {
+pub(crate) fn band_radio(band: u8) -> Option<(&'static str, &'static str)> {
     Some(match band {
         1 => ("2100", "FDD"),
         2 => ("1900", "FDD"),

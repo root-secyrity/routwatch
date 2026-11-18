@@ -1,6 +1,9 @@
 //! Frame composition: header, tab bar, body, status line, help overlay.
 
 pub mod chart;
+pub mod dash;
+#[cfg(test)]
+mod dash_tests;
 pub mod help;
 pub mod tabs;
 pub mod tiles;
@@ -1121,16 +1124,22 @@ mod tests {
         for i in 0..120 {
             app.history_dl.push_back(1_000_000.0 + i as f64);
             app.history_ul.push_back(100_000.0);
+            app.history_rsrp.push_back(-100.0 + (i % 20) as f64);
+            app.history_rsrq.push_back(-12.0);
+            app.history_sinr.push_back(4.0);
         }
-        let frame = crate::ui::render_to_string(&app, 120, 40);
+        let frame = crate::ui::render_to_string(&app, 120, 42);
         assert!(
-            frame.contains("THROUGHPUT · dots · last 240s"),
-            "the title names the window actually drawn"
+            frame.contains("SIGNAL MAP · 240s"),
+            "the panel names the window it draws"
         );
-        assert!(frame.contains("now"), "the x-axis is drawn");
         assert!(
-            frame.contains("peak "),
-            "the meta line carries peak and average"
+            frame.contains("-240s") && frame.contains("-120s") && frame.contains("now"),
+            "the ruler spans the window"
+        );
+        assert!(
+            frame.contains("min ") && frame.contains("avg ") && frame.contains("max "),
+            "the map carries its own statistics"
         );
         assert!(!frame.contains("120 samples"), "the old claim is gone");
     }
@@ -1152,24 +1161,30 @@ mod tests {
                 .push_back(if i == 14 { 4_000_000.0 } else { 1_000_000.0 });
             app.history_ul.push_back(100_000.0);
         }
-        let frame = crate::ui::render_to_string(&app, 120, 40);
-        let lines: Vec<&str> = frame.lines().collect();
-        let meta = lines
-            .iter()
-            .position(|l| l.contains("peak "))
-            .expect("throughput meta row");
-        let top = lines[meta + 1];
-        let inked = top
+        let frame = crate::ui::render_to_string(&app, 120, 42);
+        let row = frame
+            .lines()
+            .find(|l| l.contains("↓ down"))
+            .expect("throughput down row");
+        let ramp: Vec<usize> = row
             .chars()
-            .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c) && *c != '\u{2800}')
-            .count();
-        assert_eq!(
-            inked, 1,
-            "one sample is one cell wide, not a stretched block: {top:?}"
+            .enumerate()
+            .filter(|(_, c)| ('\u{2581}'..='\u{2588}').contains(c))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!ramp.is_empty(), "a sample has to draw: {row:?}");
+        assert!(
+            ramp.len() <= 12,
+            "fifteen samples at 2s each cover ten 3s cells, not the whole plot"
+        );
+        let cells = row.chars().filter(|c| *c == ' ' || *c == '│').count();
+        assert!(
+            *ramp.first().unwrap() > cells / 2,
+            "a short record sits at the right edge, it is not stretched: {row:?}"
         );
         assert!(
-            frame.contains("-30s") && frame.contains("now"),
-            "a 15-cell plot still names its window"
+            frame.contains("-240s") && frame.contains("now"),
+            "the ruler stays the window, whatever the record holds"
         );
     }
 
@@ -1187,18 +1202,19 @@ mod tests {
         );
         app.history_dl.push_back(4_000_000.0);
         app.history_ul.push_back(200_000.0);
-        let frame = crate::ui::render_to_string(&app, 120, 40);
+        let frame = crate::ui::render_to_string(&app, 120, 42);
+        let row = frame
+            .lines()
+            .find(|l| l.contains("↓ down"))
+            .expect("throughput down row");
+        let marks = row
+            .chars()
+            .filter(|c| ('\u{2581}'..='\u{2588}').contains(c))
+            .count();
+        assert_eq!(marks, 1, "one reading is one mark: {row:?}");
         assert!(
-            frame.contains("THROUGHPUT · dots · 1 sample, collecting"),
-            "one sample is a reading, not a window"
-        );
-        assert!(
-            !frame.contains("last 2s"),
-            "no window is claimed before one exists"
-        );
-        assert!(
-            frame.contains("collecting…"),
-            "the axis says what is happening instead of naming a span"
+            !frame.contains("worst "),
+            "one sample supports no conclusion line: {frame}"
         );
     }
 
@@ -1578,9 +1594,18 @@ mod tests {
         snap.signal.rsrp_dbm = Some(-95.0);
         app.snap = Some(snap);
         let text = render_to_string(&app, 100, 24);
+        // The instrument band is gone from this layout; what a short terminal
+        // still owes the reader is every zone, one column, no statistics block.
+        for title in ["RADIO", "LINK / SESSION", "SIGNAL MAP", "THROUGHPUT"] {
+            assert!(text.contains(title), "{title} disappeared: {text}");
+        }
         assert!(
-            !text.contains("SIGNAL MAP"),
-            "band shown without rows for it: {text}"
+            !text.contains("min "),
+            "the statistics column needs a width this size does not have: {text}"
+        );
+        assert!(
+            text.contains("1 cell = ") && text.contains("last 240s"),
+            "the cell widens when the plot does not: {text}"
         );
     }
 

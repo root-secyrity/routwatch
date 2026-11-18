@@ -3,6 +3,33 @@
 This file answers: what is known not to work, what looks broken but is not, and
 why each one is stated instead of hidden.
 
+- **The dashboard window is fixed at 240 seconds**: every column the width
+  leaves becomes a cell, so the cell span adapts instead (3.4s at 80 columns,
+  3s at 120, 1.5s at 200), the window never does, and the ruler prints `-240s`
+  even when the record holds ten seconds. A short record sits at the right edge
+  instead of being stretched over the plot, and the legend prints the span the
+  columns actually have.
+- **A cell is its worst sample, not its average**: RSRP, RSRQ and SINR take the
+  lowest reading in the cell, throughput takes the peak. Averaging hides the
+  dip the map exists to show.
+- **A blank cell means no sample**: it is not coloured good, not filled from a
+  neighbour and not interpolated.
+- **The store holds 240 seconds**: five series of 480 samples (19.2 KB in
+  memory), sized for the 500ms poll floor. A slower poll keeps more seconds than
+  the window shows; a faster one cannot, and the cell widens.
+- **The map statistics column is the first thing a narrow terminal loses**: the
+  three metric rows stay, then RSRQ, then SINR, and the ruler stays last. The
+  insight line (`worst ... · SINR < 0 for 41s · 3 dips`) needs ten filled cells
+  and is dropped, not guessed, below that.
+- **The client table has no RSSI or rate column**: this firmware's client list
+  carries name, IP, MAC, frequency, SSID and connection time, and the model
+  stores exactly those. A column the router never reports is removed, not
+  printed as `-`.
+- **An Arabic client name may reorder inside its column**: cells are laid out in
+  logical order and the terminal handles direction, the same limit as the SMS
+  list. The Clients tab detail shows the full name.
+- **`s` sorts on the Dashboard**: on every other tab `s` opens the settings
+  panel, and this is the one key that differs by tab by design.
 - **SMS**: reading the inbox works on H122-373 when the request carries
   `Ascending` (it did not before). A firmware that still answers `100005` is
   reporting a format error; the tab says the request was rejected, not that SMS

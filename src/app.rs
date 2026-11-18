@@ -12,7 +12,15 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub const HISTORY: usize = 120;
+/// Samples kept per series. The dashboard and the signal graphs draw a fixed
+/// 240-second window, and the poll interval can be as short as 500 ms, so the
+/// store has to hold 480 samples to cover that window at the finest interval
+/// instead of declaring a window it cannot fill: 5 series x 480 x 8 B = 19.2 KB.
+pub const HISTORY: usize = 480;
+
+/// The time window every plot on the dashboard draws, in seconds. One window
+/// for the whole screen: the cell granularity adapts, the window never does.
+pub const WINDOW_SECS: u64 = 240;
 
 /// The Bands write log keeps this many settled operations in memory. It is a
 /// session record, not a file: nothing is written to disk and a restart forgets
@@ -84,7 +92,9 @@ impl Tab {
     /// tab says what it accepts without a help overlay.
     pub fn hints(&self) -> &'static str {
         match self {
-            Tab::Dashboard => "v view · g graph · r refresh · P pause · e report",
+            Tab::Dashboard => {
+                "j/k · enter open · s sort · f filter · v view · g graph · r refresh · P pause · e report"
+            }
             Tab::Bands => {
                 "space tick · s save · a apply · u undo · j/k · n preset · x del · m mode · o nr · e report"
             }
@@ -277,6 +287,42 @@ pub enum SortKey {
     Ip,
     Band,
     Time,
+}
+
+/// Which clients the dashboard table shows. The radio section draws one band at
+/// a time, so the same filter narrows the client rows under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashFilter {
+    All,
+    Only5,
+    Only24,
+}
+
+impl DashFilter {
+    pub fn next(&self) -> DashFilter {
+        match self {
+            DashFilter::All => DashFilter::Only5,
+            DashFilter::Only5 => DashFilter::Only24,
+            DashFilter::Only24 => DashFilter::All,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            DashFilter::All => "all",
+            DashFilter::Only5 => "5G",
+            DashFilter::Only24 => "2.4G",
+        }
+    }
+
+    pub fn matches(&self, client: &Client) -> bool {
+        let band = client.freq.as_deref().unwrap_or("");
+        match self {
+            DashFilter::All => true,
+            DashFilter::Only5 => band.contains('5'),
+            DashFilter::Only24 => band.contains("2.4"),
+        }
+    }
 }
 
 impl SortKey {
@@ -504,6 +550,10 @@ pub struct App {
     pub input: Option<Input>,
     pub ping: Option<PingOutcome>,
     pub client_sort: SortKey,
+    /// Row under the cursor in the dashboard table, which is filtered, so it
+    /// cannot share `client_sel` with the Clients tab's unfiltered list.
+    pub dash_sel: usize,
+    pub dash_filter: DashFilter,
     pub notice: Option<(String, Instant)>,
     pub dns_preset: usize,
     // --- M5 ---
@@ -671,6 +721,8 @@ impl App {
             input: None,
             ping: None,
             client_sort: SortKey::Name,
+            dash_sel: 0,
+            dash_filter: DashFilter::All,
             notice: None,
             dns_preset: 0,
             extras: None,
@@ -1619,6 +1671,50 @@ impl App {
     pub fn sort_next(&mut self) {
         self.client_sort = self.client_sort.next();
         self.client_sel = 0;
+    }
+
+    /// The dashboard table's rows: the client list in display order, narrowed by
+    /// the dashboard filter only.
+    pub fn dash_clients(&self) -> Vec<&Client> {
+        self.sorted_clients()
+            .into_iter()
+            .filter(|c| self.dash_filter.matches(c))
+            .collect()
+    }
+
+    pub fn dash_cursor(&mut self, delta: isize) {
+        let len = self.dash_clients().len() as isize;
+        if len == 0 {
+            self.dash_sel = 0;
+            return;
+        }
+        self.dash_sel = (self.dash_sel as isize + delta).clamp(0, len - 1) as usize;
+    }
+
+    pub fn dash_filter_next(&mut self) {
+        self.dash_filter = self.dash_filter.next();
+        self.dash_sel = 0;
+    }
+
+    /// Open the row under the dashboard cursor in its own section, with that
+    /// client still selected there. `false` when the table is empty.
+    pub fn dash_open_client(&mut self) -> bool {
+        let Some(ip) = self
+            .dash_clients()
+            .get(self.dash_sel)
+            .and_then(|c| c.ip.clone())
+        else {
+            return false;
+        };
+        if let Some(i) = self
+            .sorted_clients()
+            .iter()
+            .position(|c| c.ip.as_ref() == Some(&ip))
+        {
+            self.client_sel = i;
+        }
+        self.tab = Tab::Clients;
+        true
     }
 
     /// One endpoint read finished (or started). A new scan is announced by the

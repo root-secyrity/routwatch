@@ -222,15 +222,35 @@ impl Theme {
         self.id == "terminal"
     }
 
+    /// Quality of one reading on its own fixed scale: 2 good, 1 fair, 0 poor.
+    ///
+    /// The three signal scales below are the only place their thresholds live.
+    /// Colour, the quality word and the heatmap glyph all read this step, so a
+    /// reading cannot be painted fair in one panel and labelled poor in another.
+    pub fn rsrp_step(&self, v: f32) -> u8 {
+        step_of(v, RSRP_GOOD, RSRP_FAIR)
+    }
+
+    pub fn rsrq_step(&self, v: f32) -> u8 {
+        step_of(v, RSRQ_GOOD, RSRQ_FAIR)
+    }
+
+    pub fn sinr_step(&self, v: f32) -> u8 {
+        step_of(v, SINR_GOOD, SINR_FAIR)
+    }
+
+    /// The colour of a step: good, fair, poor, in the theme's own palette.
+    pub fn step_color(&self, step: u8) -> Color {
+        match step {
+            2 => self.ok,
+            1 => self.warn,
+            _ => self.danger,
+        }
+    }
+
     /// Quality colour for signal readings (3GPP-ish thresholds, same as the plan).
     pub fn rsrp_color(&self, v: f32) -> Color {
-        if v >= -80.0 {
-            self.ok
-        } else if v >= -100.0 {
-            self.warn
-        } else {
-            self.danger
-        }
+        self.step_color(self.rsrp_step(v))
     }
 
     /// RSSI has its own scale (-113..-51), roughly 20 dB above RSRP. Using the
@@ -246,33 +266,56 @@ impl Theme {
     }
 
     pub fn sinr_color(&self, v: f32) -> Color {
-        if v >= 20.0 {
-            self.ok
-        } else if v >= 10.0 {
-            self.warn
-        } else {
-            self.danger
-        }
+        self.step_color(self.sinr_step(v))
     }
 
     pub fn rsrq_color(&self, v: f32) -> Color {
-        if v >= -10.0 {
-            self.ok
-        } else if v >= -15.0 {
-            self.warn
-        } else {
-            self.danger
-        }
+        self.step_color(self.rsrq_step(v))
     }
 
     pub fn rsrp_quality(&self, v: f32) -> &'static str {
-        if v >= -80.0 {
-            "good"
-        } else if v >= -100.0 {
-            "fair"
-        } else {
-            "poor"
-        }
+        step_word(self.rsrp_step(v))
+    }
+}
+
+/// Fixed domains of the three signal scales, in dBm and dB.
+pub const RSRP_DOMAIN: (f32, f32) = (-140.0, -44.0);
+pub const RSRQ_DOMAIN: (f32, f32) = (-20.0, -3.0);
+pub const SINR_DOMAIN: (f32, f32) = (-10.0, 30.0);
+
+const RSRP_GOOD: f32 = -80.0;
+const RSRP_FAIR: f32 = -100.0;
+const RSRQ_GOOD: f32 = -10.0;
+const RSRQ_FAIR: f32 = -15.0;
+const SINR_GOOD: f32 = 20.0;
+const SINR_FAIR: f32 = 10.0;
+
+fn step_of(v: f32, good: f32, fair: f32) -> u8 {
+    if v >= good {
+        2
+    } else if v >= fair {
+        1
+    } else {
+        0
+    }
+}
+
+/// The word for a step, for a column that has to name the quality in text.
+pub fn step_word(step: u8) -> &'static str {
+    match step {
+        2 => "good",
+        1 => "fair",
+        _ => "poor",
+    }
+}
+
+/// The glyph for a step: three densities, so the reading survives a terminal
+/// that draws every colour the same.
+pub fn step_glyph(step: u8) -> char {
+    match step {
+        2 => '▓',
+        1 => '▒',
+        _ => '░',
     }
 }
 

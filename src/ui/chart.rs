@@ -562,6 +562,41 @@ pub fn spark_auto(
 /// Right-align `data` onto one time window of `slots` columns, taking the
 /// maximum of the samples that land in each slot.
 ///
+/// The column a point on the ruler lands in.
+///
+/// One map from (seconds from the left edge, window, columns) to a column, so
+/// two panels drawn over the same window cannot disagree about where a sample
+/// sits. Every plot and both resamplers below call this and nothing else.
+pub fn slot_of(from_left: u64, window_secs: u64, slots: usize) -> usize {
+    if slots == 0 || window_secs == 0 {
+        return 0;
+    }
+    let slot = (from_left as u128 * slots as u128 / window_secs as u128) as usize;
+    slot.min(slots - 1)
+}
+
+/// The columns one sample covers: from the instant it was read back over the
+/// interval it stands for, so a source coarser than the column grid still fills
+/// every column it was measured over. `None` when the sample sits outside the
+/// window.
+pub fn sample_slots(
+    age: u64,
+    secs_per_sample: u64,
+    window_secs: u64,
+    slots: usize,
+) -> Option<(usize, usize)> {
+    if slots == 0 || window_secs == 0 || age >= window_secs {
+        return None;
+    }
+    let secs_per_sample = secs_per_sample.max(1);
+    let newest = window_secs - age - 1;
+    let oldest = newest.saturating_sub(secs_per_sample - 1);
+    Some((
+        slot_of(oldest, window_secs, slots),
+        slot_of(newest, window_secs, slots),
+    ))
+}
+
 /// A sample stands for the whole interval it was measured over, not for one
 /// instant: mapping only its timestamp leaves holes wherever the source is
 /// coarser than a column, and the plot then reads as dropouts instead of a
@@ -579,15 +614,14 @@ pub fn resample_to_window(
     }
     let secs_per_sample = secs_per_sample.max(1);
     for (i, &v) in data.iter().enumerate() {
-        let age = (data.len() - 1 - i) as u64 * secs_per_sample;
-        if age >= window_secs {
+        let Some((first, last)) = sample_slots(
+            (data.len() - 1 - i) as u64 * secs_per_sample,
+            secs_per_sample,
+            window_secs,
+            slots,
+        ) else {
             continue;
-        }
-        let newest = window_secs - age - 1;
-        let oldest = newest.saturating_sub(secs_per_sample - 1);
-        let to_slot =
-            |from_left: u64| (from_left as u128 * slots as u128 / window_secs as u128) as usize;
-        let (first, last) = (to_slot(oldest), to_slot(newest).min(slots - 1));
+        };
         for slot in out.iter_mut().take(last + 1).skip(first) {
             *slot = (*slot).max(v);
         }
@@ -614,15 +648,14 @@ pub fn resample_min_to_window(
     }
     let secs_per_sample = secs_per_sample.max(1);
     for (i, &v) in data.iter().enumerate() {
-        let age = (data.len() - 1 - i) as u64 * secs_per_sample;
-        if age >= window_secs {
+        let Some((first, last)) = sample_slots(
+            (data.len() - 1 - i) as u64 * secs_per_sample,
+            secs_per_sample,
+            window_secs,
+            slots,
+        ) else {
             continue;
-        }
-        let newest = window_secs - age - 1;
-        let oldest = newest.saturating_sub(secs_per_sample - 1);
-        let to_slot =
-            |from_left: u64| (from_left as u128 * slots as u128 / window_secs as u128) as usize;
-        let (first, last) = (to_slot(oldest), to_slot(newest).min(slots - 1));
+        };
         for slot in out.iter_mut().take(last + 1).skip(first) {
             *slot = Some(match *slot {
                 Some(current) => current.min(v),

@@ -46,6 +46,68 @@ routwatch
 Then `?` for the keys and `,` for the settings overlay. Reads are free; writes
 need `a` then `y` (see [Safety](#safety)).
 
+## The dashboard, seven zones
+
+One screen, one figure each: the serving cell and its meters, the link and the
+session, a signal map over the last four minutes, the same window for
+throughput, the clients, the events, and the status row. The frame below is
+`routwatch preview --size 120x42 --fixture fixtures/sample-snapshot.json`, so
+every value in it is synthetic.
+
+```text
+ routwatch · Test Net · 00101 · LTE · ENDC off                                                   ● live · 0s · poll 0ms 
+ 1 Dashboard │ 2 Bands │ 3 Traffic │ 4 Network │ 5 Clients │ 6 SMS │ 7 Device │ 8 DNS │ 9 Signal    full/dots           
+┌ RADIO ───────────────────────────────────────────────────┐ ┌ LINK / SESSION ─────────────────────────────────────────┐
+│ B1 LTE · 2120/1930 MHz · 20/20 MHz · FDD · TM[4]         │ │ Test Net (00101) · connected · LTE · ENDC off           │
+│ PCI 481 · EARFCN DL:100 UL:18100 · TAC 516               │ │ wan 203.0.113.43 · uptime 6d 3h · since boot            │
+│                                                          │ │                                                         │
+│ RSRP   -95 dBm  ▅▅▅▅····  fair  -140..-44                │ │ now     ↓ 4.00 Mbps        ↑ 200.0 Kbps                 │
+│ RSRQ    -6 dB  ▅▅▅▅▅▅▅·  good  -20..-3                   │ │ peak    ↓ 4.00 Mbps        ↑ 200.0 Kbps     in window   │
+│ SINR     8 dB  ▅▅▅▅····  poor  -10..30                   │ │ session ↓ 98.96 GB        ↑ 6.75 GB     (1d 22h)        │
+│ RSSI -67 dBm · NR bars 0 · ENDC off                      │ │ total   ↓ 50.04 TB        ↑ 1.69 TB     (1013d)         │
+│ 5G   not exposed by this firmware                        │ │ dns 203.0.113.53 · clients 3                            │
+└──────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────┘
+┌ SIGNAL MAP · 240s ───────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ last 240s · 1 cell = 3s · ▓ good  ▒ fair  ░ poor  · blank = no sample                                                │
+│                                                                                                                      │
+│ RSRP                                                                                   ▒  min -95 · avg -95 · max -95│
+│ RSRQ                                                                                   ▓  min -6 · avg -6 · max -6   │
+│ SINR                                                                                   ░  min 8 · avg 8 · max 8      │
+│                                                                                                                      │
+│ -240s                       -180s                       -120s                        -60s                         now│
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ THROUGHPUT ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 1 cell = 3s · same axis as the map above · scale 0..4.00 Mbps auto                                                   │
+│                                                                                                                      │
+│ ↓ down                                                                                 █         pk 4.0M · avg 4.0M  │
+│ ↑ up                                                                                   ▁         pk 200K · avg 200K  │
+│ -240s                       -180s                       -120s                        -60s                         now│
+│ traffic now · dots mode: g · window follows the map above                                                            │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ CLIENTS · 3 · 5G ×2 · 2.4G ×1 ────────────────────────────────────────────┐ ┌ EVENTS / ERRORS ───────────────────────┐
+│ name                       ip              band    connected              │ │ errors 0 · warnings 0 · events 1       │
+│▶ living-room-tv             192.168.8.101   5GHz    4d 11h                │ │                                        │
+│  phone-1                    192.168.8.102   5GHz    0s                    │ │     0s info  session live · Test Net ·…│
+│  (unnamed)                  192.168.8.103   2.4GHz  11h 39m               │ │                                        │
+│ j/k move · enter opens a client · s sort · f filter · 3 of 3 shown        │ │                                        │
+│                                                                           │ │                                        │
+│                                                                           │ │                                        │
+│                                                                           │ │                                        │
+│                                                                           │ │                                        │
+└───────────────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────┘
+ Dash · 192.168.8.1 · refresh 2000ms · j/k · enter open · s sort · f filter · v view… · i events · q quit · ? help      
+```
+
+The two plots share one time axis: the window is always 240 seconds and every
+column the width leaves is a cell, so the cell widens on a narrow terminal
+(3.4s at 80 columns, 1.5s at 200) and the newest sample lands in the same
+column in both. The legend prints the span the columns actually have. A cell carries the worst sample it holds (the lowest
+for RSRP, RSRQ and SINR, the peak for traffic) and a blank cell means no sample
+was taken, never a good one. `j`/`k` move over the clients, `enter` opens the
+selected one on the Clients tab, `s` sorts and `f` filters by band. The
+statistics column beside the map appears from 110 columns up.
+
 ## Does it work with my router?
 
 | Router | WebUI / firmware | What was verified |

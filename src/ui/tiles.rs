@@ -423,6 +423,7 @@ fn draw_map(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
+    use super::instruments;
     use crate::app::{App, Tab, View};
     use crate::model::Snapshot;
     use crate::theme::{by_name, GraphStyle};
@@ -439,8 +440,28 @@ mod tests {
         app
     }
 
+    /// The instrument band on its own: the dashboard no longer draws it, so the
+    /// tiles are measured where they are defined rather than through a layout
+    /// that has moved on.
     fn frame(app: &App) -> String {
-        crate::ui::render_to_string(app, 130, 40)
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (w, h) = (130u16, super::HEIGHT);
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|f| {
+                instruments(f, ratatui::layout::Rect::new(0, 0, w, h), app);
+            })
+            .expect("draw tiles");
+        let buf = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
     }
 
     #[test]
@@ -448,7 +469,7 @@ mod tests {
         let mut app = app();
         app.history_sinr = (0..20).map(|i| 5.0 + i as f64 * 0.5).collect();
         let text = frame(&app);
-        let band: Vec<&str> = text.lines().skip(2).take(7).collect();
+        let band: Vec<&str> = text.lines().take(7).collect();
         let braille = band
             .iter()
             .flat_map(|l| l.chars())
@@ -503,7 +524,7 @@ mod tests {
     #[test]
     fn the_map_sits_beside_sinr() {
         let text = frame(&app());
-        let band = text.lines().nth(2).unwrap_or_default();
+        let band = text.lines().next().unwrap_or_default();
         let sinr = band.find("SINR").expect("SINR tile");
         let map = band.find("SIGNAL MAP").expect("map tile");
         let clients = band.find("CLIENTS").expect("clients tile");
