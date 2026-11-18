@@ -633,6 +633,27 @@ pub fn resample_min_to_window(
     out
 }
 
+/// Right-align a quality series onto one time window of `slots` columns,
+/// keeping the smallest reading in each one.
+///
+/// The signed-domain companion of [`resample_min_to_window`]: values are
+/// shifted by `min` for the integer resampler and back afterwards, so a series
+/// in dBm or dB keeps its physical domain. A slot no sample reached holds
+/// `min`, the floor of that domain, which draws nothing above the baseline.
+pub fn resample_scaled_to_window(
+    values: &VecDeque<f64>,
+    min: f64,
+    secs_per_sample: u64,
+    window_secs: u64,
+    slots: usize,
+) -> VecDeque<f64> {
+    let shifted: Vec<u64> = values.iter().map(|v| (*v - min).max(0.0) as u64).collect();
+    resample_min_to_window(&shifted, secs_per_sample, window_secs, slots)
+        .into_iter()
+        .map(|slot| slot.map_or(min, |v| v as f64 + min))
+        .collect()
+}
+
 /// A ceiling one outlier cannot dominate: the 95th percentile, raised to half
 /// again above the median so a steady series does not sit at the ceiling.
 pub fn robust_max(data: &[u64], percentile: f64) -> u64 {
@@ -756,23 +777,44 @@ pub fn bucket_max(data: &[u64], cells: usize) -> Vec<u64> {
     out
 }
 
-/// The x-axis strip under a time-series plot: the window's start, its
-/// midpoint, and `now`, spread across `width`.
-pub fn time_axis(width: u16, secs: u64) -> String {
+/// The x-axis strip under a time-series plot: the record's start, its
+/// midpoint and `now`, each at its own position inside the window.
+///
+/// The strip is always the plot's full width. The ticks follow the record: a
+/// plot that has only collected part of the window labels that part at its true
+/// place on the ruler and leaves the older columns unlabelled, rather than
+/// compressing three ticks into the few columns the record covers. Ticks that
+/// would overlap are dropped oldest first.
+pub fn time_axis_window(width: u16, window_secs: u64, record_secs: u64) -> String {
     let w = width as usize;
+    let window_secs = window_secs.max(1);
+    let record = record_secs.clamp(1, window_secs);
     let mut out = String::new();
-    for (i, frac) in [0.0f32, 0.5, 1.0].iter().enumerate() {
-        let text = match i {
-            2 => "now".to_string(),
-            _ => format!("-{}s", (secs as f32 * (1.0 - frac)).round() as u64),
-        };
-        let target = ((w.saturating_sub(text.chars().count())) as f32 * frac).round() as usize;
+    let ticks = [
+        (record, format!("-{record}s")),
+        (record / 2, format!("-{}s", record / 2)),
+        (0, "now".to_string()),
+    ];
+    for (age, text) in ticks {
+        let len = text.chars().count();
+        let pos = (window_secs - age) as f32 / window_secs as f32;
+        let target = ((w.saturating_sub(len)) as f32 * pos).round() as usize;
+        let have = out.chars().count();
+        if have > 0 && target < have + 1 {
+            continue;
+        }
         while out.chars().count() < target {
             out.push(' ');
         }
         out.push_str(&text);
     }
     out
+}
+
+/// The axis of a plot that has collected its whole window: the window start on
+/// the left, its midpoint, and `now` on the right.
+pub fn time_axis(width: u16, secs: u64) -> String {
+    time_axis_window(width, secs, secs)
 }
 
 /// Top-anchored blocks, for the mirrored half of a `bars` graph.

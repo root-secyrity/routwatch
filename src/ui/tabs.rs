@@ -132,15 +132,23 @@ fn graph_style_name(style: crate::theme::GraphStyle) -> &'static str {
     }
 }
 
+/// The time window a plot draws: the record capacity times the sample period.
+///
+/// A plot is sized by this window and the panel, never by the samples on hand:
+/// the same span of seconds must cover the same columns whether the record is
+/// empty, half full or full, and a tick names an instant inside the window.
+fn plot_window(app: &App) -> u64 {
+    (crate::app::HISTORY as u64 * app.refresh_ms.max(1) / 1000).max(1)
+}
+
 /// The throughput plot: rx above the zero row, tx below it, one scale, one
 /// time window, and an axis that names the window actually drawn.
 fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let refresh = app.refresh_ms.max(1);
     let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
     let tx: Vec<u64> = app.history_ul.iter().map(|v| v.max(0.0) as u64).collect();
     let samples = rx.len().max(tx.len());
-    let secs = (samples as u64 * refresh / 1000).max(1);
+    let secs = (samples as u64 * app.refresh_ms.max(1) / 1000).max(1);
 
     // No sample means no window: a "last 1s" title would be a claim about data
     // that does not exist yet.
@@ -196,11 +204,16 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
 fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     let theme = &app.theme;
     let opts = app.chart_opts();
-    let refresh = app.refresh_ms.max(1);
     let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
     let tx: Vec<u64> = app.history_ul.iter().map(|v| v.max(0.0) as u64).collect();
     let samples = rx.len().max(tx.len());
-    let secs = (samples as u64 * refresh / 1000).max(1);
+    let window = plot_window(app);
+    let record_secs = (samples as u64 * app.refresh_ms.max(1) / 1000).max(1);
+    let secs_per_sample = (app.refresh_ms.max(1) / 1000).max(1);
+    // One sample is not a trend: it keeps the single column it really is. A
+    // reading resampled across the window draws a flat line with a gap after
+    // it, which reads as traffic that stopped.
+    let collecting = samples == 1;
     let rx_peak = rx.iter().copied().max().unwrap_or(0);
     let tx_peak = tx.iter().copied().max().unwrap_or(0);
     let peak = rx_peak.max(tx_peak).max(1);
@@ -215,17 +228,24 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     if inner.width <= gutter + 8 {
         return;
     }
-    // One cell per sample, never a stretch. Stretching the history across the
-    // whole width made a single reading paint a four-cell bar at start-up and a
-    // one-cell bar two minutes later, so the same value changed width while the
-    // app ran. A short history now leaves the left side blank.
+    // The plot is the time window, not the record: it spans the panel, and each
+    // sample sits at its age inside the window. The record sets neither the
+    // width nor where a tick lands.
     let capacity = (inner.width - gutter) as usize;
-    let cells = samples.min(capacity).max(1);
-    let plot = Rect {
-        x: inner.x + inner.width - cells as u16,
-        y: inner.y + 1,
-        width: cells as u16,
-        height: inner.height - 2,
+    let plot = if collecting {
+        Rect {
+            x: inner.x + inner.width - 1,
+            y: inner.y + 1,
+            width: 1,
+            height: inner.height - 2,
+        }
+    } else {
+        Rect {
+            x: inner.x + gutter,
+            y: inner.y + 1,
+            width: capacity as u16,
+            height: inner.height - 2,
+        }
     };
 
     // The Signal tab gives this panel half a frame: peak and average there
@@ -257,11 +277,8 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
         Rect { height: 1, ..inner },
     );
 
-    // One sample is not a trend: resampling it across the window drew a flat
-    // line over half the plot with a gap after it, which reads as "traffic
-    // stopped". Keep the single column it really is, with no baseline, and let
-    // the title and the axis say why there is only one.
-    let collecting = samples == 1;
+    // A single reading keeps no baseline: a floor line under one column would
+    // read as a series that went quiet.
     let opts = if collecting {
         crate::ui::chart::ChartOpts {
             baseline: false,
@@ -270,19 +287,22 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     } else {
         opts
     };
-    let (rx_plot, tx_plot) = if samples <= capacity {
+    let (rx_plot, tx_plot) = if collecting {
         (rx.clone(), tx.clone())
     } else {
         (
-            crate::ui::chart::bucket_max(&rx, cells),
-            crate::ui::chart::bucket_max(&tx, cells),
+            crate::ui::chart::resample_to_window(&rx, secs_per_sample, window, capacity),
+            crate::ui::chart::resample_to_window(&tx, secs_per_sample, window, capacity),
         )
     };
     // A percentile ceiling, not the peak: one burst stays visible as a clipped
     // tower instead of flattening the body of the series onto the floor. The
-    // meta line still reports the true peak and average.
-    let rx_clip = crate::ui::chart::robust_max(&rx_plot, 0.95);
-    let tx_clip = crate::ui::chart::robust_max(&tx_plot, 0.95);
+    // meta line still reports the true peak and average. Only the slots the
+    // record reaches are sampled: the empty left of a short history is not a
+    // reading, and counting its zeros would flatten the scale.
+    let covered = rx_plot.len().saturating_sub(samples.min(rx_plot.len()));
+    let rx_clip = crate::ui::chart::robust_max(&rx_plot[covered..], 0.95);
+    let tx_clip = crate::ui::chart::robust_max(&tx_plot[covered..], 0.95);
     let (rx_max, tx_max) = if split {
         (rx_clip, tx_clip)
     } else {
@@ -332,11 +352,11 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     let axis = if collecting {
         "collecting…".to_string()
     } else {
-        let full = crate::ui::chart::time_axis(plot.width, secs);
+        let full = crate::ui::chart::time_axis_window(plot.width, window, record_secs);
         if full.chars().count() <= plot.width as usize {
             full
         } else {
-            narrow_axis(plot.width, secs)
+            narrow_axis(plot.width, window)
         }
     };
     if !axis.is_empty() {
@@ -2895,6 +2915,17 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     // The traces own their rows: the label, value and domain sit on the line
     // above, so there is no gutter to reserve and the trace runs to the edge.
     let width = (inner.width as usize).max(8);
+    // A dot cell holds two columns of samples, so the series is resampled at
+    // the cell's own resolution and the renderer's two-per-cell pass leaves no
+    // gap. Bars and the ascii fallback take one sample per cell. Mapping the
+    // record straight in drew 120 samples as 60 cells in the right quarter.
+    let slots = if app.graph.is_bars() || app.graph.is_ascii() {
+        width
+    } else {
+        width * 2
+    };
+    let secs_per_sample = (app.refresh_ms.max(1) / 1000).max(1);
+    let window = plot_window(app);
 
     let mut lines: Vec<Line> = Vec::new();
     for (label, hist, colour, min, max) in series {
@@ -2913,8 +2944,15 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
             Span::styled(format!("{min:.0}…{max:.0}"), Style::default().fg(t.dim)),
         ]));
         if rows > 0 {
-            lines.extend(crate::ui::chart::spark_lines_scaled(
+            let mapped = crate::ui::chart::resample_scaled_to_window(
                 hist,
+                min,
+                secs_per_sample,
+                window,
+                slots,
+            );
+            lines.extend(crate::ui::chart::spark_lines_scaled(
+                &mapped,
                 width,
                 rows,
                 app.graph.is_bars(),
@@ -3037,7 +3075,7 @@ pub fn dense(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{split, visible_rows};
+    use super::{graphs_panel, split, throughput_panel, visible_rows};
     use crate::app::{App, Tab};
     use crate::theme::{GraphStyle, Theme};
 
@@ -3207,5 +3245,190 @@ mod tests {
             !screen.contains("SPEED · "),
             "no history panel when the body is under 18 rows"
         );
+    }
+
+    // ----------------------------------------------------------- plot window
+
+    /// Render one panel alone into a text grid, so a test can measure the
+    /// columns its ink occupies rather than guess from a whole frame.
+    fn panel_rows<F>(w: u16, h: u16, draw: F) -> Vec<String>
+    where
+        F: FnOnce(&mut ratatui::Frame, ratatui::layout::Rect),
+    {
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        let area = ratatui::layout::Rect::new(0, 0, w, h);
+        terminal.draw(|f| draw(f, area)).expect("draw panel");
+        let buf = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect())
+            .collect()
+    }
+
+    /// The leftmost and rightmost column that carries plot ink between two
+    /// rows. Only braille and block glyphs count: the gutter prints scale
+    /// numbers on the plot's own rows, and a digit is not a sample.
+    fn ink_span(rows: &[String], from: usize, to: usize) -> Option<(usize, usize)> {
+        let mut lo: Option<usize> = None;
+        let mut hi: Option<usize> = None;
+        for line in rows.iter().take(to).skip(from) {
+            for (x, ch) in line.chars().enumerate() {
+                let plot_glyph = ('\u{2580}'..='\u{259f}').contains(&ch)
+                    || ('\u{2801}'..='\u{28ff}').contains(&ch);
+                if plot_glyph {
+                    lo = Some(lo.map_or(x, |v| v.min(x)));
+                    hi = Some(hi.map_or(x, |v| v.max(x)));
+                }
+            }
+        }
+        lo.map(|l| (l, hi.expect("ink needs a right edge")))
+    }
+
+    /// 120 samples at the 2000ms default: one full 240s window.
+    fn full_window_app() -> App {
+        let mut a = fixture_app();
+        a.history_dl.clear();
+        a.history_ul.clear();
+        for i in 0..120 {
+            a.history_dl.push_back(1_000_000.0 + i as f64);
+            a.history_ul.push_back(100_000.0);
+        }
+        a
+    }
+
+    /// The rows the rx series can ink: below the readings line and above the
+    /// zero row, which the renderer inks across the whole window by design.
+    fn rx_rows(h: u16) -> (usize, usize) {
+        let plot_h = h as usize - 4;
+        let rx_h = plot_h - plot_h / 2;
+        (2, 2 + rx_h - 1)
+    }
+
+    #[test]
+    fn the_throughput_plot_spans_the_window_at_every_size() {
+        let app = full_window_app();
+        for (w, h) in [(80u16, 24u16), (120, 34), (220, 50)] {
+            let rows = panel_rows(w, h, |f, a| throughput_panel(f, a, &app));
+            let (from, to) = rx_rows(h);
+            let (lo, hi) = ink_span(&rows, from, to).expect("plot ink");
+            assert!(
+                lo <= 14,
+                "the window opens at the plot's left edge at {w}x{h}: {lo}"
+            );
+            assert!(
+                hi >= w as usize - 3,
+                "the newest sample lands on the plot's right edge at {w}x{h}: {hi}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_throughput_axis_ticks_sit_on_the_window_edges() {
+        let app = full_window_app();
+        for (w, h) in [(120u16, 34u16), (220, 50)] {
+            let rows = panel_rows(w, h, |f, a| throughput_panel(f, a, &app));
+            let axis = &rows[h as usize - 2];
+            let left = axis.find("-240s").expect("window start tick");
+            let mid = axis.find("-120s").expect("window midpoint tick");
+            let now = axis.rfind("now").expect("now tick");
+            assert!(
+                left <= 14,
+                "the start tick sits on the plot's left edge: {axis}"
+            );
+            let centre = left + (w as usize - 2 - left) / 2;
+            assert!(
+                (mid as i32 - centre as i32).abs() <= 2,
+                "the midpoint tick sits mid-plot at {w}x{h}: {axis}"
+            );
+            assert!(
+                now + 3 >= w as usize - 2,
+                "the now tick sits on the right edge at {w}x{h}: {axis}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_throughput_history_keeps_the_window() {
+        let mut app = fixture_app();
+        app.history_dl.clear();
+        app.history_ul.clear();
+        for _ in 0..30 {
+            app.history_dl.push_back(1_000_000.0);
+            app.history_ul.push_back(100_000.0);
+        }
+        let (w, h) = (220u16, 50u16);
+        let rows = panel_rows(w, h, |f, a| throughput_panel(f, a, &app));
+        let axis = &rows[h as usize - 2];
+        assert!(
+            !axis.contains("-240s"),
+            "no tick may name time the record never covered: {axis}"
+        );
+        let start = axis.find("-60s").expect("the record start on the ruler");
+        assert!(axis.contains("now"), "the ruler still ends at now: {axis}");
+        let (from, to) = rx_rows(h);
+        let (lo, hi) = ink_span(&rows, from, to).expect("plot ink");
+        assert!(hi >= w as usize - 3, "the newest sample sits at now: {hi}");
+        // 60s of a 240s window: the ink starts three quarters in, and the tick
+        // naming that instant sits on the same column as the first sample.
+        assert!(
+            lo >= w as usize * 7 / 10,
+            "a quarter-full record must not stretch across the window: ink starts at {lo}"
+        );
+        // Nor may it be squeezed to the right edge: 60s of 240s begins at three
+        // quarters of the window, not at the last few columns.
+        assert!(
+            lo <= w as usize * 4 / 5,
+            "the record keeps its true age: ink starts at {lo}"
+        );
+        assert!(
+            (lo as i32 - start as i32).abs() <= 3,
+            "the record's first column and its tick must agree: ink {lo}, tick {start}"
+        );
+    }
+
+    #[test]
+    fn the_signal_graphs_span_the_window() {
+        for (w, h) in [(120u16, 34u16), (220, 50)] {
+            let mut app = fixture_app();
+            app.history_rsrp.clear();
+            for i in 0..120 {
+                app.history_rsrp
+                    .push_back(if i % 2 == 0 { -140.0 } else { -44.0 });
+            }
+            let rows = panel_rows(w, h, |f, a| graphs_panel(f, a, &app, true));
+            let inner_h = h as usize - 2;
+            let traces = ((inner_h - 3) / 3).min(4);
+            // Row 1 is the RSRP label; the traces follow; the last of them is
+            // the baseline, which is inked even with no data.
+            let (lo, _) = ink_span(&rows, 2, traces + 1).expect("trace ink");
+            assert!(
+                lo <= 2,
+                "the trace fills the window from its left edge at {w}x{h}: {lo}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_signal_history_stays_on_the_right() {
+        let (w, h) = (220u16, 50u16);
+        let mut app = fixture_app();
+        app.history_rsrp.clear();
+        for i in 0..30 {
+            app.history_rsrp
+                .push_back(if i % 2 == 0 { -140.0 } else { -44.0 });
+        }
+        let rows = panel_rows(w, h, |f, a| graphs_panel(f, a, &app, true));
+        let inner_h = h as usize - 2;
+        let traces = ((inner_h - 3) / 3).min(4);
+        let (lo, hi) = ink_span(&rows, 2, traces + 1).expect("trace ink");
+        assert!(
+            lo >= w as usize / 2,
+            "60s of a 240s window starts on the right half: ink starts at {lo}"
+        );
+        assert!(
+            lo <= w as usize * 4 / 5,
+            "the record keeps its true age instead of hugging the right edge: ink starts at {lo}"
+        );
+        assert!(hi >= w as usize - 3, "the newest sample sits at now: {hi}");
     }
 }
