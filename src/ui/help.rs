@@ -202,7 +202,7 @@ pub fn footer(allow_write: bool) -> &'static str {
     if allow_write {
         " writes enabled: a then y sends to the router"
     } else {
-        " read-only build: no router writes are enabled"
+        " read-only build: start with --allow-write to write"
     }
 }
 

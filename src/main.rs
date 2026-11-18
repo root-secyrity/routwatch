@@ -77,6 +77,12 @@ struct Cli {
     #[arg(long, global = true, help = TAB_HELP)]
     tab: Option<String>,
 
+    /// Let the TUI write to the router: applying a band set, deleting a
+    /// message, marking one read. Every write still asks for confirmation
+    /// first and is verified by reading the router back
+    #[arg(long)]
+    allow_write: bool,
+
     /// Hide serial, IMEI, MACs, WAN IP and client names in `snapshot`, so the
     /// output can be pasted in a public issue
     #[arg(long, global = true)]
@@ -1888,6 +1894,9 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
         app.band_presets = presets.clone();
     }
     app.report_identity = cli.report_identity || cfg.app.report_identity;
+    // Writes in the TUI are gated on this flag alone: the help footer says so,
+    // and every write still confirms and reads the router back.
+    app.allow_write = cli.allow_write;
     // One clamp, read by both the confirmation modal and the run itself.
     app.set_speed_cfg(cfg.app.speedtest.clone());
     app.config_path = cli.config.clone();
@@ -3937,5 +3946,29 @@ mod key_tests {
             }
             other => panic!("expected one SpeedTest command, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::{build_app, Cli};
+    use clap::Parser;
+
+    #[test]
+    fn the_tui_write_gate_follows_the_flag_and_stays_off_without_it() {
+        let cfg = routwatch::config::Config::default();
+        let off = Cli::parse_from(["routwatch", "--tab", "sms"]);
+        let app = build_app(&off, &cfg).expect("the default frame builds");
+        assert!(
+            !app.allow_write,
+            "writes must stay off when the flag is absent"
+        );
+
+        let on = Cli::parse_from(["routwatch", "--allow-write", "--tab", "sms"]);
+        let app = build_app(&on, &cfg).expect("the gated frame builds");
+        assert!(
+            app.allow_write,
+            "--allow-write must open the gate the SMS and Bands keys check"
+        );
     }
 }

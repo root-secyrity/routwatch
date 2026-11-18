@@ -76,7 +76,10 @@ the last sample (`stale 45s`) and, while a scan runs, the endpoint being read
 
 The write keys (`a` on Bands, `d` on Traffic/DNS, `b` on Device, `d` and `m` on
 SMS) are the only ones that change the router; `b` on Traffic only moves the local
-budget baseline, which is why it asks for a `y` but dials nothing. The three rules that guard them are in the README's
-Safety list; what can go wrong during a write is in [limits.md](limits.md).
+budget baseline, which is why it asks for a `y` but dials nothing. All of them stay
+off unless the TUI is started with `--allow-write`; without it the key answers
+`writes are off: start with --allow-write` and sends nothing. The three rules that
+guard them are in the README's Safety list; what can go wrong during a write is in
+[limits.md](limits.md).
 
 Back: [README](../README.md) · [all docs](README.md)
