@@ -3,8 +3,11 @@
 Two maps of routwatch, in English and Arabic. Each map comes as a self-contained
 HTML file and as a still PNG preview of the same drawing.
 
-Every file was regenerated with Archify 3.2 from commit `a2610eed97dbc879ebfa30f49ef38db7d05e3d4a` (2026-11-06),
-and the claims drawn inside the HTML carry the source line they were taken from at that revision.
+Both maps were drawn with Archify 3.2 and their evidence lines were refreshed against commit
+`89e79313001eaba7698d54b1da27babdd265521d` (2026-11-19), so the claims drawn inside the HTML carry the source
+line they were taken from at that revision.
+The architecture map names the shared time axis and the panel layer, and the sequence map adds a fourth stage: a guarded
+message delete, one request per index, verified by re-reading the inbox.
 Nothing here is hand-drawn, and nothing here describes a device that was tested:
 the diagrams describe the code, and the screenshots they reference are the same
 synthetic fixtures used in the README.
@@ -42,8 +45,10 @@ check rejects that character in docs.
 خريطتان لـ routwatch، بالعربية والإنجليزية. كل خريطة تأتي كملف HTML قائم بذاته
 وكصورة PNG ثابتة لنفس الرسم.
 
-كل ملف أُعيد توليده بـArchify 3.2 من الالتزام `a2610eed97dbc879ebfa30f49ef38db7d05e3d4a` (2026-11-06)، والأدلة
-المكتوبة داخل ملف HTML مرتبطة بأسطر الكود التي أُخذت منها. لا شيء هنا مرسوم
+كل خريطة رُسمت بـArchify 3.2، وأُعيد توجيه أدلتها إلى الالتزام `89e79313001eaba7698d54b1da27babdd265521d` (2026-11-19)،
+والأدلة المكتوبة داخل ملف HTML مرتبطة بأسطر الكود التي أُخذت منها.
+مخطط المعمارية يسمّي محور الوقت الموحّد وطبقة اللوحات، ومخطط التسلسل يضيف مرحلة رابعة: حذف رسالة
+بعد تأكيد، طلب واحد لكل فهرس، ويُتحقَّق منه بقراءة صندوق الوارد مرة أخرى. لا شيء هنا مرسوم
 يدويًا، ولا شيء هنا يصف جهازًا جرى اختباره: المخططات تصف الكود، واللقطات التي
 تشير إليها هي نفس الـ fixtures الاصطناعية المستخدمة في README.
 

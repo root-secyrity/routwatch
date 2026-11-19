@@ -19,53 +19,61 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphStyle {
-    Bars,
-    Dots,
+    /// One braille cell per two samples: the renderer every other one was a
+    /// variation of, and the default.
     Braille,
     /// Single-width ASCII glyphs, for terminals whose font draws braille or
     /// block characters wider than one cell.
     Ascii,
 }
 
-impl GraphStyle {
-    /// Strict form for CLI values: an unknown name must be a usage error, not
-    /// a silent fall back to dots.
-    pub fn try_parse(s: &str) -> Option<GraphStyle> {
-        match s.to_ascii_lowercase().as_str() {
-            "dots" | "dot" => Some(GraphStyle::Dots),
-            "bars" | "bar" => Some(GraphStyle::Bars),
-            "braille" | "btop" => Some(GraphStyle::Braille),
-            "ascii" | "text" => Some(GraphStyle::Ascii),
-            _ => None,
-        }
-    }
+/// The result of reading a `graph_style` setting or a `--graph` value: the
+/// style to draw, plus the one line that must be said when the file or script
+/// still names a renderer this build has retired.
+#[derive(Debug)]
+pub struct StyleChoice {
+    pub style: GraphStyle,
+    pub notice: Option<String>,
+}
 
-    pub fn parse(s: &str) -> GraphStyle {
-        Self::try_parse(s).unwrap_or(GraphStyle::Dots)
+impl GraphStyle {
+    /// Resolve a setting or flag value.
+    ///
+    /// A retired name is not an error: a config written by an older build must
+    /// still load, so `dots` and `bars` map to braille and hand back one line
+    /// naming what replaced them. A name this build never drew is an error that
+    /// names the values it does take, never a panic and never a silent fall
+    /// back.
+    pub fn resolve(value: &str) -> Result<StyleChoice, String> {
+        let v = value.trim().to_ascii_lowercase();
+        let style = match v.as_str() {
+            "braille" | "btop" => GraphStyle::Braille,
+            "ascii" | "text" => GraphStyle::Ascii,
+            "dots" | "dot" | "bars" | "bar" => {
+                return Ok(StyleChoice {
+                    style: GraphStyle::Braille,
+                    // One short line: the status bar shares its row with the
+                    // keys, and a notice that fills half of it clips them.
+                    notice: Some(format!("graph {v} retired; braille")),
+                });
+            }
+            other => {
+                return Err(format!(
+                    "unknown graph {other:?}; this build takes braille or ascii"
+                ));
+            }
+        };
+        Ok(StyleChoice {
+            style,
+            notice: None,
+        })
     }
 
     pub fn name(&self) -> &'static str {
         match self {
-            GraphStyle::Bars => "bars",
-            GraphStyle::Dots => "dots",
             GraphStyle::Braille => "braille",
             GraphStyle::Ascii => "ascii",
         }
-    }
-
-    pub fn next(&self) -> GraphStyle {
-        match self {
-            GraphStyle::Dots => GraphStyle::Bars,
-            GraphStyle::Bars => GraphStyle::Braille,
-            GraphStyle::Braille => GraphStyle::Dots,
-            // Not in the cycle: reaching it takes an explicit --graph ascii.
-            GraphStyle::Ascii => GraphStyle::Dots,
-        }
-    }
-
-    /// True for the block style, false for both braille names.
-    pub fn is_bars(self) -> bool {
-        matches!(self, GraphStyle::Bars)
     }
 
     /// True for the single-width fallback, which the chart draws with ASCII.
@@ -222,15 +230,35 @@ impl Theme {
         self.id == "terminal"
     }
 
+    /// Quality of one reading on its own fixed scale: 2 good, 1 fair, 0 poor.
+    ///
+    /// The three signal scales below are the only place their thresholds live.
+    /// Colour, the quality word and the heatmap glyph all read this step, so a
+    /// reading cannot be painted fair in one panel and labelled poor in another.
+    pub fn rsrp_step(&self, v: f32) -> u8 {
+        step_of(v, RSRP_GOOD, RSRP_FAIR)
+    }
+
+    pub fn rsrq_step(&self, v: f32) -> u8 {
+        step_of(v, RSRQ_GOOD, RSRQ_FAIR)
+    }
+
+    pub fn sinr_step(&self, v: f32) -> u8 {
+        step_of(v, SINR_GOOD, SINR_FAIR)
+    }
+
+    /// The colour of a step: good, fair, poor, in the theme's own palette.
+    pub fn step_color(&self, step: u8) -> Color {
+        match step {
+            2 => self.ok,
+            1 => self.warn,
+            _ => self.danger,
+        }
+    }
+
     /// Quality colour for signal readings (3GPP-ish thresholds, same as the plan).
     pub fn rsrp_color(&self, v: f32) -> Color {
-        if v >= -80.0 {
-            self.ok
-        } else if v >= -100.0 {
-            self.warn
-        } else {
-            self.danger
-        }
+        self.step_color(self.rsrp_step(v))
     }
 
     /// RSSI has its own scale (-113..-51), roughly 20 dB above RSRP. Using the
@@ -246,33 +274,56 @@ impl Theme {
     }
 
     pub fn sinr_color(&self, v: f32) -> Color {
-        if v >= 20.0 {
-            self.ok
-        } else if v >= 10.0 {
-            self.warn
-        } else {
-            self.danger
-        }
+        self.step_color(self.sinr_step(v))
     }
 
     pub fn rsrq_color(&self, v: f32) -> Color {
-        if v >= -10.0 {
-            self.ok
-        } else if v >= -15.0 {
-            self.warn
-        } else {
-            self.danger
-        }
+        self.step_color(self.rsrq_step(v))
     }
 
     pub fn rsrp_quality(&self, v: f32) -> &'static str {
-        if v >= -80.0 {
-            "good"
-        } else if v >= -100.0 {
-            "fair"
-        } else {
-            "poor"
-        }
+        step_word(self.rsrp_step(v))
+    }
+}
+
+/// Fixed domains of the three signal scales, in dBm and dB.
+pub const RSRP_DOMAIN: (f32, f32) = (-140.0, -44.0);
+pub const RSRQ_DOMAIN: (f32, f32) = (-20.0, -3.0);
+pub const SINR_DOMAIN: (f32, f32) = (-10.0, 30.0);
+
+const RSRP_GOOD: f32 = -80.0;
+const RSRP_FAIR: f32 = -100.0;
+const RSRQ_GOOD: f32 = -10.0;
+const RSRQ_FAIR: f32 = -15.0;
+const SINR_GOOD: f32 = 20.0;
+const SINR_FAIR: f32 = 10.0;
+
+fn step_of(v: f32, good: f32, fair: f32) -> u8 {
+    if v >= good {
+        2
+    } else if v >= fair {
+        1
+    } else {
+        0
+    }
+}
+
+/// The word for a step, for a column that has to name the quality in text.
+pub fn step_word(step: u8) -> &'static str {
+    match step {
+        2 => "good",
+        1 => "fair",
+        _ => "poor",
+    }
+}
+
+/// The glyph for a step: three densities, so the reading survives a terminal
+/// that draws every colour the same.
+pub fn step_glyph(step: u8) -> char {
+    match step {
+        2 => '▓',
+        1 => '▒',
+        _ => '░',
     }
 }
 
@@ -735,14 +786,39 @@ mod tests {
     }
 
     #[test]
-    fn graph_style_cycles() {
-        assert_eq!(GraphStyle::Dots.next(), GraphStyle::Bars);
-        assert_eq!(GraphStyle::Bars.next(), GraphStyle::Braille);
-        assert_eq!(GraphStyle::Braille.next(), GraphStyle::Dots);
-        assert_eq!(GraphStyle::parse("btop"), GraphStyle::Braille);
-        assert_eq!(GraphStyle::parse("ascii"), GraphStyle::Ascii);
-        assert_eq!(GraphStyle::Ascii.name(), "ascii");
-        assert_eq!(GraphStyle::Ascii.next(), GraphStyle::Dots);
+    fn a_removed_value_prints_one_notice_naming_what_replaced_it() {
+        for old in ["dots", "dot", "bars", "bar"] {
+            let choice = GraphStyle::resolve(old).expect("a retired name still resolves");
+            assert_eq!(choice.style, GraphStyle::Braille, "{old} maps to braille");
+            let notice = choice.notice.expect("a retired name says so");
+            assert!(
+                notice.contains(old),
+                "names the value it replaced: {notice}"
+            );
+            assert!(
+                notice.contains("retired"),
+                "says the renderer is gone: {notice}"
+            );
+            assert!(
+                notice.contains("braille"),
+                "names what is drawn instead: {notice}"
+            );
+            assert!(!notice.contains('\n'), "one line only: {notice:?}");
+        }
+        for live in ["braille", "btop", "ascii", "text"] {
+            let choice = GraphStyle::resolve(live).expect("a live name resolves");
+            assert!(choice.notice.is_none(), "{live} is still a choice");
+        }
+    }
+
+    #[test]
+    fn an_unknown_mode_value_is_rejected_with_a_clear_message_not_a_panic() {
+        let err = GraphStyle::resolve("neon").expect_err("an unknown name is an error");
+        assert!(err.contains("neon"), "names the value: {err}");
+        assert!(
+            err.contains("braille") && err.contains("ascii"),
+            "names the values this build takes: {err}"
+        );
     }
 
     const RYOKU_FIXTURE: &str = r##"{

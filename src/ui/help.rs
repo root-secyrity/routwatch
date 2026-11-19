@@ -66,7 +66,7 @@ pub fn rows() -> Vec<KeyRow> {
         KeyRow {
             keys: "S / ,",
             short: "settings overlay",
-            full: "settings: theme, view, graph, refresh, budget; w saves",
+            full: "settings: theme, view, refresh, budget; w saves",
         },
         KeyRow {
             keys: "[ / ]",
@@ -87,11 +87,6 @@ pub fn rows() -> Vec<KeyRow> {
             keys: "l / L",
             short: "lite on / off",
             full: "toggle lite and return to the view you came from",
-        },
-        KeyRow {
-            keys: "g",
-            short: "graph: dots/bars/braille",
-            full: "cycle the graph: dots -> bars -> braille",
         },
         KeyRow {
             keys: "i",
@@ -127,6 +122,31 @@ pub fn rows() -> Vec<KeyRow> {
             keys: "m / o",
             short: "bands: mode / NR option",
             full: "bands: network mode / NR option",
+        },
+        KeyRow {
+            keys: "SMS: Enter",
+            short: "SMS: open a message",
+            full: "SMS: open the message under the cursor in the wrapped reader; Esc closes it. Opening never marks it read",
+        },
+        KeyRow {
+            keys: "SMS: space",
+            short: "SMS: mark / unmark",
+            full: "SMS: mark or unmark the row under the cursor; a marks every row and clears them again, and the mark count sits in the panel title",
+        },
+        KeyRow {
+            keys: "SMS: n / p",
+            short: "SMS: next / prev page",
+            full: "SMS: next / previous inbox page (20 rows a page, refused when there is no more)",
+        },
+        KeyRow {
+            keys: "SMS: d",
+            short: "SMS: delete, then y",
+            full: "SMS: delete the marked rows (or the one under the cursor); asks y first, needs a writable build, and reports every index that failed",
+        },
+        KeyRow {
+            keys: "SMS: m",
+            short: "SMS: mark read, then y",
+            full: "SMS: mark the open message read on the device; only by this key, never by opening it",
         },
         KeyRow {
             keys: "d / z",
@@ -177,7 +197,7 @@ pub fn footer(allow_write: bool) -> &'static str {
     if allow_write {
         " writes enabled: a then y sends to the router"
     } else {
-        " read-only build: no router writes are enabled"
+        " read-only build: start with --allow-write to write"
     }
 }
 

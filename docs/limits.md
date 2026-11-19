@@ -3,10 +3,61 @@
 This file answers: what is known not to work, what looks broken but is not, and
 why each one is stated instead of hidden.
 
+- **The dashboard window is fixed at 240 seconds**: every column the width
+  leaves becomes a cell, so the cell span adapts instead (3.4s at 80 columns,
+  3s at 120, 1.5s at 200), the window never does, and the ruler prints `-240s`
+  even when the record holds ten seconds. A short record sits at the right edge
+  instead of being stretched over the plot, and the legend prints the span the
+  columns actually have.
+- **A cell is its worst sample, not its average**: RSRP, RSRQ and SINR take the
+  lowest reading in the cell, throughput takes the peak. Averaging hides the
+  dip the map exists to show.
+- **A blank cell means no sample**: it is not coloured good, not filled from a
+  neighbour and not interpolated.
+- **The store holds 240 seconds**: five series of 480 samples (19.2 KB in
+  memory), sized for the 500ms poll floor. A slower poll keeps more seconds than
+  the window shows; a faster one cannot, and the cell widens.
+- **The map statistics column is the first thing a narrow terminal loses**: the
+  three metric rows stay, then RSRQ, then SINR, and the ruler stays last. The
+  insight line (`worst ... · SINR < 0 for 41s · 3 dips`) needs ten filled cells
+  and is dropped, not guessed, below that.
+- **The client table has no RSSI or rate column**: this firmware's client list
+  carries name, IP, MAC, frequency, SSID and connection time, and the model
+  stores exactly those. A column the router never reports is removed, not
+  printed as `-`.
+- **An Arabic client name may reorder inside its column**: cells are laid out in
+  logical order and the terminal handles direction, the same limit as the SMS
+  list. The Clients tab detail shows the full name.
+- **`s` sorts on the Dashboard**: on every other tab `s` opens the settings
+  panel, and this is the one key that differs by tab by design.
 - **SMS**: reading the inbox works on H122-373 when the request carries
   `Ascending` (it did not before). A firmware that still answers `100005` is
   reporting a format error; the tab says the request was rejected, not that SMS
   is blocked.
+- **Deleting and marking read are verified on H122-373**: both paths were used on
+  the device (2026-11-19; the inbox went from 8 messages to 3, and a delete is
+  accepted only when the re-read no longer lists the index). A firmware that
+  refuses the path answers `100003` or `100002`; that is reported as
+  "unsupported" with its code, never as "deleted", and the keys stay visible so
+  the answer is readable.
+- **A bulk delete is one request per index and can fail halfway**: each index is
+  posted on its own, the first refusal that means "this firmware does not take it"
+  stops the loop, and the rows it never reached are listed as "not attempted".
+  The verdict comes from re-reading the inbox, not from the POST answer, so the
+  summary reads `deleted 5 of 7 · 2 failed (index 12: unsupported (100003) ·
+  index 19: still present)` and the command exits non-zero. The lines never reach
+  the device in one request, so a dropped link leaves the rest untouched.
+- **Opening a message writes nothing**: the reader is client-side, and it does
+  not send a read receipt. Marking read is a separate key (`m`) behind the same
+  write gate, then verified by re-reading `Smstat`.
+- **`BoxType` beyond the inbox is unverified**: `--folder inbox` sends `BoxType
+  1`, which the H122-373 accepts; outbox (`2`) and draft (`3`) follow Huawei's
+  numbering and were not measured, so the CLI says so instead of implying three
+  tested folders.
+- **The TUI cannot reorder Arabic**: cells are laid out in logical order, so a
+  right-to-left body inside the panel can appear reversed on a terminal without
+  bidi. `routwatch sms read <index>` prints the body untouched, and the terminal
+  handles the direction.
 - **`100003` carries two meanings on the H122-373**: Huawei's table names it
   `ERROR_NO_RIGHT`, and this firmware also answers it for paths it does not serve
   (measured 2026-11-10: 45 candidate NR paths, every one of them 100003, in a
@@ -56,12 +107,12 @@ why each one is stated instead of hidden.
   columns the status line keeps one fact plus the keys, below 40 only the keys; the
   dashboard drops from four blocks to signal + speed + history (under 25 rows) and
   to one signal panel at the 24x6 floor, where `too small` names the size it needs.
-- **Graph colour assumes a dark terminal when the theme has no background of its
-  own**: six of the eight themes set `bg = Reset`, where the background belongs to
-  the terminal and cannot be read. The ramp then anchors on a stated dark
-  assumption, so the dimmest cells can be dimmer than the measured 4:1 floor on a
-  light terminal. `sky` and `paper` paint their own background and are measured
-  exactly.
+- **A retired graph style loads as braille**: `dots` and `bars` drew braille
+  cells with a colour ramp, and the ramp assumed a dark terminal on the six themes
+  whose background is `Reset`. Both names now resolve to braille, the series is
+  one flat colour, and the file or script that named one is told once
+  (`graph dots retired; braille`) instead of failing. A value this build
+  never drew is refused with the two it takes, braille or ascii.
 - **One renderer draws every plot**: `ui::chart` owns the braille area, the
   mirrored pair and the axis. `ui::widgets` no longer carries `spark` or
   `spark_scaled`; a panel that wants a trend calls `chart::spark_auto` (auto
@@ -72,10 +123,9 @@ why each one is stated instead of hidden.
   the session fills. A history longer than the panel is bucketed per cell with
   the maximum of that bucket, so a spike never widens a bar. A panel too narrow
   for three ticks prints only the window start and `now`.
-- **`bars` uses the height it is given**: a block sparkline used to be clamped to
-  one row whatever the caller asked for, so a three-row slot in the speed panel
-  left two rows empty. It now stacks eighths over the whole slot; `dots` and
-  `braille` are still the braille plots, and `braille` stays a flat colour.
+- **A trend fills the rows it is given**: `chart::spark_lines` draws a braille
+  plot of whatever height the caller passes, so a three-row slot in the speed
+  panel uses three rows instead of clamping to one and leaving two empty.
 - **The DNS write rewrites the whole DHCP document**: `/api/dhcp/settings` is a
   whole-document endpoint, so routwatch reads it immediately before writing and
   echoes every field back, changing only `PrimaryDns` and `SecondaryDns`. A

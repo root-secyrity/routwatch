@@ -46,6 +46,68 @@ routwatch
 Then `?` for the keys and `,` for the settings overlay. Reads are free; writes
 need `a` then `y` (see [Safety](#safety)).
 
+## The dashboard, seven zones
+
+One screen, one figure each: the serving cell and its meters, the link and the
+session, a signal map over the last four minutes, the same window for
+throughput, the clients, the events, and the status row. The frame below is
+`routwatch preview --size 120x42 --fixture fixtures/sample-snapshot.json`, so
+every value in it is synthetic.
+
+```text
+ routwatch · Test Net · 00101 · LTE · ENDC off                                                   ● live · 0s · poll 0ms 
+ 1 Dashboard │ 2 Bands │ 3 Traffic │ 4 Network │ 5 Clients │ 6 SMS │ 7 Device │ 8 DNS │ 9 Signal    full/braille        
+┌ RADIO ───────────────────────────────────────────────────┐ ┌ LINK / SESSION ─────────────────────────────────────────┐
+│ B1 LTE · 2120/1930 MHz · 20/20 MHz · FDD · TM[4]         │ │ Test Net (00101) · connected · LTE · ENDC off           │
+│ PCI 481 · EARFCN DL:100 UL:18100 · TAC 516               │ │ wan 203.0.113.43 · uptime 6d 3h · since boot            │
+│                                                          │ │                                                         │
+│ RSRP   -95 dBm  ▅▅▅▅····  fair  -140..-44                │ │ now     ↓ 4.00 Mbps        ↑ 200.0 Kbps                 │
+│ RSRQ    -6 dB  ▅▅▅▅▅▅▅·  good  -20..-3                   │ │ peak    ↓ 4.00 Mbps        ↑ 200.0 Kbps     in window   │
+│ SINR     8 dB  ▅▅▅▅····  poor  -10..30                   │ │ session ↓ 98.96 GB        ↑ 6.75 GB     (1d 22h)        │
+│ RSSI -67 dBm · NR bars 0 · ENDC off                      │ │ total   ↓ 50.04 TB        ↑ 1.69 TB     (1013d)         │
+│ 5G   not exposed by this firmware                        │ │ dns 203.0.113.53 · clients 3                            │
+└──────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────┘
+┌ SIGNAL MAP · 240s ───────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ last 240s · 1 cell = 3s · ▓ good  ▒ fair  ░ poor  · blank = no sample                                                │
+│                                                                                                                      │
+│ RSRP                                                                                   ▒  min -95 · avg -95 · max -95│
+│ RSRQ                                                                                   ▓  min -6 · avg -6 · max -6   │
+│ SINR                                                                                   ░  min 8 · avg 8 · max 8      │
+│                                                                                                                      │
+│ -240s                       -180s                       -120s                        -60s                         now│
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ THROUGHPUT ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 1 cell = 3s · same axis as the map above · scale 0..4.00 Mbps auto                                                   │
+│                                                                                                                      │
+│ ↓ down                                                                                 █         pk 4.0M · avg 4.0M  │
+│ ↑ up                                                                                   ▁         pk 200K · avg 200K  │
+│ -240s                       -180s                       -120s                        -60s                         now│
+│ traffic now · window follows the map above                                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ CLIENTS · 3 · 5G ×2 · 2.4G ×1 ────────────────────────────────────────────┐ ┌ EVENTS / ERRORS ───────────────────────┐
+│ name                       ip              band    connected              │ │ errors 0 · warnings 0 · events 1       │
+│▶ living-room-tv             192.168.8.101   5GHz    4d 11h                │ │                                        │
+│  phone-1                    192.168.8.102   5GHz    0s                    │ │     0s info  session live · Test Net ·…│
+│  (unnamed)                  192.168.8.103   2.4GHz  11h 39m               │ │                                        │
+│ j/k move · enter opens a client · s sort · f filter · 3 of 3 shown        │ │                                        │
+│                                                                           │ │                                        │
+│                                                                           │ │                                        │
+│                                                                           │ │                                        │
+│                                                                           │ │                                        │
+└───────────────────────────────────────────────────────────────────────────┘ └────────────────────────────────────────┘
+ Dash · 192.168.8.1 · refresh 2000ms · j/k · enter open · s sort · f filter · v view… · i events · q quit · ? help      
+```
+
+The two plots share one time axis: the window is always 240 seconds and every
+column the width leaves is a cell, so the cell widens on a narrow terminal
+(3.4s at 80 columns, 1.5s at 200) and the newest sample lands in the same
+column in both. The legend prints the span the columns actually have. A cell carries the worst sample it holds (the lowest
+for RSRP, RSRQ and SINR, the peak for traffic) and a blank cell means no sample
+was taken, never a good one. `j`/`k` move over the clients, `enter` opens the
+selected one on the Clients tab, `s` sorts and `f` filters by band. The
+statistics column beside the map appears from 110 columns up.
+
 ## Does it work with my router?
 
 | Router | WebUI / firmware | What was verified |
@@ -65,8 +127,9 @@ router ends up covered by CI. Distributions and optional helpers are listed in
 ## Visual maps
 
 Two maps of the codebase, in English and Arabic: one for the architecture, one
-for a single fetch cycle. Both are generated with Archify from the source at
-commit `a2610eed97dbc879ebfa30f49ef38db7d05e3d4a`, and every claim drawn inside the HTML carries the source line it
+for a fetch cycle and the two verified writes it can carry (a band mask, an SMS
+delete). Both are generated with Archify from the source at
+commit `89e79313001eaba7698d54b1da27babdd265521d`, and every claim drawn inside the HTML carries the source line it
 came from.
 
 | Arabic | English |
@@ -101,7 +164,34 @@ question.
   (`mask verified`), so a silent revert is visible.
 - Band/DNS/restart changes need the in-TUI `a` → `y` confirmation, or
   `--allow-write` on the CLI. `--dry-run` prints the exact payload and sends nothing.
+- Pressing `d` (or `m`) opens a confirmation panel that lists the indexes it will
+  touch and warns that a deleted message cannot be recovered; `y` sends, `n` or
+  `Esc` cancels without a POST.
+- The TUI itself starts read-only: `routwatch --allow-write` is what opens the write
+  keys (Bands `a`, SMS `d` and `m`). Without it those keys answer
+  `writes are off: start with --allow-write` and send nothing.
 - Band changes drop the link for 10–30 seconds. The UI says so before you do it.
+
+## SMS: read, mark read, delete
+
+Section 6 lists the inbox with a cursor and a selection, and opens a message in a
+wrapped reader underneath (`Enter`, `Esc` to close). Opening writes nothing: no
+read receipt, no POST.
+
+```sh
+routwatch sms list                 # inbox, page by page, full text per row
+routwatch sms list --folder draft --json --limit 50
+routwatch sms read 4001            # the body on stdout, uncut
+routwatch sms delete 4001 --allow-write --yes
+routwatch sms delete --all --allow-write        # prints the plan, sends nothing
+```
+
+Delete and mark-read are the only SMS writes. Both need the same gate as band
+changes: `--allow-write` on the CLI, `--dry-run` (or no `--yes`) to see the payload,
+and `y` inside the TUI. Every delete is verified by re-reading the inbox and
+reported per index, and a firmware that refuses the path is reported as
+"unsupported (100003)", not as done. Neither path has been measured on the
+H122-373 (see [limits.md](docs/limits.md)); the simulator is where they are tested.
 
 ## Limits, the short list
 
@@ -123,13 +213,17 @@ question.
   also lists the ping measured before the transfer and the one measured during it,
   so bufferbloat is visible next to the rate. `routwatch speedtest --history`
   prints the saved rows and `--no-save` keeps a run out of the file.
+- **SMS delete is verified, not assumed**: each index is posted on its own and the
+  verdict comes from re-reading the inbox, so a refusal is listed with its code
+  and a half-finished bulk delete says which rows failed. Delete and mark-read
+  have not been measured on a real H122-373 yet; the inbox itself has.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
   (`0600`, last 1440 rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`
   turns the log off.
 
 The rest, including the `100006` band-write code, the small-terminal order and the
-graph colour floor, are stated in [`docs/limits.md`](docs/limits.md). Nothing there
+retired graph styles, are stated in [`docs/limits.md`](docs/limits.md). Nothing there
 is a wish list: each entry is something a firmware or a terminal actually did.
 
 ## Scan and a watched write

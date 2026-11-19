@@ -66,7 +66,7 @@ struct Cli {
     #[arg(long, global = true)]
     view: Option<String>,
 
-    /// Graph style: dots, bars, braille
+    /// Graph style: braille (the default) or ascii; dots and bars were retired
     #[arg(long, global = true)]
     graph: Option<String>,
 
@@ -76,6 +76,12 @@ struct Cli {
 
     #[arg(long, global = true, help = TAB_HELP)]
     tab: Option<String>,
+
+    /// Let the TUI write to the router: applying a band set, deleting a
+    /// message, marking one read. Every write still asks for confirmation
+    /// first and is verified by reading the router back
+    #[arg(long)]
+    allow_write: bool,
 
     /// Hide serial, IMEI, MACs, WAN IP and client names in `snapshot`, so the
     /// output can be pasted in a public issue
@@ -203,6 +209,8 @@ enum Cmd {
         inbox: bool,
         #[arg(long)]
         json: bool,
+        #[command(subcommand)]
+        op: Option<SmsCmd>,
     },
     /// Device details including SIM state and the mobile-data switch
     Device {
@@ -332,16 +340,71 @@ enum Cmd {
         /// only: nothing is written back)
         #[arg(long, value_name = "FILE")]
         history_fixture: Option<PathBuf>,
+        /// Render the SMS and Device panes from a saved DeviceExtras JSON
+        /// (review only: nothing is written back)
+        #[arg(long, value_name = "FILE")]
+        extras_fixture: Option<PathBuf>,
         /// Layout review: open the apply-confirm modal (sends nothing)
         #[arg(long, hide = true)]
         demo_confirm: bool,
         /// Layout review: open the settings overlay
         #[arg(long, hide = true)]
         demo_settings: bool,
+        /// Layout review: open the first SMS message in the detail pane
+        /// (sends nothing)
+        #[arg(long, hide = true)]
+        demo_open: bool,
+        /// Fill the signal and throughput charts with N synthetic samples
+        /// (review only: nothing is read from the router and nothing is written)
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        demo_history: usize,
         /// Emit real ANSI colours instead of plain symbols - for README
         /// screenshots and for checking a theme without a terminal
         #[arg(long)]
         ansi: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SmsCmd {
+    /// List one inbox page; every row is printed whole (no clipping)
+    List {
+        /// inbox, outbox or draft
+        #[arg(long, default_value = "inbox", value_name = "FOLDER")]
+        folder: String,
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Stop after this many rows
+        #[arg(long, value_name = "N")]
+        limit: Option<u32>,
+        /// Page number, 1-based
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+    },
+    /// Print one message body in full, exactly as the device stored it
+    Read {
+        /// The value of the message's Index field
+        index: String,
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete messages - destructive, needs --allow-write and --yes
+    Delete {
+        /// Indexes to delete, one per argument
+        indexes: Vec<String>,
+        /// Delete every message in the inbox
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        allow_write: bool,
+        /// Confirm the delete; without it the command prints the plan only
+        #[arg(long)]
+        yes: bool,
+        /// Print the plan and send nothing
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -640,7 +703,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 println!("{}", serde_json::to_string(&frames).unwrap());
                 return Ok(());
             }
-            let mut app = ui_opts.build(&cfg);
+            let mut app = ui_opts.build(&cfg)?;
             run_replay(&mut app, frames, speed.max(1), cli.redact)
         }
         Some(Cmd::Snapshot { json, raw, all }) => {
@@ -1183,7 +1246,36 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 other => Err(ApiError::WriteFailed(other.label())),
             }
         }
-        Some(Cmd::Sms { inbox, json }) => {
+        Some(Cmd::Sms { inbox, json, op }) => {
+            if let Some(op) = op {
+                let cfg = cfg.clone();
+                return match op {
+                    SmsCmd::List {
+                        folder,
+                        json,
+                        limit,
+                        page,
+                    } => sms_list_cmd(&cfg, cli.password_stdin, &folder, page, limit, json),
+                    SmsCmd::Read { index, json } => {
+                        sms_read_cmd(&cfg, cli.password_stdin, &index, json)
+                    }
+                    SmsCmd::Delete {
+                        indexes,
+                        all,
+                        allow_write,
+                        yes,
+                        dry_run,
+                    } => sms_delete_cmd(
+                        &cfg,
+                        cli.password_stdin,
+                        &indexes,
+                        all,
+                        allow_write,
+                        yes,
+                        dry_run,
+                    ),
+                };
+            }
             let mut client = connect(&cfg, cli.password_stdin)?;
             let counters = client
                 .get("sms/sms-count")
@@ -1671,8 +1763,11 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             ref size,
             ref fixture,
             ref history_fixture,
+            ref extras_fixture,
             demo_confirm,
             demo_settings,
+            demo_open,
+            demo_history,
             ansi,
         }) => {
             let (w, h) = parse_size(size)?;
@@ -1699,6 +1794,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 snap = routwatch::report::redacted(&snap);
             }
             app.on_snapshot(snap, 0);
+            if let Some(p) = extras_fixture {
+                let raw = std::fs::read_to_string(p)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
+                let extras: routwatch::model::DeviceExtras = serde_json::from_str(&raw)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
+                app.on_extras(extras);
+                app.mark_extras_requested();
+            }
             if let Some(p) = history_fixture {
                 let text = std::fs::read_to_string(p)
                     .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
@@ -1716,6 +1819,10 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             if demo_settings {
                 app.settings_open = true;
             }
+            if demo_open {
+                app.sms_open();
+            }
+            app.demo_history(demo_history);
             if ansi {
                 print!("{}", ui::render_ansi(&app, w, h));
             } else {
@@ -1736,7 +1843,7 @@ struct UiOpts {
 }
 
 impl UiOpts {
-    fn build(&self, cfg: &config::Config) -> App {
+    fn build(&self, cfg: &config::Config) -> Result<App, ApiError> {
         let theme = self.theme.clone().unwrap_or_else(|| cfg.app.theme.clone());
         let view = self
             .view
@@ -1744,11 +1851,7 @@ impl UiOpts {
             .and_then(View::parse)
             .or_else(|| View::parse(&cfg.app.view))
             .unwrap_or(View::Full);
-        let graph = self
-            .graph
-            .as_deref()
-            .map(GraphStyle::parse)
-            .unwrap_or_else(|| GraphStyle::parse(&cfg.app.graph_style));
+        let (graph, notice) = graph_choice(self.graph.as_deref(), &cfg.app.graph_style)?;
         let mut app = App::new(
             Theme::get(&theme),
             graph,
@@ -1764,7 +1867,32 @@ impl UiOpts {
         }
         app.report_identity = cfg.app.report_identity;
         app.config_path = self.config_path.clone();
-        app
+        report_graph(&mut app, notice);
+        Ok(app)
+    }
+}
+
+/// The one place a `--graph` value and the `graph_style` setting become a
+/// renderer. Both go through `GraphStyle::resolve`, so a file written by an
+/// older build keeps loading and an unknown name is one clear error.
+fn graph_choice(
+    flag: Option<&str>,
+    setting: &str,
+) -> Result<(GraphStyle, Option<String>), ApiError> {
+    let choice = match flag {
+        Some(v) => GraphStyle::resolve(v),
+        None => GraphStyle::resolve(setting),
+    }
+    .map_err(ApiError::Usage)?;
+    Ok((choice.style, choice.notice))
+}
+
+/// Say the one line a retired value earns: to stderr for a script, and in the
+/// frame for the person watching it.
+fn report_graph(app: &mut App, notice: Option<String>) {
+    if let Some(line) = notice {
+        eprintln!("routwatch: {line}");
+        app.note(line);
     }
 }
 
@@ -1776,14 +1904,7 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
         })?,
         None => View::parse(&cfg.app.view).unwrap_or(View::Full),
     };
-    let graph = match cli.graph.as_deref() {
-        Some(g) => GraphStyle::try_parse(g).ok_or_else(|| {
-            ApiError::Usage(format!(
-                "unknown graph {g:?}; use dots, bars, braille or ascii"
-            ))
-        })?,
-        None => GraphStyle::parse(&cfg.app.graph_style),
-    };
+    let (graph, notice) = graph_choice(cli.graph.as_deref(), &cfg.app.graph_style)?;
     let mut app = App::new(
         Theme::get(&theme),
         graph,
@@ -1801,9 +1922,13 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
         app.band_presets = presets.clone();
     }
     app.report_identity = cli.report_identity || cfg.app.report_identity;
+    // Writes in the TUI are gated on this flag alone: the help footer says so,
+    // and every write still confirms and reads the router back.
+    app.allow_write = cli.allow_write;
     // One clamp, read by both the confirmation modal and the run itself.
     app.set_speed_cfg(cfg.app.speedtest.clone());
     app.config_path = cli.config.clone();
+    report_graph(&mut app, notice);
     Ok(app)
 }
 
@@ -1842,6 +1967,251 @@ fn read_stdin_password(enabled: bool) -> Result<Option<String>, ApiError> {
 
 fn read_password(cfg: &config::Config, stdin_password: Option<&str>) -> Result<String, ApiError> {
     config::resolve_password(&cfg.router.password, stdin_password).map(|(password, _)| password)
+}
+
+/// BoxType the firmware accepts for each folder name. Inbox is the only value
+/// measured on the device; outbox and draft are the firmware's own numbering
+/// and stay unverified (docs/limits.md says so).
+fn sms_box(folder: &str) -> Result<u8, ApiError> {
+    match folder {
+        "inbox" => Ok(1),
+        "outbox" => Ok(2),
+        "draft" => Ok(3),
+        other => Err(ApiError::Config(format!(
+            "unknown SMS folder {other:?}: use inbox, outbox or draft"
+        ))),
+    }
+}
+
+fn sms_list_cmd(
+    cfg: &config::Config,
+    stdin_password: bool,
+    folder: &str,
+    page: u32,
+    limit: Option<u32>,
+    json: bool,
+) -> Result<(), ApiError> {
+    let box_type = sms_box(folder)?;
+    let mut client = connect(cfg, stdin_password)?;
+    let mut rows = Vec::new();
+
+    let mut page = page.max(1);
+    let first = page;
+    loop {
+        match client.sms_list_in(page, box_type) {
+            Ok(node) => {
+                let mut batch = parse::parse_sms_list(&node);
+                if batch.is_empty() {
+                    break;
+                }
+                rows.append(&mut batch);
+                if let Some(cap) = limit {
+                    if rows.len() as u32 >= cap {
+                        break;
+                    }
+                }
+                page += 1;
+                if page - first >= 24 {
+                    break;
+                }
+            }
+            Err(e) => {
+                client.logout();
+                return Err(ApiError::WriteFailed(format!(
+                    "{folder} page {page}: {e} ({})",
+                    e.class()
+                )));
+            }
+        }
+    }
+    if let Some(cap) = limit {
+        rows.truncate(cap as usize);
+    }
+    client.logout();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "folder": folder,
+                "page": first,
+                "messages": rows,
+            }))
+            .unwrap()
+        );
+        return Ok(());
+    }
+    println!("{folder} page {first}: {} messages", rows.len());
+    for m in &rows {
+        // The text is printed whole: clipping belongs to the TUI, never to a
+        // command whose output someone may pipe into a file.
+        println!(
+            "{}  {}  {}  {}{}",
+            m.index.as_deref().unwrap_or("-"),
+            m.phone.as_deref().unwrap_or("-"),
+            m.date.as_deref().unwrap_or("-"),
+            if m.unread { "unread  " } else { "" },
+            m.content.as_deref().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+fn sms_read_cmd(
+    cfg: &config::Config,
+    stdin_password: bool,
+    index: &str,
+    json: bool,
+) -> Result<(), ApiError> {
+    let mut client = connect(cfg, stdin_password)?;
+    let mut found = None;
+    for page in 1..=25u32 {
+        match client.sms_list(page) {
+            Ok(node) => {
+                let rows = parse::parse_sms_list(&node);
+                if rows.is_empty() {
+                    break;
+                }
+                found = rows.into_iter().find(|m| m.index.as_deref() == Some(index));
+                if found.is_some() {
+                    break;
+                }
+            }
+            Err(e) => {
+                client.logout();
+                return Err(ApiError::WriteFailed(format!("inbox page {page}: {e}")));
+            }
+        }
+    }
+    client.logout();
+    let Some(m) = found else {
+        // A missing index is a failure the caller can act on, never an empty
+        // success that looks like an empty message.
+        eprintln!("routwatch: no message with index {index} in the inbox");
+        return Err(ApiError::Quiet(1));
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "index": m.index,
+                "phone": m.phone,
+                "date": m.date,
+                "unread": m.unread,
+                "content": m.content,
+            }))
+            .unwrap()
+        );
+    } else {
+        // Nothing is wrapped, shortened or re-ordered here: the terminal owns
+        // direction and width, so the reader copies what the device stored.
+        print!("{}", m.content.as_deref().unwrap_or(""));
+        println!();
+    }
+    Ok(())
+}
+
+fn sms_delete_cmd(
+    cfg: &config::Config,
+    stdin_password: bool,
+    indexes: &[String],
+    all: bool,
+    allow_write: bool,
+    yes: bool,
+    dry_run: bool,
+) -> Result<(), ApiError> {
+    if !dry_run && !allow_write {
+        eprintln!(
+            "sms delete writes to the router: pass --allow-write, or --dry-run to see the plan"
+        );
+        return Err(ApiError::Quiet(3));
+    }
+    let mut client = connect(cfg, stdin_password)?;
+    let mut targets: Vec<String> = indexes.to_vec();
+    if all || targets.is_empty() {
+        // The plan is read from the device, not assumed: every index the inbox
+        // answers with, page after page.
+        targets.clear();
+        for page in 1..=25u32 {
+            match client.sms_list(page) {
+                Ok(node) => {
+                    let rows = parse::parse_sms_list(&node);
+                    if rows.is_empty() {
+                        break;
+                    }
+                    for m in rows {
+                        if let Some(i) = m.index {
+                            targets.push(i);
+                        }
+                    }
+                }
+                Err(e) => {
+                    client.logout();
+                    return Err(ApiError::WriteFailed(format!("inbox page {page}: {e}")));
+                }
+            }
+        }
+    }
+    if targets.is_empty() {
+        client.logout();
+        println!("nothing to delete: the inbox is empty");
+        return Ok(());
+    }
+    if dry_run || !yes {
+        client.logout();
+        if dry_run {
+            println!("plan: delete {} messages", targets.len());
+        } else {
+            println!("plan: delete {} messages", targets.len());
+            eprintln!("nothing was sent: pass --yes to confirm the delete");
+            return Err(ApiError::Quiet(3));
+        }
+        for i in &targets {
+            println!("  index {i}");
+        }
+        return Ok(());
+    }
+
+    let cell = std::cell::RefCell::new(&mut client);
+    let limits = routwatch::write::VerifyLimits::from_secs(cfg.app.verify_secs);
+    let sleep = |d: std::time::Duration| std::thread::sleep(d);
+    let reread = || -> Result<Vec<String>, ApiError> {
+        let mut seen = Vec::new();
+        for page in 1..=25u32 {
+            let node = std::cell::RefCell::borrow_mut(&cell).sms_list(page)?;
+            let rows = parse::parse_sms_list(&node);
+            if rows.is_empty() {
+                break;
+            }
+            for m in &rows {
+                if let Some(i) = &m.index {
+                    seen.push(i.clone());
+                }
+            }
+        }
+        Ok(seen)
+    };
+    let report = routwatch::write::run_delete(
+        &targets,
+        |i| {
+            std::cell::RefCell::borrow_mut(&cell)
+                .sms_delete(i)
+                .map(|_| ())
+        },
+        reread,
+        limits,
+        sleep,
+    );
+    std::cell::RefCell::borrow_mut(&cell).logout();
+    println!("{}", report.summary());
+    for line in report.details() {
+        println!("  {line}");
+    }
+    if !report.settled() {
+        // A delete that was not read back is a failure, whatever the POST said.
+        return Err(ApiError::Quiet(1));
+    }
+    Ok(())
 }
 
 fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, ApiError> {
@@ -2099,6 +2469,13 @@ fn drain(app: &mut App, rx: &Receiver<Ev>) {
             Ev::SpeedProgress(id, p) => app.on_speed_progress(id, p),
             Ev::SpeedDone(id, res) => app.on_speed_done(id, res.map(|b| *b)),
             Ev::Extras(extras) => app.on_extras(*extras),
+            Ev::SmsPage {
+                page,
+                messages,
+                total,
+                error,
+            } => app.on_sms_page(page, messages, total, error),
+            Ev::SmsReport(report) => app.on_sms_report(&report),
             Ev::Phase { phase, state } => app.on_phase(phase, state),
             Ev::Notice(msg) => {
                 app.note(msg.clone());
@@ -2121,7 +2498,6 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 app.note(format!("theme {} · w saves", app.theme.id));
             }
             KeyCode::Char('v') => app.view = app.view.next(),
-            KeyCode::Char('g') => app.graph = app.graph.next(),
             KeyCode::Char('[') => {
                 app.adjust_refresh(-500);
                 let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
@@ -2329,6 +2705,7 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
     }
 
     let on_bands = app.tab == Tab::Bands;
+    let on_sms = app.tab == Tab::Sms;
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
     // Letters answer in either case: the reference tools (syswatch, diskwatch)
     // accept `v` exactly like `V`. Shift keeps its own meaning where one exists
@@ -2385,10 +2762,10 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             ));
         }
         KeyCode::Char('?') => app.help = !app.help,
-        KeyCode::Esc => app.help = false,
+        // Esc closes the overlay first; the sections below get it afterwards.
+        KeyCode::Esc if app.help => app.help = false,
         KeyCode::Char('v') => app.cycle_view(),
         KeyCode::Char('l') => app.toggle_lite(),
-        KeyCode::Char('g') => app.graph = app.graph.next(),
         KeyCode::Char('r') if shift && matches!(app.tab, Tab::Sms | Tab::Device) => {
             let _ = tx.send(WorkerCmd::Extras);
             app.mark_extras_requested();
@@ -2410,7 +2787,7 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             app.paused = !app.paused;
             let _ = tx.send(WorkerCmd::Pause(app.paused));
         }
-        KeyCode::Char('p') => {
+        KeyCode::Char('p') if app.tab != Tab::Sms => {
             app.open_input(InputKind::PingHost);
         }
         // --- Traffic / DNS tab ---
@@ -2505,6 +2882,56 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         KeyCode::Tab => app.select_tab(app.tab.next()),
         KeyCode::BackTab => app.select_tab(app.tab.prev()),
+        // --- SMS tab: the reader answers to its own keys and nothing else ---
+        KeyCode::Char(' ') if on_sms && app.sms.confirm.is_none() => {
+            app.sms_toggle();
+        }
+        KeyCode::Char('a') if on_sms && app.sms.confirm.is_none() => {
+            app.sms_select_all();
+        }
+        KeyCode::Char('d') if on_sms && app.sms.confirm.is_none() => {
+            if app.sms_plan_delete(false).is_none() {
+                if let Some(why) = app.sms_plan_refusal() {
+                    app.note(why);
+                }
+            }
+        }
+        KeyCode::Char('m') if on_sms && app.sms.confirm.is_none() => {
+            if app.sms_plan_mark_read().is_none() {
+                if let Some(why) = app.sms_plan_refusal() {
+                    app.note(why);
+                }
+            }
+        }
+        KeyCode::Char('y') if on_sms && app.sms.confirm.is_some() => {
+            if let Some(plan) = app.sms_take_plan() {
+                app.sms.busy = true;
+                let _ = tx.send(WorkerCmd::SmsOp(plan));
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Esc if on_sms && app.sms.confirm.is_some() => {
+            app.sms_cancel();
+        }
+        KeyCode::Char('n') if on_sms => {
+            if app.sms_page_next() {
+                let _ = tx.send(WorkerCmd::SmsList(app.sms.page));
+            }
+        }
+        KeyCode::Char('p') if on_sms => {
+            if app.sms_page_prev() {
+                let _ = tx.send(WorkerCmd::SmsList(app.sms.page));
+            }
+        }
+        KeyCode::Enter | KeyCode::Char('o') if on_sms => {
+            if !app.sms_open() {
+                app.note("no message under the cursor");
+            }
+        }
+        KeyCode::Esc if on_sms => {
+            app.sms_close();
+        }
+        KeyCode::PageDown => app.sms_scroll(8),
+        KeyCode::PageUp => app.sms_scroll(-8),
         // --- Bands tab ---
         KeyCode::Char(' ') if on_bands => {
             app.band_toggle();
@@ -2520,7 +2947,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         // --- selection movement ---
         KeyCode::Down | KeyCode::Char('j') => {
-            if on_bands {
+            if on_sms {
+                app.sms_move(1);
+            } else if on_bands {
                 app.band_cursor_move(1);
             } else if app.tab == Tab::Dns {
                 app.dns_preset_move(1);
@@ -2529,7 +2958,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if on_bands {
+            if on_sms {
+                app.sms_move(-1);
+            } else if on_bands {
                 app.band_cursor_move(-1);
             } else if app.tab == Tab::Dns {
                 app.dns_preset_move(-1);
@@ -3055,7 +3486,7 @@ mod key_tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3103,11 +3534,46 @@ mod key_tests {
     fn bare_app() -> App {
         App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
         )
+    }
+
+    #[test]
+    fn the_retired_key_is_not_bound_and_not_in_help_or_the_status_bar() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        let before = app.graph;
+        for code in [KeyCode::Char('g'), KeyCode::Char('G')] {
+            handle_key(&mut app, key(code), &tx);
+            assert_eq!(app.graph, before, "g must no longer cycle a renderer");
+        }
+        // A key that does nothing is a lie: it goes from the help table too.
+        for row in routwatch::ui::help::rows() {
+            let text = format!("{} {} {}", row.keys, row.short, row.full);
+            // The settings row still names the `graph` setting, which a config
+            // file can set to braille or ascii; what it may not do is offer a
+            // key that cycles between renderers this build no longer has.
+            assert!(
+                !text.contains("dots")
+                    && !text.contains("bars")
+                    && !text.contains("g graph")
+                    && !text.contains("cycles the graph"),
+                "help still offers a retired choice: {text}"
+            );
+            assert!(!row.keys.contains('g'), "help still binds g: {text}");
+        }
+        // And from every section's hint line.
+        for tab in Tab::ALL {
+            app.select_tab(tab);
+            assert!(
+                !tab.hints().contains("g graph"),
+                "{tab:?} still advertises g: {}",
+                tab.hints()
+            );
+        }
     }
 
     #[test]
@@ -3196,7 +3662,7 @@ mod key_tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3230,7 +3696,7 @@ mod key_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3298,7 +3764,7 @@ mod key_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3330,7 +3796,7 @@ mod key_tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3380,7 +3846,7 @@ mod key_tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(
             routwatch::theme::by_name("dark"),
-            routwatch::theme::GraphStyle::Dots,
+            routwatch::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -3542,5 +4008,43 @@ mod key_tests {
             }
             other => panic!("expected one SpeedTest command, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::{build_app, Cli};
+    use clap::Parser;
+
+    #[test]
+    fn a_legacy_cli_value_is_accepted_and_normalised_without_touching_stdout() {
+        let cfg = routwatch::config::Config::default();
+        let cli = Cli::parse_from(["routwatch", "--graph", "dots"]);
+        let app = build_app(&cli, &cfg).expect("a retired value is not a usage error");
+        assert_eq!(
+            app.graph,
+            routwatch::theme::GraphStyle::Braille,
+            "a retired flag value draws braille"
+        );
+        let notice = app.live_notice().expect("the frame carries one line");
+        assert!(notice.contains("retired"), "names the removal: {notice}");
+    }
+
+    #[test]
+    fn the_tui_write_gate_follows_the_flag_and_stays_off_without_it() {
+        let cfg = routwatch::config::Config::default();
+        let off = Cli::parse_from(["routwatch", "--tab", "sms"]);
+        let app = build_app(&off, &cfg).expect("the default frame builds");
+        assert!(
+            !app.allow_write,
+            "writes must stay off when the flag is absent"
+        );
+
+        let on = Cli::parse_from(["routwatch", "--allow-write", "--tab", "sms"]);
+        let app = build_app(&on, &cfg).expect("the gated frame builds");
+        assert!(
+            app.allow_write,
+            "--allow-write must open the gate the SMS and Bands keys check"
+        );
     }
 }

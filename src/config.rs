@@ -149,7 +149,7 @@ impl Default for App {
             timeout_ms: 3000,
             theme: "terminal".into(),
             view: "full".into(),
-            graph_style: "dots".into(),
+            graph_style: "braille".into(),
             budget_gb: 100,
             report_identity: false,
             presets: None,
@@ -399,7 +399,7 @@ refresh_ms = 2000
 timeout_ms = 3000
 theme = "terminal"
 view = "full"
-graph_style = "dots"
+graph_style = "braille"
 budget_gb = 100
 "#;
 
@@ -456,6 +456,31 @@ budget_gb = 100
             load_or_default(Some(absent.clone())).is_err(),
             "0600 must still be enforced when the file exists"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_config_carrying_a_removed_mode_still_loads_and_normalises_to_braille() {
+        let dir = std::env::temp_dir().join(format!("routwatch-retired-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            MINIMAL.replace("graph_style = \"braille\"", "graph_style = \"bars\""),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let cfg = load(Some(path.clone())).expect("a retired graph style must not fail the load");
+        assert_eq!(
+            cfg.app.graph_style, "bars",
+            "the file is read, not rejected"
+        );
+        let choice = crate::theme::GraphStyle::resolve(&cfg.app.graph_style)
+            .expect("a retired value still resolves");
+        assert_eq!(choice.style, crate::theme::GraphStyle::Braille);
+        assert!(choice.notice.is_some(), "and it says what replaced it");
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -143,10 +143,13 @@ pub fn resolve(
     }
 }
 
+/// Bit = band - 1, so the mask holds bands 1..=64 and nothing else: a value
+/// outside that range has no bit and is dropped, never shifted into a panic.
 pub fn mask_from_bands(bands: &[u8]) -> u64 {
     bands
         .iter()
-        .fold(0u64, |acc, b| acc | (1u64 << (b.saturating_sub(1)) as u32))
+        .filter(|b| (1..=64).contains(*b))
+        .fold(0u64, |acc, b| acc | (1u64 << (b - 1) as u32))
 }
 
 pub fn bands_from_mask(mask: u64) -> Vec<u8> {

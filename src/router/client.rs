@@ -44,11 +44,17 @@ fn build_agent(timeout_ms: u64) -> Agent {
 
 /// The `sms/sms-list` body. `Ascending` is mandatory: without it the firmware
 /// answers 100005 (ERROR_FORMAT_ERROR) and the inbox reads as refused.
-pub(crate) fn sms_list_body(page: u32) -> String {
+/// `BoxType` 1 is the inbox, as measured on H122-373 firmware 11.0.2.21
+/// (2026-11-18); 2 and 3 are Huawei's outbox and draft, unverified here.
+pub(crate) fn sms_list_body(page: u32, box_type: u8) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><PageIndex>{page}</PageIndex><ReadCount>20</ReadCount><BoxType>1</BoxType><SortType>0</SortType><Ascending>0</Ascending><UnreadPreferred>0</UnreadPreferred></request>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><PageIndex>{page}</PageIndex><ReadCount>{SMS_PAGE}</ReadCount><BoxType>{box_type}</BoxType><SortType>0</SortType><Ascending>0</Ascending><UnreadPreferred>0</UnreadPreferred></request>"
     )
 }
+
+/// Rows asked for per page, and therefore the page size the reader reasons
+/// with. One number, because the request and the range label must agree.
+pub const SMS_PAGE: u32 = 20;
 
 /// Huawei login codes: 108001 username, 108002 password, 108003 session already
 /// open, 108006 both, 108007 too many attempts.
@@ -338,7 +344,36 @@ impl HuaweiClient {
 
     /// SMS inbox. The firmware wants POST here; GET answers 125002.
     pub fn sms_list(&mut self, page: u32) -> Result<Node, ApiError> {
-        self.post("sms/sms-list", &sms_list_body(page))
+        self.sms_list_in(page, 1)
+    }
+
+    /// One page of one box. `box` is the firmware's `BoxType`: 1 inbox,
+    /// 2 outbox, 3 draft.
+    pub fn sms_list_in(&mut self, page: u32, box_type: u8) -> Result<Node, ApiError> {
+        self.post("sms/sms-list", &sms_list_body(page, box_type))
+    }
+
+    /// Delete one message by index. Huawei takes a single index per request,
+    /// which is why a bulk delete is a loop. Measured on the H122-373
+    /// (2026-11-19): the index disappears from the next list.
+    pub fn sms_delete(&mut self, index: &str) -> Result<Node, ApiError> {
+        self.post(
+            "sms/delete-sms",
+            &format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><Index>{index}</Index></request>"
+            ),
+        )
+    }
+
+    /// Mark one message read. Never called from the reader: opening a message
+    /// must not write, so this waits for its own key and the write gate.
+    pub fn sms_set_read(&mut self, index: &str) -> Result<Node, ApiError> {
+        self.post(
+            "sms/set-read",
+            &format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><Index>{index}</Index></request>"
+            ),
+        )
     }
 
     pub fn pin_status(&mut self) -> Result<Node, ApiError> {
@@ -498,11 +533,26 @@ mod tests {
 
     #[test]
     fn sms_list_body_carries_the_mandatory_ascending_field() {
-        let body = sms_list_body(2);
+        let body = sms_list_body(2, 1);
         assert!(body.contains("<PageIndex>2</PageIndex>"), "{body}");
         assert!(
             body.contains("<Ascending>0</Ascending>"),
             "the firmware answers 100005 without it: {body}"
+        );
+        assert!(body.contains("<BoxType>1</BoxType>"), "{body}");
+    }
+
+    #[test]
+    fn the_page_request_and_the_range_label_use_one_page_size() {
+        let body = sms_list_body(1, 1);
+        assert!(
+            body.contains(&format!("<ReadCount>{SMS_PAGE}</ReadCount>")),
+            "{body}"
+        );
+        assert_eq!(
+            crate::app::SMS_PAGE,
+            SMS_PAGE,
+            "the reader's range label must count the rows it asked for"
         );
     }
 

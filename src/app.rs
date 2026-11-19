@@ -3,7 +3,7 @@
 
 use crate::config::BandPreset;
 use crate::headless::{Phase, PhaseState};
-use crate::model::{Client, DeviceExtras, Snapshot};
+use crate::model::{Client, DeviceExtras, SmsMessage, Snapshot};
 use crate::router::bands;
 use crate::theme::{GraphStyle, Theme};
 use crate::worker::{PingOutcome, SpeedRun};
@@ -12,7 +12,20 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub const HISTORY: usize = 120;
+/// Samples kept per series. The dashboard and the signal graphs draw a fixed
+/// 240-second window, and the poll interval can be as short as 500 ms, so the
+/// store has to hold 480 samples to cover that window at the finest interval
+/// instead of declaring a window it cannot fill: 5 series x 480 x 8 B = 19.2 KB.
+pub const HISTORY: usize = 480;
+
+/// The time window every plot on the dashboard draws, in seconds. One window
+/// for the whole screen: the cell granularity adapts, the window never does.
+pub const WINDOW_SECS: u64 = 240;
+
+/// The Bands write log keeps this many settled operations in memory. It is a
+/// session record, not a file: nothing is written to disk and a restart forgets
+/// it, which is why the panel says "session only".
+pub const BAND_LOG_CAP: usize = 32;
 
 /// How long the status bar keeps offering the revert after a band write lands.
 /// A radio that restarts takes a while to show the damage, so the offer outlives
@@ -79,17 +92,19 @@ impl Tab {
     /// tab says what it accepts without a help overlay.
     pub fn hints(&self) -> &'static str {
         match self {
-            Tab::Dashboard => "v view · g graph · r refresh · P pause · e report",
+            Tab::Dashboard => {
+                "j/k · enter open · s sort · f filter · v view · r refresh · P pause · e report"
+            }
             Tab::Bands => {
-                "space tick · j/k · a apply · u undo · n preset · s save · x del · m mode · o nr · e report"
+                "space tick · s save · a apply · u undo · j/k · n preset · x del · m mode · o nr · e report"
             }
             Tab::Traffic => "d edit DNS · D auto DNS · b reset budget · e report",
             Tab::Network => "p ping host · T speed test · e report",
             Tab::Clients => "j/k select · s sort · c copy mac · e report",
-            Tab::Sms => "R read inbox",
+            Tab::Sms => "j/k · Enter open · space mark · a all · d delete · m read · n page · R inbox",
             Tab::Device => "x dump json · b restart · R extras",
             Tab::Dns => "j/k choose · Enter apply · d type · D auto · e report",
-            Tab::Signal => "v view · g graph · e report",
+            Tab::Signal => "v view · e report",
         }
     }
 
@@ -274,6 +289,42 @@ pub enum SortKey {
     Time,
 }
 
+/// Which clients the dashboard table shows. The radio section draws one band at
+/// a time, so the same filter narrows the client rows under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashFilter {
+    All,
+    Only5,
+    Only24,
+}
+
+impl DashFilter {
+    pub fn next(&self) -> DashFilter {
+        match self {
+            DashFilter::All => DashFilter::Only5,
+            DashFilter::Only5 => DashFilter::Only24,
+            DashFilter::Only24 => DashFilter::All,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            DashFilter::All => "all",
+            DashFilter::Only5 => "5G",
+            DashFilter::Only24 => "2.4G",
+        }
+    }
+
+    pub fn matches(&self, client: &Client) -> bool {
+        let band = client.freq.as_deref().unwrap_or("");
+        match self {
+            DashFilter::All => true,
+            DashFilter::Only5 => band.contains('5'),
+            DashFilter::Only24 => band.contains("2.4"),
+        }
+    }
+}
+
 impl SortKey {
     pub fn next(&self) -> SortKey {
         match self {
@@ -334,6 +385,81 @@ pub struct LastApply {
     /// settle time, so the render does not parse English.
     pub verdict: String,
     pub at: Instant,
+}
+
+/// One settled band operation, kept for the Bands log panel. `verdict` is the
+/// text the write layer produced, so the render shows the same words the header
+/// banner used instead of parsing English.
+#[derive(Debug, Clone)]
+pub struct BandLog {
+    pub at: Instant,
+    pub what: String,
+    pub verdict: String,
+    pub ok: bool,
+}
+
+/// Rows a page holds. Re-exported so the reader and the request body cannot
+/// drift: the number is the firmware's `ReadCount`, not a second opinion.
+pub use crate::router::client::SMS_PAGE;
+
+/// What the SMS tab holds between frames. Everything here is the reader's own
+/// state; the messages themselves live in `extras.sms_inbox`.
+#[derive(Debug, Clone, Default)]
+pub struct SmsState {
+    /// Row the reader is on, within the current page.
+    pub cursor: usize,
+    /// Message indices marked for a bulk operation.
+    pub selected: std::collections::BTreeSet<String>,
+    /// Index of the message whose body is open in the lower pane. Opening is a
+    /// read: nothing is written and nothing is marked read.
+    pub open: Option<String>,
+    /// Rows scrolled inside the open body.
+    pub scroll: u16,
+    /// 1-based page requested from the firmware.
+    pub page: u32,
+    /// Inbox total as the device answered it (sms-count), so paging and the
+    /// range label do not depend on the snapshot's counters being current.
+    pub total: Option<u32>,
+    /// Set when the firmware refused delete or set-read: the keys stay off and
+    /// the bar says why, because a refusal is not a retry.
+    pub blocked: Option<String>,
+    /// Last outcome line for this tab, memory only.
+    pub notice: Option<String>,
+    /// The question on screen, waiting for `y`.
+    pub confirm: Option<SmsPlan>,
+    /// A delete or mark-read is in flight; the keys wait for its report.
+    pub busy: bool,
+}
+
+impl SmsState {
+    pub fn page_or_one(&self) -> u32 {
+        if self.page == 0 {
+            1
+        } else {
+            self.page
+        }
+    }
+}
+
+/// A committed operation, held only until the user confirms it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsPlan {
+    pub op: crate::write::SmsOp,
+    pub indices: Vec<String>,
+}
+
+impl SmsPlan {
+    pub fn label(&self) -> String {
+        let verb = match self.op {
+            crate::write::SmsOp::Delete => "delete",
+            crate::write::SmsOp::MarkRead => "mark read",
+        };
+        if self.indices.len() == 1 {
+            format!("{verb} 1 message (index {})", self.indices[0])
+        } else {
+            format!("{verb} {} messages", self.indices.len())
+        }
+    }
 }
 
 /// What the device carried before a pending apply, whole. Captured at the
@@ -415,11 +541,19 @@ pub struct App {
     /// The same point with its mode and option, which is what `u` writes back.
     pub undo_full: Option<UndoPoint>,
     pub last_apply: Option<LastApply>,
+    /// Newest first, capped at `BAND_LOG_CAP`, memory only.
+    pub band_log: VecDeque<BandLog>,
+    /// SMS reader: cursor, marks, the open message and the pending operation.
+    pub sms: SmsState,
     bands_initialised: bool,
     // --- M4 ---
     pub input: Option<Input>,
     pub ping: Option<PingOutcome>,
     pub client_sort: SortKey,
+    /// Row under the cursor in the dashboard table, which is filtered, so it
+    /// cannot share `client_sel` with the Clients tab's unfiltered list.
+    pub dash_sel: usize,
+    pub dash_filter: DashFilter,
     pub notice: Option<(String, Instant)>,
     pub dns_preset: usize,
     // --- M5 ---
@@ -480,18 +614,11 @@ pub struct SpeedContext {
 }
 
 impl App {
-    /// One place decides how every graph is coloured. `braille` is the flat
-    /// renderer the tool shipped before the ramp existed, so it keeps its
-    /// solid colour on purpose.
-    ///
-    /// `bg` is `Reset` on six themes, where the real background belongs to the
-    /// terminal and cannot be read. The ramp then anchors on a documented dark
-    /// assumption (`ASSUMED_DARK_BG`), which is why `docs/limits.md` says so.
+    /// One place decides how every graph is drawn. A series is one flat
+    /// colour: the plot never synthesises a shade, so nothing has to be
+    /// measured against an assumed background.
     pub fn chart_opts(&self) -> crate::ui::chart::ChartOpts {
         crate::ui::chart::ChartOpts {
-            fade: self.graph != GraphStyle::Braille,
-            bg: self.theme.bg,
-            terminal_palette: self.theme.defers_to_palette(),
             ascii: self.graph.is_ascii(),
             baseline: true,
         }
@@ -579,12 +706,16 @@ impl App {
             write_sent: false,
             undo_mask: None,
             last_apply: None,
+            band_log: VecDeque::new(),
+            sms: SmsState::default(),
             undo_full: None,
             watch_until: None,
             bands_initialised: false,
             input: None,
             ping: None,
             client_sort: SortKey::Name,
+            dash_sel: 0,
+            dash_filter: DashFilter::All,
             notice: None,
             dns_preset: 0,
             extras: None,
@@ -766,6 +897,33 @@ impl App {
         self.extras = Some(extras);
     }
 
+    /// One inbox page arrived: the rows replace what the tab shows, and the
+    /// cursor is clamped into the new list so it never points past the end.
+    pub fn on_sms_page(
+        &mut self,
+        page: u32,
+        messages: Vec<SmsMessage>,
+        total: Option<u32>,
+        error: Option<String>,
+    ) {
+        self.sms.page = page.max(1);
+        if total.is_some() {
+            self.sms.total = total;
+        }
+        let extras = self.extras.get_or_insert_with(DeviceExtras::default);
+        extras.sms_inbox = messages;
+        extras.sms_error = error;
+        self.sms.selected.clear();
+        self.sms.open = None;
+        self.sms.scroll = 0;
+        let len = self.sms_rows().len();
+        if len == 0 {
+            self.sms.cursor = 0;
+        } else {
+            self.sms.cursor = self.sms.cursor.min(len - 1);
+        }
+    }
+
     /// The SMS/Device tabs ask for extras once; `R` forces a refetch.
     pub fn needs_extras(&self) -> bool {
         self.extras.is_none() && !self.extras_requested
@@ -773,6 +931,252 @@ impl App {
 
     pub fn mark_extras_requested(&mut self) {
         self.extras_requested = true;
+    }
+
+    // --- SMS reader ---
+
+    /// The rows on the current page, from the last extras read.
+    pub fn sms_rows(&self) -> &[crate::model::SmsMessage] {
+        match &self.extras {
+            Some(e) => &e.sms_inbox,
+            None => &[],
+        }
+    }
+
+    /// `j`/`k`: a reader at the last row wraps to the first, so one key held
+    /// down never parks on a dead end.
+    pub fn sms_move(&mut self, delta: isize) {
+        let len = self.sms_rows().len();
+        if len == 0 {
+            self.sms.cursor = 0;
+            return;
+        }
+        let next = (self.sms.cursor as isize + delta).rem_euclid(len as isize);
+        self.sms.cursor = next as usize;
+    }
+
+    fn sms_current_index(&self) -> Option<String> {
+        self.sms_rows()
+            .get(self.sms.cursor)
+            .and_then(|m| m.index.clone())
+    }
+
+    /// `space`: mark or unmark the row under the cursor.
+    pub fn sms_toggle(&mut self) -> bool {
+        let Some(index) = self.sms_current_index() else {
+            return false;
+        };
+        if !self.sms.selected.remove(&index) {
+            self.sms.selected.insert(index);
+        }
+        true
+    }
+
+    /// `V`: mark every row on the page, or clear when they are all marked.
+    pub fn sms_select_all(&mut self) -> bool {
+        let indexes: Vec<String> = self
+            .sms_rows()
+            .iter()
+            .filter_map(|m| m.index.clone())
+            .collect();
+        if indexes.is_empty() {
+            return false;
+        }
+        let all_marked = indexes.iter().all(|i| self.sms.selected.contains(i));
+        if all_marked {
+            self.sms.selected.clear();
+        } else {
+            for index in indexes {
+                self.sms.selected.insert(index);
+            }
+        }
+        true
+    }
+
+    /// `Enter`/`o`: show the body. This is a pure read of state already in
+    /// memory: no request, and nothing is marked read.
+    pub fn sms_open(&mut self) -> bool {
+        match self.sms_current_index() {
+            Some(index) => {
+                self.sms.open = Some(index);
+                self.sms.scroll = 0;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn sms_close(&mut self) -> bool {
+        let had = self.sms.open.is_some();
+        self.sms.open = None;
+        self.sms.scroll = 0;
+        had
+    }
+
+    pub fn sms_scroll(&mut self, delta: i16) {
+        if self.sms.open.is_none() {
+            return;
+        }
+        let next = self.sms.scroll as i32 + delta as i32;
+        self.sms.scroll = next.max(0).min(u16::MAX as i32) as u16;
+    }
+
+    /// `n`/`p`: ask for another page. The total comes from the counters, which
+    /// are the only place this firmware states how many messages exist.
+    pub fn sms_total(&self) -> Option<u32> {
+        self.sms.total.or_else(|| {
+            self.snap
+                .as_ref()
+                .and_then(|s| s.sms.as_ref())
+                .map(|c| c.inbox)
+        })
+    }
+
+    pub fn sms_page_next(&mut self) -> bool {
+        let page = self.sms.page_or_one();
+        let len = self.sms_rows().len();
+        let more = len as u32 >= crate::router::client::SMS_PAGE;
+        match self.sms_total() {
+            Some(total) => {
+                if page * crate::router::client::SMS_PAGE >= total {
+                    return false;
+                }
+            }
+            None if !more => return false,
+            None => {}
+        }
+        self.sms.page = page + 1;
+        self.sms.selected.clear();
+        self.sms.cursor = 0;
+        self.sms.open = None;
+        true
+    }
+
+    pub fn sms_page_prev(&mut self) -> bool {
+        let page = self.sms.page_or_one();
+        if page <= 1 {
+            return false;
+        }
+        self.sms.page = page - 1;
+        self.sms.selected.clear();
+        self.sms.cursor = 0;
+        self.sms.open = None;
+        true
+    }
+
+    /// `1-40 of 45` for the footer, or `-` when nothing is known yet.
+    pub fn sms_range(&self) -> String {
+        let len = self.sms_rows().len() as u32;
+        if len == 0 {
+            return String::new();
+        }
+        let start = (self.sms.page_or_one() - 1) * crate::router::client::SMS_PAGE + 1;
+        let end = start + len - 1;
+        match self.sms_total() {
+            Some(total) => format!("{start}-{end} of {total}"),
+            None => format!("{start}-{end}"),
+        }
+    }
+
+    /// The indices a bulk operation would touch: the marks, or the cursor row
+    /// when nothing is marked.
+    fn sms_targets(&self) -> Vec<String> {
+        if !self.sms.selected.is_empty() {
+            return self.sms.selected.iter().cloned().collect();
+        }
+        self.sms_current_index().into_iter().collect()
+    }
+
+    /// Why a write is refused right now, or `None` when it may proceed. The key
+    /// handler prints this, so a refused `d` says why instead of doing nothing.
+    pub fn sms_plan_refusal(&self) -> Option<String> {
+        if let Some(why) = &self.sms.blocked {
+            return Some(why.clone());
+        }
+        if !self.allow_write {
+            return Some("writes are off: start with --allow-write".to_string());
+        }
+        if self.sms.busy {
+            return Some("an operation is still running".to_string());
+        }
+        None
+    }
+
+    /// `d`: ask before deleting. Builds the plan, never sends it.
+    pub fn sms_plan_delete(&mut self, all: bool) -> Option<SmsPlan> {
+        if self.sms_plan_refusal().is_some() {
+            return None;
+        }
+        let indexes = if all {
+            self.sms_rows()
+                .iter()
+                .filter_map(|m| m.index.clone())
+                .collect::<Vec<_>>()
+        } else {
+            self.sms_targets()
+        };
+        if indexes.is_empty() {
+            return None;
+        }
+        let plan = SmsPlan {
+            op: crate::write::SmsOp::Delete,
+            indices: indexes,
+        };
+        self.sms.confirm = Some(plan.clone());
+        Some(plan)
+    }
+
+    /// `m`: mark the open (or cursor) message read. Its own key, its own gate.
+    pub fn sms_plan_mark_read(&mut self) -> Option<SmsPlan> {
+        if self.sms_plan_refusal().is_some() {
+            return None;
+        }
+        let index = self.sms.open.clone().or_else(|| self.sms_current_index());
+        let index = index?;
+        let plan = SmsPlan {
+            op: crate::write::SmsOp::MarkRead,
+            indices: vec![index],
+        };
+        self.sms.confirm = Some(plan.clone());
+        Some(plan)
+    }
+
+    /// `n` or `Esc` in the dialogue: drop the plan, send nothing.
+    pub fn sms_cancel(&mut self) -> bool {
+        self.sms.confirm.take().is_some()
+    }
+
+    /// `y` in the dialogue: hand the plan out, once.
+    pub fn sms_take_plan(&mut self) -> Option<SmsPlan> {
+        self.sms.confirm.take()
+    }
+
+    /// Take one outcome into the tab: counts in the bar, failed rows kept, and a
+    /// refusal disables the keys instead of inviting a retry.
+    pub fn on_sms_report(&mut self, report: &crate::write::SmsReport) {
+        self.sms.busy = false;
+        self.sms.notice = Some(report.summary());
+        if let Some((_, code)) = &report.unsupported {
+            self.sms.blocked = Some(format!(
+                "this firmware refused {} ({code}); the keys stay off",
+                report.op.verb()
+            ));
+        }
+        let failed: std::collections::BTreeSet<String> =
+            report.failed.iter().map(|(i, _)| i.clone()).collect();
+        self.sms.selected.retain(|i| failed.contains(i));
+        if report.op == crate::write::SmsOp::Delete {
+            if let Some(open) = &self.sms.open {
+                if !failed.contains(open) && report.deleted > 0 {
+                    self.sms.open = None;
+                }
+            }
+            self.sms.scroll = 0;
+        }
+        let len = self.sms_rows().len();
+        if len > 0 && self.sms.cursor >= len {
+            self.sms.cursor = len - 1;
+        }
     }
 
     pub fn adjust_refresh(&mut self, delta: i64) {
@@ -803,8 +1207,16 @@ impl App {
     /// The order the grid draws: low, mid, high, other, ascending inside each
     /// class. `band_cursor` indexes this, so `j`/`k` walk the picture the user
     /// is looking at, not the firmware's list order.
+    /// Every band the panel can show: what the device advertises plus what the
+    /// tick list holds. A ticked band the device never listed must still be
+    /// drawn, because dropping it would hide the one row that says so.
     pub fn bands_in_draw_order(&self) -> Vec<u32> {
         let mut v = self.bands_supported.clone();
+        for b in &self.bands_selected {
+            if !v.contains(&(*b as u32)) {
+                v.push(*b as u32);
+            }
+        }
         v.sort_by_key(|b| (bands::class_of(*b as u8), *b));
         v
     }
@@ -999,6 +1411,56 @@ impl App {
         }
     }
 
+    /// Fill the five series the charts read with `samples` synthetic points
+    /// around the current reading, so `preview --demo-history` can show a full
+    /// window without a router. Deterministic: the same arguments render the
+    /// same frame, and the cap is the one `on_snapshot` applies.
+    pub fn demo_history(&mut self, samples: usize) {
+        if samples == 0 {
+            return;
+        }
+        let mut seed = 0x2026_1118u64;
+        // xorshift64: a wobble that depends on the counter, not on the clock.
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 1000) as f64 / 1000.0
+        };
+        let dl = self.history_dl.back().copied().unwrap_or(1.0e6).max(1.0);
+        let ul = self.history_ul.back().copied().unwrap_or(1.0e5).max(1.0);
+        let rsrp = self.history_rsrp.back().copied().unwrap_or(-90.0);
+        let rsrq = self.history_rsrq.back().copied().unwrap_or(-8.0);
+        let sinr = self.history_sinr.back().copied().unwrap_or(12.0);
+        for i in 0..samples {
+            let phase = i as f64 * 0.17;
+            let swing = 0.25 + 0.6 * phase.sin().abs() + 0.15 * noise();
+            self.history_dl.push_back(dl * swing);
+            self.history_ul
+                .push_back(ul * (0.5 + 0.5 * (phase * 1.7).sin().abs()));
+            // Clamped to the fixed domains the signal charts draw with, so a
+            // sample never falls outside the scale and leaves a hole in the row.
+            self.history_rsrp.push_back(
+                (rsrp + 14.0 * (phase * 0.6).sin() + 3.0 * noise()).clamp(-139.0, -45.0),
+            );
+            self.history_rsrq
+                .push_back((rsrq + 6.0 * (phase * 0.45).cos() + 2.0 * noise()).clamp(-19.5, -3.5));
+            self.history_sinr
+                .push_back((sinr + 10.0 * (phase * 0.8).sin() + 3.0 * noise()).clamp(-9.0, 29.0));
+        }
+        for q in [
+            &mut self.history_dl,
+            &mut self.history_ul,
+            &mut self.history_rsrp,
+            &mut self.history_rsrq,
+            &mut self.history_sinr,
+        ] {
+            while q.len() > HISTORY {
+                q.pop_front();
+            }
+        }
+    }
+
     /// `a` in the Bands tab: needs a non-empty selection and nothing in flight.
     pub fn begin_confirm(&mut self) -> bool {
         if self.bands_selected.is_empty() || self.write.is_busy() {
@@ -1038,6 +1500,20 @@ impl App {
         self.write_sent = false;
     }
 
+    /// Record one settled band write for the session log. Ring, not file: the
+    /// oldest entry goes when the cap is reached.
+    pub fn note_band_op(&mut self, what: String, verdict: String, ok: bool) {
+        self.band_log.push_front(BandLog {
+            at: Instant::now(),
+            what,
+            verdict,
+            ok,
+        });
+        while self.band_log.len() > BAND_LOG_CAP {
+            self.band_log.pop_back();
+        }
+    }
+
     pub fn settle_write(&mut self, state: WriteState) {
         match &state {
             WriteState::Pending { .. } | WriteState::Verifying { .. } => {
@@ -1068,6 +1544,11 @@ impl App {
                             },
                             at: Instant::now(),
                         });
+                        self.note_band_op(
+                            format!("apply {} bands", bands.len()),
+                            note.clone(),
+                            true,
+                        );
                     }
                 }
                 self.pending_undo = None;
@@ -1079,6 +1560,9 @@ impl App {
                     LogLevel::Error,
                     format!("write failed · {} · {err}", intent.label()),
                 );
+                if matches!(intent, WriteIntent::ApplyBands { .. }) {
+                    self.note_band_op(intent.label().to_string(), err.clone(), false);
+                }
                 self.pending_undo = None;
                 self.pending_undo_full = None;
                 self.write_sent = false;
@@ -1230,6 +1714,50 @@ impl App {
     pub fn sort_next(&mut self) {
         self.client_sort = self.client_sort.next();
         self.client_sel = 0;
+    }
+
+    /// The dashboard table's rows: the client list in display order, narrowed by
+    /// the dashboard filter only.
+    pub fn dash_clients(&self) -> Vec<&Client> {
+        self.sorted_clients()
+            .into_iter()
+            .filter(|c| self.dash_filter.matches(c))
+            .collect()
+    }
+
+    pub fn dash_cursor(&mut self, delta: isize) {
+        let len = self.dash_clients().len() as isize;
+        if len == 0 {
+            self.dash_sel = 0;
+            return;
+        }
+        self.dash_sel = (self.dash_sel as isize + delta).clamp(0, len - 1) as usize;
+    }
+
+    pub fn dash_filter_next(&mut self) {
+        self.dash_filter = self.dash_filter.next();
+        self.dash_sel = 0;
+    }
+
+    /// Open the row under the dashboard cursor in its own section, with that
+    /// client still selected there. `false` when the table is empty.
+    pub fn dash_open_client(&mut self) -> bool {
+        let Some(ip) = self
+            .dash_clients()
+            .get(self.dash_sel)
+            .and_then(|c| c.ip.clone())
+        else {
+            return false;
+        };
+        if let Some(i) = self
+            .sorted_clients()
+            .iter()
+            .position(|c| c.ip.as_ref() == Some(&ip))
+        {
+            self.client_sel = i;
+        }
+        self.tab = Tab::Clients;
+        true
     }
 
     /// One endpoint read finished (or started). A new scan is announced by the
@@ -1647,7 +2175,7 @@ mod tests {
     fn a_successful_apply_remembers_the_mask_it_replaced() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1680,7 +2208,7 @@ mod tests {
         // real sequence is what this test replays, not a bare Success.
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1712,7 +2240,7 @@ mod tests {
         // "already active, nothing sent": there is no earlier mask to go back to.
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1732,7 +2260,7 @@ mod tests {
     fn a_failed_apply_leaves_the_undo_point_alone() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1753,7 +2281,7 @@ mod tests {
     fn the_countdown_opens_when_an_apply_lands() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1784,7 +2312,7 @@ mod tests {
     fn the_countdown_ending_writes_nothing() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1828,7 +2356,7 @@ mod tests {
     fn undo_restores_the_mask_without_writing() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1850,7 +2378,7 @@ mod tests {
     fn undo_is_refused_while_a_write_is_in_flight() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1873,7 +2401,7 @@ mod tests {
     fn undo_drops_bands_the_device_no_longer_lists() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1893,7 +2421,7 @@ mod tests {
     fn bands_draw_order_groups_by_class_and_keeps_every_band() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1920,7 +2448,7 @@ mod tests {
     fn an_unknown_band_is_ordered_last_not_hidden() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1933,7 +2461,7 @@ mod tests {
     fn the_cursor_ticks_the_band_it_is_drawn_on() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1952,7 +2480,7 @@ mod tests {
     fn bands_diff_names_the_change_in_both_directions() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -1971,34 +2499,6 @@ mod tests {
     }
 
     #[test]
-    fn chart_opts_follow_the_style_and_the_theme() {
-        let mut a = App::new(
-            crate::theme::by_name("dark"),
-            GraphStyle::Dots,
-            View::Full,
-            100,
-            2000,
-        );
-        assert!(a.chart_opts().fade, "dots carries the ramp");
-        assert!(!a.chart_opts().terminal_palette);
-
-        a.graph = GraphStyle::Braille;
-        assert!(!a.chart_opts().fade, "braille stays a flat series");
-
-        let t = App::new(
-            crate::theme::by_name("terminal"),
-            GraphStyle::Dots,
-            View::Full,
-            100,
-            2000,
-        );
-        assert!(
-            t.chart_opts().terminal_palette,
-            "no colour is invented there"
-        );
-    }
-
-    #[test]
     fn tabs_cycle_both_ways() {
         assert_eq!(Tab::Dashboard.next(), Tab::Bands);
         assert_eq!(Tab::Dashboard.prev(), Tab::Signal);
@@ -2011,7 +2511,7 @@ mod tests {
     fn dns_presets_produce_intents() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2053,7 +2553,7 @@ mod tests {
     fn presets_save_dedupe_cycle_and_delete() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2102,7 +2602,7 @@ mod tests {
     fn preset_load_filters_to_bands_this_device_lists() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2135,7 +2635,7 @@ mod tests {
     fn history_is_bounded() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2151,7 +2651,13 @@ mod tests {
 
     #[test]
     fn stale_after_three_intervals() {
-        let mut app = App::new(Theme::get("terminal"), GraphStyle::Dots, View::Full, 100, 0);
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            0,
+        );
         assert!(!app.stale());
         app.last_ok = Some(Instant::now() - Duration::from_millis(5));
         assert!(app.stale(), "refresh_ms=0 makes any age stale");
@@ -2162,7 +2668,7 @@ mod tests {
         use crate::model::Client;
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2226,7 +2732,7 @@ mod tests {
     fn client_cursor_is_bounded_in_display_order() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2252,7 +2758,7 @@ mod tests {
     fn dns_input_becomes_a_confirmable_intent() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2275,7 +2781,7 @@ mod tests {
     fn input_editing_and_take() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2299,7 +2805,7 @@ mod tests {
     fn lite_is_a_toggle_and_sections_leave_it() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2331,10 +2837,34 @@ mod tests {
     }
 
     #[test]
+    fn demo_history_fills_the_charts_and_stops_at_the_cap() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        );
+        app.demo_history(120);
+        assert_eq!(app.history_rsrp.len(), 120);
+        assert_eq!(app.history_sinr.len(), 120);
+        assert_eq!(app.history_dl.len(), 120);
+        assert!(
+            app.history_dl.iter().all(|v| *v >= 0.0),
+            "a synthetic rate is never negative"
+        );
+        app.demo_history(HISTORY * 2);
+        assert_eq!(app.history_rsrp.len(), HISTORY, "capped like on_snapshot");
+        assert_eq!(app.history_dl.len(), HISTORY);
+        app.demo_history(0);
+        assert_eq!(app.history_dl.len(), HISTORY, "0 leaves the series alone");
+    }
+
+    #[test]
     fn cycling_views_remembers_the_return_point() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2387,7 +2917,7 @@ mod tests {
     fn signal_history_caps_at_120() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2414,7 +2944,7 @@ mod tests {
     fn the_feed_keeps_the_selected_line_when_new_events_arrive() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            crate::theme::GraphStyle::Dots,
+            crate::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2438,7 +2968,7 @@ mod tests {
     fn a_running_feed_stays_on_the_newest_line() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            crate::theme::GraphStyle::Dots,
+            crate::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2458,7 +2988,7 @@ mod tests {
     fn the_feed_cursor_never_leaves_the_log() {
         let mut app = App::new(
             crate::theme::by_name("dark"),
-            crate::theme::GraphStyle::Dots,
+            crate::theme::GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2481,7 +3011,7 @@ mod tests {
     fn event_log_is_bounded_and_ordered() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2497,7 +3027,7 @@ mod tests {
     fn extras_mark_blocked_inbox_as_warning() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2522,7 +3052,7 @@ mod tests {
     fn settings_adjustments_are_clamped() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2539,7 +3069,7 @@ mod tests {
     fn a_new_scan_resets_and_reports_its_progress() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2607,7 +3137,7 @@ mod tests {
     fn a_report_is_redacted_until_the_user_opts_in() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2624,7 +3154,7 @@ mod tests {
     fn a_confirmed_band_write_carries_its_preflight() {
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,
@@ -2700,7 +3230,7 @@ mod tests {
         // `Theme::get` is the public door (src/theme.rs:208); there is no by_id.
         App::new(
             crate::theme::Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             View::Full,
             100,
             2000,

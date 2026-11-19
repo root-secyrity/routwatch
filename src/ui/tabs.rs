@@ -63,99 +63,42 @@ pub fn body(f: &mut Frame, area: Rect, app: &App) {
 
 // ---------------------------------------------------------------- dashboard
 
-/// Four blocks want 25 rows. Below that each tier drops the least useful block
-/// instead of squeezing all four into one row each.
+/// The dashboard lives in its own module: seven regions, one time window, and
+/// one clock shared by the two plots. This entry point only decides nothing.
 pub fn dashboard(f: &mut Frame, area: Rect, app: &App) {
-    // The instrument band needs its own rows; without them the blocks below
-    // keep the whole area rather than every panel losing a row.
-    if area.height >= crate::ui::tiles::HEIGHT + 20 {
-        let [band, rest] = Layout::vertical([
-            Constraint::Length(crate::ui::tiles::HEIGHT),
-            Constraint::Min(20),
-        ])
-        .areas(area);
-        crate::ui::tiles::instruments(f, band, app);
-        dashboard_blocks(f, rest, app);
-        return;
-    }
-    dashboard_blocks(f, area, app);
+    crate::ui::dash::dashboard(f, area, app);
 }
 
-fn dashboard_blocks(f: &mut Frame, area: Rect, app: &App) {
-    if area.height >= 25 {
-        dashboard_roomy(f, area, app);
-    } else if area.height >= 14 {
-        dashboard_compact(f, area, app);
-    } else {
-        dashboard_tight(f, area, app);
-    }
-}
-
-/// Minimum height: one panel that still answers "is the link alive?".
-fn dashboard_tight(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    f.render_widget(
-        Paragraph::new(signal_lines(app))
-            .wrap(Wrap { trim: true })
-            .block(panel("SIGNAL".into(), theme)),
-        area,
-    );
-}
-
-/// Short terminal: signal, speed and the throughput history; no 5G/connection
-/// blocks, no host or error lists - they are a `2`/`5` key away.
-fn dashboard_compact(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    let [top, graph] = Layout::vertical([Constraint::Length(8), Constraint::Min(4)]).areas(area);
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(top);
-    f.render_widget(
-        Paragraph::new(signal_lines(app))
-            .wrap(Wrap { trim: true })
-            .block(panel("SIGNAL · 4G".into(), theme)),
-        left,
-    );
-    f.render_widget(
-        Paragraph::new(speed_lines(app)).block(panel("SPEED".into(), theme)),
-        right,
-    );
-    throughput_panel(f, graph, app);
-}
-
-/// Name of the active graph style, for the panel title.
-fn graph_style_name(style: crate::theme::GraphStyle) -> &'static str {
-    match style {
-        crate::theme::GraphStyle::Bars => "bars",
-        crate::theme::GraphStyle::Dots => "dots",
-        crate::theme::GraphStyle::Braille => "braille",
-        crate::theme::GraphStyle::Ascii => "ascii",
-    }
+/// The time window a plot draws: one fixed span, whatever the poll period and
+/// however full the store is.
+///
+/// A plot is sized by this window and the panel, never by the samples on hand:
+/// the same span of seconds must cover the same columns whether the record is
+/// empty, half full or full, and a tick names an instant inside the window.
+/// The store is sized to cover the window at the fastest poll, so the window
+/// can stay fixed while the poll interval moves.
+fn plot_window(_app: &App) -> u64 {
+    crate::app::WINDOW_SECS
 }
 
 /// The throughput plot: rx above the zero row, tx below it, one scale, one
 /// time window, and an axis that names the window actually drawn.
+#[cfg(test)]
 fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let refresh = app.refresh_ms.max(1);
     let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
     let tx: Vec<u64> = app.history_ul.iter().map(|v| v.max(0.0) as u64).collect();
     let samples = rx.len().max(tx.len());
-    let secs = (samples as u64 * refresh / 1000).max(1);
+    let secs = (samples as u64 * app.refresh_ms.max(1) / 1000).max(1);
 
     // No sample means no window: a "last 1s" title would be a claim about data
     // that does not exist yet.
     let title = match samples {
-        0 => format!("THROUGHPUT · {}", graph_style_name(app.graph)),
+        0 => format!("THROUGHPUT · {}", app.graph.name()),
         // One sample is a reading, not a window: naming a span here was a claim
         // about data that does not exist yet.
-        1 => format!(
-            "THROUGHPUT · {} · 1 sample, collecting",
-            graph_style_name(app.graph)
-        ),
-        _ => format!(
-            "THROUGHPUT · {} · last {secs}s",
-            graph_style_name(app.graph)
-        ),
+        1 => format!("THROUGHPUT · {} · 1 sample, collecting", app.graph.name()),
+        _ => format!("THROUGHPUT · {} · last {secs}s", app.graph.name()),
     };
     let block = panel(title, theme);
     let inner = block.inner(area);
@@ -196,11 +139,16 @@ fn throughput_panel(f: &mut Frame, area: Rect, app: &App) {
 fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     let theme = &app.theme;
     let opts = app.chart_opts();
-    let refresh = app.refresh_ms.max(1);
     let rx: Vec<u64> = app.history_dl.iter().map(|v| v.max(0.0) as u64).collect();
     let tx: Vec<u64> = app.history_ul.iter().map(|v| v.max(0.0) as u64).collect();
     let samples = rx.len().max(tx.len());
-    let secs = (samples as u64 * refresh / 1000).max(1);
+    let window = plot_window(app);
+    let record_secs = (samples as u64 * app.refresh_ms.max(1) / 1000).max(1);
+    let secs_per_sample = (app.refresh_ms.max(1) / 1000).max(1);
+    // One sample is not a trend: it keeps the single column it really is. A
+    // reading resampled across the window draws a flat line with a gap after
+    // it, which reads as traffic that stopped.
+    let collecting = samples == 1;
     let rx_peak = rx.iter().copied().max().unwrap_or(0);
     let tx_peak = tx.iter().copied().max().unwrap_or(0);
     let peak = rx_peak.max(tx_peak).max(1);
@@ -215,17 +163,24 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     if inner.width <= gutter + 8 {
         return;
     }
-    // One cell per sample, never a stretch. Stretching the history across the
-    // whole width made a single reading paint a four-cell bar at start-up and a
-    // one-cell bar two minutes later, so the same value changed width while the
-    // app ran. A short history now leaves the left side blank.
+    // The plot is the time window, not the record: it spans the panel, and each
+    // sample sits at its age inside the window. The record sets neither the
+    // width nor where a tick lands.
     let capacity = (inner.width - gutter) as usize;
-    let cells = samples.min(capacity).max(1);
-    let plot = Rect {
-        x: inner.x + inner.width - cells as u16,
-        y: inner.y + 1,
-        width: cells as u16,
-        height: inner.height - 2,
+    let plot = if collecting {
+        Rect {
+            x: inner.x + inner.width - 1,
+            y: inner.y + 1,
+            width: 1,
+            height: inner.height - 2,
+        }
+    } else {
+        Rect {
+            x: inner.x + gutter,
+            y: inner.y + 1,
+            width: capacity as u16,
+            height: inner.height - 2,
+        }
     };
 
     // The Signal tab gives this panel half a frame: peak and average there
@@ -257,11 +212,8 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
         Rect { height: 1, ..inner },
     );
 
-    // One sample is not a trend: resampling it across the window drew a flat
-    // line over half the plot with a gap after it, which reads as "traffic
-    // stopped". Keep the single column it really is, with no baseline, and let
-    // the title and the axis say why there is only one.
-    let collecting = samples == 1;
+    // A single reading keeps no baseline: a floor line under one column would
+    // read as a series that went quiet.
     let opts = if collecting {
         crate::ui::chart::ChartOpts {
             baseline: false,
@@ -270,19 +222,22 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     } else {
         opts
     };
-    let (rx_plot, tx_plot) = if samples <= capacity {
+    let (rx_plot, tx_plot) = if collecting {
         (rx.clone(), tx.clone())
     } else {
         (
-            crate::ui::chart::bucket_max(&rx, cells),
-            crate::ui::chart::bucket_max(&tx, cells),
+            crate::ui::chart::resample_to_window(&rx, secs_per_sample, window, capacity),
+            crate::ui::chart::resample_to_window(&tx, secs_per_sample, window, capacity),
         )
     };
     // A percentile ceiling, not the peak: one burst stays visible as a clipped
     // tower instead of flattening the body of the series onto the floor. The
-    // meta line still reports the true peak and average.
-    let rx_clip = crate::ui::chart::robust_max(&rx_plot, 0.95);
-    let tx_clip = crate::ui::chart::robust_max(&tx_plot, 0.95);
+    // meta line still reports the true peak and average. Only the slots the
+    // record reaches are sampled: the empty left of a short history is not a
+    // reading, and counting its zeros would flatten the scale.
+    let covered = rx_plot.len().saturating_sub(samples.min(rx_plot.len()));
+    let rx_clip = crate::ui::chart::robust_max(&rx_plot[covered..], 0.95);
+    let tx_clip = crate::ui::chart::robust_max(&tx_plot[covered..], 0.95);
     let (rx_max, tx_max) = if split {
         (rx_clip, tx_clip)
     } else {
@@ -296,7 +251,6 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
         &tx_plot,
         rx_max,
         tx_max,
-        app.graph.is_bars(),
         theme.ok,
         theme.accent,
         opts,
@@ -332,11 +286,11 @@ fn mirrored_body(f: &mut Frame, inner: Rect, app: &App) {
     let axis = if collecting {
         "collecting…".to_string()
     } else {
-        let full = crate::ui::chart::time_axis(plot.width, secs);
+        let full = crate::ui::chart::time_axis_window(plot.width, window, record_secs);
         if full.chars().count() <= plot.width as usize {
             full
         } else {
-            narrow_axis(plot.width, secs)
+            narrow_axis(plot.width, window)
         }
     };
     if !axis.is_empty() {
@@ -378,102 +332,6 @@ fn narrow_axis(width: u16, secs: u64) -> String {
     } else {
         "now".to_string()
     }
-}
-
-fn dashboard_roomy(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    let [top, mid, graph, bottom] = Layout::vertical([
-        Constraint::Length(8),
-        Constraint::Length(5),
-        Constraint::Length(9),
-        Constraint::Min(3),
-    ])
-    .areas(area);
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
-
-    f.render_widget(
-        Paragraph::new(signal_lines(app))
-            .wrap(Wrap { trim: true })
-            .block(panel("SIGNAL · 4G".into(), theme)),
-        left,
-    );
-    let speed = Paragraph::new(speed_lines(app)).block(panel("SPEED".into(), theme));
-    f.render_widget(speed, right);
-
-    let [a, b] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(mid);
-    f.render_widget(
-        Paragraph::new(nr_lines(app)).block(panel("5G".into(), theme)),
-        a,
-    );
-    f.render_widget(
-        Paragraph::new(connection_lines(app)).block(panel("CONNECTION".into(), theme)),
-        b,
-    );
-
-    throughput_panel(f, graph, app);
-
-    // Bottom: the two things a router page never shows side by side - hosts and errors.
-    let [c, d] =
-        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(bottom);
-    let mut hosts = vec![Line::from(Span::styled(
-        format!("{} {} {}", pad("name", 26), pad("ip", 15), "band"),
-        Style::default().fg(theme.dim),
-    ))];
-    if let Some(s) = &app.snap {
-        for c in s
-            .clients
-            .iter()
-            .take(bottom.height.saturating_sub(3) as usize)
-        {
-            hosts.push(Line::from(vec![
-                Span::styled(
-                    pad(c.name.as_deref().unwrap_or("(unnamed)"), 26),
-                    Style::default().fg(theme.fg),
-                ),
-                Span::styled(
-                    pad(c.ip.as_deref().unwrap_or("-"), 15),
-                    Style::default().fg(theme.accent),
-                ),
-                Span::styled(
-                    c.freq.clone().unwrap_or_default(),
-                    Style::default().fg(theme.dim),
-                ),
-            ]));
-        }
-        if s.clients.is_empty() {
-            hosts.push(Line::from(Span::styled(
-                "no associated hosts",
-                Style::default().fg(theme.dim),
-            )));
-        }
-    }
-    f.render_widget(
-        Paragraph::new(hosts).block(panel(
-            format!(
-                "CLIENTS · {}",
-                app.snap.as_ref().map(|s| s.clients.len()).unwrap_or(0)
-            ),
-            theme,
-        )),
-        c,
-    );
-
-    let mut errs = Vec::new();
-    for e in app.error_log.iter().take(2) {
-        errs.push(Line::from(Span::styled(
-            truncate(e, d.width.saturating_sub(4) as usize),
-            Style::default().fg(theme.warn),
-        )));
-    }
-    if errs.is_empty() {
-        errs.push(Line::from(Span::styled(
-            "no errors this session",
-            Style::default().fg(theme.dim),
-        )));
-    }
-    f.render_widget(Paragraph::new(errs).block(panel("ERRORS".into(), theme)), d);
 }
 
 fn last(v: &std::collections::VecDeque<f64>) -> f64 {
@@ -729,33 +587,6 @@ fn connection_lines(app: &App) -> Vec<Line<'static>> {
 
 // ------------------------------------------------------------------- bands
 
-/// One Bands cell: six columns, so every row of the grid is a matrix whatever
-/// the band number's width. The brackets mean "ticked", exactly as before.
-fn band_cell(band: u32, app: &App, serving: &str) -> (String, Style) {
-    let t = &app.theme;
-    let ticked = app.bands_selected.contains(&(band as u8));
-    let label = if ticked {
-        format!("[B{band}]")
-    } else {
-        format!("B{band}")
-    };
-    // 6, not 5: `[B20]` fills five columns, so the sixth is the gap that keeps
-    // `[B20]B28` from happening. This is what the alignment test measures.
-    let text = format!("{label:<6}");
-    let mut style = if ticked {
-        Style::default().fg(t.ok).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(t.dim)
-    };
-    if format!("B{band}") == serving {
-        style = style.add_modifier(Modifier::UNDERLINED);
-        if !ticked {
-            style = style.fg(t.accent);
-        }
-    }
-    (text, style)
-}
-
 /// `B1+B3+B20`
 fn plus_list(bands: &[u8]) -> String {
     bands
@@ -804,445 +635,807 @@ fn mode_label(code: &str) -> &str {
     }
 }
 
-pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
-    let t = &app.theme;
-    let Some(s) = &app.snap else {
-        f.render_widget(
-            Paragraph::new("waiting…").block(panel("BANDS".into(), t)),
-            area,
-        );
-        return;
+// ------------------------------------------------------------------- bands
+
+/// Frequency and duplex per LTE band. The snapshot's signal block carries no
+/// frequency column, so the panel reads the band number into this table; a band
+/// it does not list renders "-" rather than a guess.
+pub(crate) fn band_radio(band: u8) -> Option<(&'static str, &'static str)> {
+    Some(match band {
+        1 => ("2100", "FDD"),
+        2 => ("1900", "FDD"),
+        3 => ("1800", "FDD"),
+        4 => ("1700", "FDD"),
+        5 => ("850", "FDD"),
+        7 => ("2600", "FDD"),
+        8 => ("900", "FDD"),
+        12 => ("700", "FDD"),
+        13 => ("700", "FDD"),
+        17 => ("700", "FDD"),
+        20 => ("800", "FDD"),
+        26 => ("850", "FDD"),
+        28 => ("700", "FDD"),
+        32 => ("1500", "SDL"),
+        34 => ("2000", "TDD"),
+        38 => ("2600", "TDD"),
+        39 => ("1900", "TDD"),
+        40 => ("2300", "TDD"),
+        41 => ("2500", "TDD"),
+        42 => ("3500", "TDD"),
+        43 => ("3700", "TDD"),
+        46 => ("5200", "TDD"),
+        48 => ("3500", "TDD"),
+        66 => ("1700", "FDD"),
+        71 => ("600", "FDD"),
+        _ => return None,
+    })
+}
+
+/// Fixed domains: the bar means the same thing on every frame, so a moving
+/// sample does not move the scale with it.
+const RSRP_RANGE: (f32, f32) = (-140.0, -44.0);
+const RSRQ_RANGE: (f32, f32) = (-20.0, -3.0);
+const SINR_RANGE: (f32, f32) = (-10.0, 30.0);
+
+fn meter(value: Option<f32>, range: (f32, f32), cells: usize) -> String {
+    let Some(v) = value else {
+        return "·".repeat(cells);
     };
+    let (lo, hi) = range;
+    let filled = (((v - lo) / (hi - lo)).clamp(0.0, 1.0) * cells as f32).round() as usize;
+    format!(
+        "{}{}",
+        "█".repeat(filled),
+        "░".repeat(cells.saturating_sub(filled))
+    )
+}
 
-    const LBL: usize = 9; // label column
-    const CLS: usize = 6; // class column, so `other` never touches the first cell
-    const IND: usize = LBL + CLS; // 15: where the band cells start
-    const CELL: usize = 6; // one cell, gap included
-
-    let mode_text = mode_label(&app.band_mode);
-    let option_label = if app.band_mode == "08" {
-        match app.band_option.as_str() {
-            "0" => "NSA",
-            "1" => "SA",
-            _ => "SA+NSA",
-        }
-    } else {
-        "-"
-    };
-    let serving_lte = s.signal.band.clone().unwrap_or_else(|| "-".into());
-    let serving_text = match s.signal.nr.as_ref().and_then(|n| n.band.clone()) {
-        Some(nr) => format!("{serving_lte} LTE + {nr} NR"),
-        None => format!("{serving_lte} LTE"),
-    };
-    let width = area.width.saturating_sub(2) as usize;
-    let compact = width < 80; // `now` row: shrink the mode column
-    let narrow = width < 70; // action row: drop the explanation
-    let order = app.bands_in_draw_order();
-    let cursor_band = order.get(app.band_cursor).copied();
-    let all_bands = s.all_bands_mask.clone().unwrap_or_else(|| "unknown".into());
-
-    let mut lines = Vec::new();
-
-    // 1. what the link is doing right now.
-    // `pad` cuts at the width it is given; 28 is wider than the longest label
-    // ("Auto · nr SA+NSA" is 16), so a firmware code we do not know still shows.
-    // Below 80 columns the mode column shrinks, otherwise `serving` wraps and
-    // leaves "NR" alone on a line of its own.
-    lines.push(Line::from(vec![
-        Span::styled(pad("now", LBL), Style::default().fg(t.dim)),
-        Span::styled(
-            pad(
-                &format!("{mode_text} · nr {option_label}"),
-                if compact { 18 } else { 28 },
-            ),
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(pad("serving", 8), Style::default().fg(t.dim)),
-        Span::styled(serving_text, Style::default().fg(t.fg)),
-    ]));
-    let on_device: Vec<String> = app
-        .bands_on_device()
+/// The last few RSRP samples as a single row, drawn from the same ring the
+/// Signal graphs read. Eight levels, RSRP domain, oldest on the left.
+fn history_strip(app: &App, cells: usize) -> String {
+    const GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if app.history_rsrp.is_empty() || cells == 0 {
+        return String::new();
+    }
+    let take = cells.min(app.history_rsrp.len());
+    let (lo, hi) = RSRP_RANGE;
+    app.history_rsrp
         .iter()
-        .map(|b| format!("B{b}"))
-        .collect();
-    lines.push(Line::from(vec![
-        Span::styled(pad("on", LBL), Style::default().fg(t.dim)),
+        .rev()
+        .take(take)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|v| {
+            let f = ((*v as f32 - lo) / (hi - lo)).clamp(0.0, 0.999);
+            GLYPHS[(f * 8.0) as usize]
+        })
+        .collect()
+}
+
+fn dash(text: Option<String>) -> String {
+    match text {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => "-".into(),
+    }
+}
+
+/// Region 1: the serving link, one fact per row, most useful first. A field the
+/// firmware did not send prints "-" and is never inferred.
+fn serving_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let Some(s) = app.snap.as_ref() else {
+        return vec![Line::from("waiting…")];
+    };
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let lte = s.signal.band.clone().unwrap_or_else(|| "-".into());
+    let band_no = lte.strip_prefix('B').and_then(|n| n.parse::<u8>().ok());
+    let radio = band_no.and_then(band_radio);
+
+    let mut head = vec![
         Span::styled(
-            if on_device.is_empty() {
-                "unknown".to_string()
+            format!(" {lte} LTE "),
+            Style::default()
+                .fg(active_text_colour(t))
+                .bg(t.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("serving", Style::default().fg(t.dim)),
+        Span::styled(
+            format!(" · {}", mode_label(&app.band_mode)),
+            Style::default().fg(t.dim),
+        ),
+    ];
+    if let Some(nr) = s.signal.nr.as_ref().and_then(|n| n.band.clone()) {
+        head.push(Span::styled(
+            format!(" · {nr} NR"),
+            Style::default().fg(t.fg),
+        ));
+    }
+    out.push(Line::from(head));
+
+    let mhz = match s.signal.dl_mhz {
+        Some(m) => format!("{m} MHz"),
+        None => match radio {
+            Some((mhz, _)) => format!("{mhz} MHz"),
+            None => "-".into(),
+        },
+    };
+    let bw = dash(s.signal.dl_bw.clone());
+    let duplex = radio.map(|r| r.1.to_string()).unwrap_or_else(|| "-".into());
+    let tm = s.signal.tm.clone().unwrap_or_else(|| "-".into());
+    out.push(Line::from(Span::styled(
+        truncate(&format!("link {mhz} · {bw} · {duplex} · {tm}"), width),
+        Style::default().fg(t.fg),
+    )));
+
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(pci) = s.signal.pci {
+        ids.push(format!("PCI {pci}"));
+    }
+    if let Some(mcs) = s.signal.dl_mcs {
+        ids.push(format!("MCS {mcs}"));
+    }
+    if let Some(tac) = s.signal.tac {
+        ids.push(format!("TAC {tac}"));
+    }
+    if ids.is_empty() {
+        ids.push("-".into());
+    }
+    out.push(Line::from(Span::styled(
+        truncate(&ids.join(" · "), width),
+        Style::default().fg(t.fg),
+    )));
+
+    let mut earfcn = String::from("EARFCN ");
+    earfcn.push_str(&dash(s.signal.earfcn.clone()));
+    earfcn.push_str(" · ");
+    earfcn.push_str(mode_label(&app.band_mode));
+    out.push(Line::from(Span::styled(
+        truncate(&earfcn, width),
+        Style::default().fg(t.dim),
+    )));
+
+    let nr_band = s.signal.nr.as_ref().and_then(|n| n.band.clone());
+    if nr_band.is_none() {
+        out.push(Line::from(Span::styled(
+            truncate("no NR band reported", width),
+            Style::default().fg(t.dim),
+        )));
+    }
+    if let Some(nr) = s.signal.nr.clone() {
+        if let Some(band) = nr.band.clone() {
+            let mut row = format!("{band} serving");
+            if let Some(rank) = nr.rank {
+                row.push_str(&format!(" · rank {rank}"));
+            }
+            if let Some(bw) = nr.dl_bw.clone() {
+                row.push_str(&format!(" · {bw}"));
+            }
+            out.push(Line::from(Span::styled(
+                truncate(&row, width),
+                Style::default().fg(t.fg),
+            )));
+        }
+    }
+
+    if let Some(mcs) = s.signal.dl_mcs_secondary {
+        out.push(Line::from(Span::styled(
+            truncate(&format!("CA · secondary DL carrier · MCS {mcs}"), width),
+            Style::default().fg(t.fg),
+        )));
+    }
+
+    let cells = width.saturating_sub(16).clamp(6, 14);
+    for (name, value, range, unit) in [
+        ("RSRP", s.signal.rsrp_dbm, RSRP_RANGE, "dBm"),
+        ("RSRQ", s.signal.rsrq_db, RSRQ_RANGE, "dB"),
+        ("SINR", s.signal.sinr_db, SINR_RANGE, "dB"),
+    ] {
+        let read = match value {
+            Some(v) => format!("{v:.0} {unit}"),
+            None => "-".into(),
+        };
+        out.push(Line::from(vec![
+            Span::styled(format!("{name} "), Style::default().fg(t.dim)),
+            Span::styled(meter(value, range, cells), Style::default().fg(t.accent)),
+            Span::styled(format!(" {read}"), Style::default().fg(t.fg)),
+        ]));
+    }
+
+    let strip = history_strip(app, width.saturating_sub(2).clamp(4, 40));
+    if !strip.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled("sig  ", Style::default().fg(t.dim)),
+            Span::styled(strip, Style::default().fg(t.ok)),
+        ]));
+    }
+    out
+}
+
+/// Regions 2 and 3: one chip per band grouped by class, its frequency and
+/// duplex under it where the width allows, then the 64-bit mask.
+fn matrix_lines(app: &App, width: usize, with_freq: bool) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let supported: Vec<u8> = app.bands_supported.iter().map(|b| *b as u8).collect();
+    let served = app
+        .snap
+        .as_ref()
+        .and_then(|s| s.signal.band.clone())
+        .unwrap_or_default();
+    let cursor_band = app.bands_in_draw_order().get(app.band_cursor).copied();
+    let cell = if with_freq { 9 } else { 5 };
+
+    for (cls, members) in app.bands_by_class() {
+        let mut row = Line::from(Span::styled(
+            format!("{:<5}", cls.label()),
+            Style::default().fg(t.dim),
+        ));
+        let mut freq = Line::from(Span::styled(" ".repeat(5), Style::default().fg(t.dim)));
+        let mut any = false;
+        for band in members {
+            let b = band;
+            let b8 = b as u8;
+            let ticked = app.bands_selected.contains(&b8);
+            let advertised = supported.contains(&b8);
+            let serving = served == format!("B{b}");
+            let label = if ticked {
+                format!("[B{b}]")
             } else {
-                on_device.join(" ")
-            },
+                format!("B{b}")
+            };
+            let mut text = label.clone();
+            if !advertised {
+                text.push('!');
+            }
+            let text = format!("{text:<width$}", width = cell);
+            let mut style = if !advertised {
+                Style::default().fg(t.warn)
+            } else if ticked {
+                Style::default().fg(t.ok).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.dim)
+            };
+            if serving {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            if Some(b) == cursor_band {
+                style = Style::default()
+                    .fg(active_text_colour(t))
+                    .bg(t.accent)
+                    .add_modifier(Modifier::BOLD);
+            }
+            row.spans.push(Span::styled(text, style));
+            if with_freq {
+                let under = match band_radio(b8) {
+                    Some((mhz, mode)) => format!("{mhz} {mode}"),
+                    None => "-".into(),
+                };
+                freq.spans.push(Span::styled(
+                    format!("{:<width$}", under, width = cell),
+                    Style::default().fg(t.dim),
+                ));
+            }
+            any = true;
+        }
+        if any {
+            out.push(row);
+            if with_freq {
+                out.push(freq);
+            }
+        }
+    }
+
+    // 3. the mask itself: 64 cells, one per band number, filled when ticked.
+    let hex = app.band_mask_hex();
+    let advertised_hex = app
+        .snap
+        .as_ref()
+        .and_then(|s| s.all_bands_mask.clone())
+        .unwrap_or_else(|| "unknown".into());
+    out.push(Line::from(Span::styled(
+        truncate(
+            &format!("{advertised_hex} advertised · {hex} ticked"),
+            width,
+        ),
+        Style::default().fg(t.dim),
+    )));
+
+    // 32 cells need 35 columns; below that the mask wraps to 16 so all 64
+    // bits stay on screen.
+    let per_row = if width >= 66 { 32 } else { 16 };
+    let mut bit: u8 = 0;
+    while bit < 64 {
+        let mut cells = String::new();
+        let mut ruler = " ".repeat(per_row);
+        for i in 0..per_row {
+            let idx = bit + i as u8;
+            if idx >= 64 {
+                break;
+            }
+            cells.push(if supported.contains(&(idx + 1)) {
+                if app.bands_selected.contains(&(idx + 1)) {
+                    '█'
+                } else {
+                    '▒'
+                }
+            } else if app.bands_selected.contains(&(idx + 1)) {
+                '█'
+            } else {
+                '·'
+            });
+        }
+        for mark in (0..per_row).step_by(8) {
+            let idx = bit as usize + mark;
+            if idx >= 64 {
+                break;
+            }
+            let text = idx.to_string();
+            if mark + text.len() <= per_row {
+                ruler.replace_range(mark..mark + text.len(), &text);
+            }
+        }
+        out.push(Line::from(vec![
+            Span::styled(format!("{:<3}", bit), Style::default().fg(t.dim)),
+            Span::styled(cells, Style::default().fg(t.fg)),
+        ]));
+        out.push(Line::from(Span::styled(
+            format!("{:<3}{ruler}", " "),
+            Style::default().fg(t.dim),
+        )));
+        bit += per_row as u8;
+    }
+    out.push(Line::from(Span::styled(
+        "█ ticked  ▒ advertised not ticked  · not advertised  ! preset only",
+        Style::default().fg(t.dim),
+    )));
+    out
+}
+
+/// Region 4: tick versus device, what the delta is, the keys, and the write's
+/// own progress. Every row is derived; nothing is stored twice.
+fn apply_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let order = app.bands_in_draw_order();
+    let (added, dropped) = app.bands_diff();
+    let ticked_mask = app.band_mask_hex();
+    let device = app.bands_on_device();
+
+    out.push(Line::from(vec![
+        Span::styled("ticked ", Style::default().fg(t.dim)),
+        Span::styled(
+            format!("{} of {}", app.bands_selected.len(), order.len()),
+            Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  → 0x{ticked_mask}"), Style::default().fg(t.dim)),
+    ]));
+    out.push(Line::from(Span::styled(
+        truncate(&plus_list(&app.bands_selected), width),
+        Style::default().fg(t.fg),
+    )));
+    let device_hex = if device.is_empty() {
+        "-".to_string()
+    } else {
+        crate::router::bands::to_hex(crate::router::bands::mask_from_bands(&device))
+    };
+    out.push(Line::from(vec![
+        Span::styled("device now ", Style::default().fg(t.dim)),
+        Span::styled(
+            format!("{} · 0x{device_hex}", device.len()),
             Style::default().fg(t.fg),
         ),
-        Span::styled("   device now", Style::default().fg(t.dim)),
     ]));
-    // `all_bands_mask` is what the firmware advertises, not what it runs. Say
-    // exactly that, and drop the line on a short terminal where the tick row
-    // matters more than the mask (`snapshot --json` still carries it).
-    if area.height >= 18 {
-        lines.push(Line::from(vec![
-            Span::styled(pad("", LBL), Style::default().fg(t.dim)),
-            Span::styled(
-                format!("advertised {all_bands} · firmware value"),
-                Style::default().fg(t.dim),
-            ),
-        ]));
-    }
 
-    // What the link actually is, from fields the snapshot already carries. Two
-    // shapes (with and without EARFCN) and a cut as the last resort: this panel
-    // wraps, and a wrapped row costs the row below it.
-    if area.height >= 20 {
-        let mut parts: Vec<String> = Vec::new();
-        if serving_lte != "-" {
-            parts.push(serving_lte.clone());
-        }
-        if let Some(mhz) = s.signal.dl_mhz {
-            parts.push(format!("{mhz} MHz"));
-        }
-        if let Some(bw) = s.signal.dl_bw.clone() {
-            parts.push(bw);
-        }
-        if let Some(tm) = s.signal.tm.clone() {
-            parts.push(tm);
-        }
-        if let Some(pci) = s.signal.pci {
-            parts.push(format!("PCI {pci}"));
-        }
-        let core = parts.join(" · ");
-        let earfcn = s
-            .signal
-            .earfcn
-            .clone()
-            .map(|e| format!("   EARFCN {e}"))
-            .unwrap_or_default();
-        let with_earfcn = format!("{core}{earfcn}");
-        let text = if LBL + with_earfcn.chars().count() <= width {
-            with_earfcn
-        } else {
-            core
-        };
-        lines.push(Line::from(vec![
-            Span::styled(pad("link", LBL), Style::default().fg(t.dim)),
-            Span::styled(
-                truncate(&text, width.saturating_sub(LBL)),
-                Style::default().fg(t.fg),
-            ),
-        ]));
+    // The outage warning sits above the delta and the keys: on a short panel it
+    // is the row that decides whether `a` is pressed at all.
+    let mut write_row = String::from("write costs 10-30 s offline");
+    if app.write.is_busy() {
+        write_row.push_str(&format!(" · {}", app.write.label()));
     }
-    if area.height >= 22 {
-        if let Some(mcs) = s.signal.dl_mcs_secondary {
-            let msg = format!("secondary DL carrier · MCS {mcs}");
-            lines.push(Line::from(vec![
-                Span::styled(pad("ca", LBL), Style::default().fg(t.dim)),
-                Span::styled(
-                    truncate(&msg, width.saturating_sub(LBL)),
-                    Style::default().fg(t.fg),
-                ),
-            ]));
-        }
-    }
-    lines.push(Line::from(""));
+    let write_style = match &app.write {
+        crate::write::WriteState::Failed { .. } => Style::default().fg(t.danger),
+        crate::write::WriteState::Success { .. } => Style::default().fg(t.ok),
+        crate::write::WriteState::Idle => Style::default().fg(t.warn),
+        _ => Style::default().fg(t.warn),
+    };
+    out.push(Line::from(Span::styled(
+        truncate(&write_row, width),
+        write_style,
+    )));
 
-    // 2. the grid, grouped so a class can be judged as a class.
-    let per_row = (width.saturating_sub(IND) / CELL).max(1);
-    for (cls, members) in app.bands_by_class() {
-        for (row_no, chunk) in members.chunks(per_row).enumerate() {
-            let mut spans = vec![
-                Span::styled(
-                    pad(if row_no == 0 { "bands" } else { "" }, LBL),
-                    Style::default().fg(t.dim),
-                ),
-                Span::styled(pad(cls.label(), IND - LBL), Style::default().fg(t.dim)),
-            ];
-            for band in chunk {
-                let (text, style) = if Some(*band) == cursor_band {
-                    (
-                        band_cell(*band, app, &serving_lte).0,
-                        Style::default()
-                            .fg(active_text_colour(t))
-                            .bg(t.accent)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                } else {
-                    band_cell(*band, app, &serving_lte)
-                };
-                spans.push(Span::styled(text, style));
-            }
-            lines.push(Line::from(spans));
-        }
-    }
-
-    // 3. the tick versus the device: one row that reads the change. Three
-    // shapes, widest first, so the row never wraps: the band list and the mask
-    // drop before the sentence does, because the grid above already shows both
-    // and the sentence is the thing the user came for.
-    let (added, dropped) = app.bands_diff();
-    let counted = format!("{} of {}", app.bands_selected.len(), order.len());
-    let listed = format!("{counted} · {}", plus_list(&app.bands_selected));
-    let masked = format!("→ 0x{}", app.band_mask_hex());
-    let (note, note_style) = if added.is_empty() && dropped.is_empty() {
+    let (delta, style) = if added.is_empty() && dropped.is_empty() {
         (
-            "= device, nothing to apply".to_string(),
+            "= device · nothing to apply".to_string(),
             Style::default().fg(t.dim),
         )
     } else {
-        let n = added.len() + dropped.len();
-        // Every dropped band carries its own minus: "-B5+B8" reads as an
-        // addition of B8, which is the opposite of what happened.
         let mut parts = Vec::new();
         if !added.is_empty() {
             parts.push(format!("+{}", plus_list(&added)));
         }
-        if !dropped.is_empty() {
-            parts.push(
-                dropped
-                    .iter()
-                    .map(|b| format!("-B{b}"))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
+        for b in &dropped {
+            parts.push(format!("-B{b}"));
         }
+        let n = added.len() + dropped.len();
+        let count = if n == 1 {
+            "1 change to apply".to_string()
+        } else {
+            format!("{n} changes to apply")
+        };
         (
-            format!(
-                "{} · {n} {} to apply",
-                parts.join(" "),
-                if n == 1 { "change" } else { "changes" }
-            ),
+            format!("{} · {count}", parts.join(" ")),
             Style::default().fg(t.warn),
         )
     };
-    let shape = |list: bool, mask: bool| -> String {
-        let mut s = if list {
-            listed.clone()
-        } else {
-            counted.clone()
-        };
-        if mask {
-            s.push_str("  ");
-            s.push_str(&masked);
-        }
-        s.push_str("  ");
-        s.push_str(&note);
-        s
-    };
-    let fits = |list: bool, mask: bool| LBL + shape(list, mask).chars().count() <= width;
-    let (list, mask) = if fits(true, true) {
-        (true, true)
-    } else if fits(true, false) {
-        (true, false)
-    } else {
-        (false, false)
-    };
-    let mut tick_spans = vec![Span::styled(pad("ticked", LBL), Style::default().fg(t.dim))];
-    tick_spans.push(Span::styled(
-        if list { listed } else { counted },
-        Style::default().fg(t.fg).add_modifier(Modifier::BOLD),
-    ));
-    if mask {
-        tick_spans.push(Span::styled(
-            format!("  {masked}"),
-            Style::default().fg(t.fg),
-        ));
-    }
-    // Last resort: the note itself is cut rather than wrapped, so the panel
-    // keeps its shape even on a list of forty bands.
-    let room = width.saturating_sub(LBL + if mask { masked.chars().count() + 2 } else { 0 } + 2);
-    tick_spans.push(Span::styled(
-        format!("  {}", truncate(&note, room)),
-        note_style,
-    ));
-    lines.push(Line::from(tick_spans));
+    out.push(Line::from(vec![
+        Span::styled("Δ ", Style::default().fg(t.dim)),
+        Span::styled(truncate(&delta, width.saturating_sub(2)), style),
+    ]));
 
-    // A tick set that drops the band carrying the link is the fact worth naming,
-    // so it sits right under the verdict. The text claims no outcome: on 4G the
-    // radio may re-attach elsewhere, and saying "drops the link" would be a
-    // promise the firmware never made.
-    let device_mask_known = s.net_mode.lte_band.is_some();
-    if device_mask_known && !app.bands_selected.is_empty() && serving_lte != "-" {
-        if let Some(band) = serving_lte
-            .strip_prefix('B')
-            .and_then(|n| n.parse::<u8>().ok())
+    out.push(Line::from(Span::styled(
+        // One label for both states: the keys are the same, and the medium
+        // column is 38 cells wide, so a longer string would be cut.
+        truncate("[a] apply · [u] undo · [A] re-apply", width),
+        Style::default().fg(t.accent),
+    )));
+
+    let device_mask_known = app
+        .snap
+        .as_ref()
+        .map(|s| s.net_mode.lte_band.is_some())
+        .unwrap_or(false);
+    if device_mask_known && !app.bands_selected.is_empty() {
+        if let Some(band) = app
+            .snap
+            .as_ref()
+            .and_then(|s| s.signal.band.clone())
+            .and_then(|b| b.strip_prefix('B').and_then(|n| n.parse::<u8>().ok()))
         {
             if !app.bands_selected.contains(&band) {
-                let msg = format!("B{band} carries the link and is not in the tick set");
-                lines.push(Line::from(vec![
-                    Span::styled(pad("gap", LBL), Style::default().fg(t.warn)),
-                    Span::styled(
-                        truncate(&msg, width.saturating_sub(LBL)),
-                        Style::default().fg(t.warn),
+                out.push(Line::from(Span::styled(
+                    truncate(
+                        &format!("B{band} carries the link, not in the tick set"),
+                        width,
                     ),
-                ]));
+                    Style::default().fg(t.warn),
+                )));
             }
         }
     }
-
-    // A whole class going dark is the mistake worth naming out loud.
     if let Some(warning) = empty_class_warning(app) {
-        lines.push(Line::from(vec![
-            Span::styled(pad("warn", LBL), Style::default().fg(t.warn)),
-            Span::styled(warning, Style::default().fg(t.warn)),
-        ]));
+        out.push(Line::from(Span::styled(
+            truncate(&warning, width),
+            Style::default().fg(t.warn),
+        )));
     }
-    lines.push(Line::from(""));
+    if let Some(last) = &app.last_apply {
+        let applied =
+            crate::router::bands::to_hex(crate::router::bands::mask_from_bands(&last.bands));
+        let head = format!(
+            "last {} ago · {} · 0x{applied} · {} bands",
+            dur(last.at.elapsed().as_secs()),
+            mode_label(&last.mode),
+            last.bands.len()
+        );
+        if width >= 60 {
+            out.push(Line::from(Span::styled(
+                truncate(&format!("{head} · {}", last.verdict), width),
+                Style::default().fg(t.dim),
+            )));
+        } else {
+            out.push(Line::from(Span::styled(
+                truncate(&head, width),
+                Style::default().fg(t.dim),
+            )));
+            out.push(Line::from(Span::styled(
+                truncate(&format!("  {}", last.verdict), width),
+                Style::default().fg(t.dim),
+            )));
+        }
+    }
 
-    // 4. presets, numbered so `n` says where it is.
-    if !app.band_presets.is_empty() {
-        let mut spans = vec![Span::styled(
-            pad("presets", LBL),
+    if let Some(mask) = &app.undo_mask {
+        if !mask.is_empty() {
+            out.push(Line::from(Span::styled(
+                truncate(
+                    &format!(
+                        "back to 0x{} ({} bands) · u",
+                        crate::router::bands::to_hex(crate::router::bands::mask_from_bands(mask)),
+                        mask.len()
+                    ),
+                    width,
+                ),
+                Style::default().fg(t.fg),
+            )));
+        }
+    }
+    out
+}
+
+/// Region 5: saved tick sets. Tall panels give each preset two rows (name, then
+/// its count and whether the device advertises all of it); short panels keep one
+/// row per preset.
+fn presets_lines(app: &App, width: usize, vertical: bool) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let mut out: Vec<Line<'static>> = Vec::new();
+    if app.band_presets.is_empty() {
+        out.push(Line::from(Span::styled(
+            "no presets saved · s saves the tick set",
             Style::default().fg(t.dim),
-        )];
-        let mut used = LBL;
-        for (i, preset) in app.band_presets.iter().enumerate() {
-            let missing = app.preset_missing(i);
+        )));
+        return out;
+    }
+    for (i, preset) in app.band_presets.iter().enumerate() {
+        let missing = app.preset_missing(i);
+        let selected = app.preset_cursor == Some(i);
+        let style = if selected {
+            Style::default()
+                .fg(active_text_colour(t))
+                .bg(t.accent)
+                .add_modifier(Modifier::BOLD)
+        } else if missing.is_empty() {
+            Style::default().fg(t.accent)
+        } else {
+            Style::default().fg(t.warn)
+        };
+        if vertical {
+            let marked = if missing.is_empty() {
+                format!("{}:{}", i + 1, preset.name)
+            } else {
+                format!("{}:{}!", i + 1, preset.name)
+            };
+            out.push(Line::from(Span::styled(truncate(&marked, width), style)));
+            let note = if missing.is_empty() {
+                format!("{} bands · device", preset.bands.len())
+            } else {
+                format!(
+                    "{} bands · preset only · lacks {}",
+                    preset.bands.len(),
+                    plus_list(&missing)
+                )
+            };
+            out.push(Line::from(Span::styled(
+                format!("  {}", truncate(&note, width.saturating_sub(2))),
+                Style::default().fg(t.dim),
+            )));
+        } else {
             let text = format!(
                 "{}:{}{}",
                 i + 1,
                 preset.name,
                 if missing.is_empty() { "" } else { "!" }
             );
-            let w = text.chars().count() + 2;
-            if used + w > width && spans.len() > 1 {
-                lines.push(Line::from(std::mem::take(&mut spans)));
-                spans.push(Span::styled(pad("", LBL), Style::default().fg(t.dim)));
-                used = LBL;
-            }
-            let style = if app.preset_cursor == Some(i) {
-                Style::default()
-                    .fg(active_text_colour(t))
-                    .bg(t.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else if missing.is_empty() {
-                Style::default().fg(t.accent)
+            out.push(Line::from(Span::styled(truncate(&text, width), style)));
+        }
+    }
+    out.push(Line::from(Span::styled(
+        truncate("s saves the tick set · x deletes", width),
+        Style::default().fg(t.dim),
+    )));
+    out
+}
+
+/// Region 6: settled writes of this session, newest first. Memory only: the
+/// footer says so, because a panel that looked like a file would be a lie.
+fn log_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let t = &app.theme;
+    let mut out: Vec<Line<'static>> = Vec::new();
+    if app.band_log.is_empty() {
+        out.push(Line::from(Span::styled(
+            "no writes this session",
+            Style::default().fg(t.dim),
+        )));
+    } else {
+        for entry in app.band_log.iter() {
+            let style = if entry.ok {
+                Style::default().fg(t.ok)
             } else {
-                Style::default().fg(t.warn)
+                Style::default().fg(t.danger)
             };
-            spans.push(Span::styled(text, style));
-            spans.push(Span::raw("  "));
-            used += w;
-        }
-        lines.push(Line::from(spans));
-    }
-    lines.push(Line::from(""));
-
-    // The way back from a bad apply, one key away and never a write by itself.
-    if area.height >= 18 {
-        if let Some(mask) = &app.undo_mask {
-            if !mask.is_empty() {
-                let msg = format!(
-                    "back to 0x{} ({} bands) · u",
-                    crate::router::bands::to_hex(crate::router::bands::mask_from_bands(mask)),
-                    mask.len()
-                );
-                lines.push(Line::from(vec![
-                    Span::styled(pad("undo", LBL), Style::default().fg(t.dim)),
-                    Span::styled(
-                        truncate(&msg, width.saturating_sub(LBL)),
-                        Style::default().fg(t.fg),
-                    ),
-                ]));
-            }
-        }
-    }
-
-    // The last apply and the NR side of the link: history and the other radio,
-    // both only on a tall enough panel.
-    if area.height >= 24 {
-        if let Some(last) = &app.last_apply {
-            let msg = format!(
-                "applied {} ago · mode {} · 0x{} · {}",
-                dur(last.at.elapsed().as_secs().max(1)),
-                mode_label(&last.mode),
-                crate::router::bands::to_hex(crate::router::bands::mask_from_bands(&last.bands)),
-                last.verdict
-            );
-            lines.push(Line::from(vec![
-                Span::styled(pad("last", LBL), Style::default().fg(t.dim)),
+            out.push(Line::from(vec![
                 Span::styled(
-                    truncate(&msg, width.saturating_sub(LBL)),
-                    Style::default().fg(t.fg),
+                    format!("{:>5} ", dur(entry.at.elapsed().as_secs())),
+                    Style::default().fg(t.dim),
+                ),
+                Span::styled(
+                    truncate(
+                        &format!("{} · {}", entry.what, entry.verdict),
+                        width.saturating_sub(6),
+                    ),
+                    style,
                 ),
             ]));
         }
-        let text = match s.signal.nr.as_ref() {
-            Some(n) => format!(
-                "{} serving · bars {}/5 · ENDC {}",
-                n.band.clone().unwrap_or_else(|| "-".into()),
-                s.connection.nr_bars,
-                if s.connection.endc { "on" } else { "off" }
-            ),
-            None => "no NR band reported by this firmware".to_string(),
-        };
-        lines.push(Line::from(vec![
-            Span::styled(pad("nr", LBL), Style::default().fg(t.dim)),
-            Span::styled(
-                truncate(&text, width.saturating_sub(LBL)),
-                Style::default().fg(t.fg),
-            ),
-        ]));
     }
+    out.push(Line::from(Span::styled(
+        "session only · not persisted",
+        Style::default().fg(t.dim),
+    )));
+    out
+}
 
-    // 5. the action, its cost and its outcome, on one always-visible row: the
-    // offline warning must survive 60x20, where the legend is dropped.
-    let write_style = match &app.write {
-        crate::write::WriteState::Failed { .. } => Style::default().fg(t.danger),
-        crate::write::WriteState::Success { .. } => Style::default().fg(t.ok),
-        crate::write::WriteState::Idle => Style::default().fg(t.dim),
-        _ => Style::default().fg(t.warn),
-    };
-    let action_text = if app.bands_unchanged() {
-        if narrow {
-            "a re-apply"
-        } else {
-            "a re-apply, forces a re-attach"
-        }
-    } else if narrow {
-        "a apply (y)"
-    } else {
-        "a apply (y confirms)"
-    };
-    let offline = " · 10-30 s offline";
-    let write_prefix = "   write ";
-    // The verdict can be long ("applied · router answered 100006 …"), and this
-    // row must stay one line: it is the row the panel promises to keep.
-    let room = width.saturating_sub(
-        LBL + action_text.chars().count() + offline.chars().count() + write_prefix.chars().count(),
-    );
-    lines.push(Line::from(vec![
-        Span::styled(pad("action", LBL), Style::default().fg(t.dim)),
-        Span::styled(action_text, Style::default().fg(t.fg)),
-        Span::styled(offline, Style::default().fg(t.warn)),
-        Span::styled(write_prefix, Style::default().fg(t.dim)),
-        Span::styled(truncate(&app.write.label(), room.max(4)), write_style),
-    ]));
-
-    // The panel carries its own keys, `a apply` included: the status bar clips
-    // them below 100 columns and shows nothing at all at 60.
-    if area.height >= 20 {
-        lines.push(Line::from(Span::styled(
-            // Measured, not guessed: 69 columns fits 80, 56 fits 60. The
-            // earlier pair drifted and the wide one wrapped at 100.
-            if width >= 75 {
-                "keys  space tick · j/k · a apply · u undo · n preset · s save · x del"
-            } else {
-                "keys  space · a apply · u undo · s save"
-            },
-            Style::default().fg(t.dim),
-        )));
+fn draw_panel(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    mut lines: Vec<Line<'static>>,
+    theme: &Theme,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
     }
-    if area.height >= 22 {
-        lines.push(Line::from(Span::styled(
-            "! = band this device does not list, preset only",
-            Style::default().fg(t.dim),
-        )));
+    // The last line is the panel's own footer ("session only"): it survives a
+    // short panel, because a log that cannot say what it is has no business
+    // showing rows.
+    let max = area.height as usize - 2;
+    if lines.len() > max && max > 0 {
+        let tail = lines.split_off(lines.len() - 1);
+        lines.truncate(max - 1);
+        lines.extend(tail);
     }
-
     f.render_widget(
-        Paragraph::new(lines)
-            .block(panel("BANDS".into(), t))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(lines).block(panel(title.to_string(), theme)),
         area,
+    );
+}
+
+/// The stacked tier draws regions as plain blocks: at 80x24 a bordered panel
+/// spends two of its four rows on the frame.
+fn draw_region(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    mut lines: Vec<Line<'static>>,
+    theme: &Theme,
+) {
+    if area.height == 0 || area.width < 8 {
+        return;
+    }
+    let mut all = vec![Line::from(Span::styled(
+        title.to_string(),
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    all.append(&mut lines);
+    all.truncate(area.height as usize);
+    f.render_widget(Paragraph::new(all), area);
+}
+
+pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    if app.snap.is_none() {
+        f.render_widget(
+            Paragraph::new("waiting…").block(panel("BANDS".into(), t)),
+            area,
+        );
+        return;
+    }
+    // The breakpoints are terminal sizes; `area` is the body, so the two rows
+    // this tab does not own (header, tab bar) are added back before comparing.
+    let cols = area.width;
+    let rows = area.height + 2;
+    if cols >= 130 && rows >= 30 {
+        let wide = if cols >= 160 { 54 } else { 46 };
+        bands_wide(f, area, app, wide);
+    } else if cols >= 100 && rows >= 26 {
+        bands_wide(f, area, app, 40);
+    } else {
+        bands_stacked(f, area, app);
+    }
+}
+
+fn bands_wide(f: &mut Frame, area: Rect, app: &App, left_width: u16) {
+    let t = &app.theme;
+    let [left, _, right] = Layout::horizontal([
+        Constraint::Length(left_width),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    let [serving, apply, log] = Layout::vertical([
+        Constraint::Length(12),
+        Constraint::Length(11),
+        Constraint::Min(3),
+    ])
+    .areas(left);
+    let [matrix, presets] =
+        Layout::vertical([Constraint::Percentage(66), Constraint::Min(6)]).areas(right);
+
+    draw_panel(
+        f,
+        serving,
+        "1 SERVING CELL",
+        serving_lines(app, serving.width as usize - 2),
+        t,
+    );
+    draw_panel(
+        f,
+        apply,
+        "4 APPLY / VERIFY",
+        apply_lines(app, apply.width as usize - 2),
+        t,
+    );
+    draw_panel(
+        f,
+        log,
+        "6 WRITE LOG",
+        log_lines(app, log.width as usize - 2),
+        t,
+    );
+    draw_panel(
+        f,
+        matrix,
+        "2 BAND MATRIX · 3 MASK BITS",
+        matrix_lines(app, matrix.width as usize - 2, area.width >= 130),
+        t,
+    );
+    draw_panel(
+        f,
+        presets,
+        "5 PRESETS · s saves · x deletes",
+        presets_lines(app, presets.width as usize - 2, true),
+        t,
+    );
+}
+
+fn bands_stacked(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    // The apply region carries the most decisions, so it takes the spare rows
+    // on a tall stacked panel and yields them to the log when the panel is
+    // short. The matrix needs the taller allocation to reach its mask bits.
+    let rows = area.height + 2;
+    let (matrix_rows, apply_rows) = if rows >= 26 {
+        (10, 9)
+    } else if area.height >= 21 {
+        (5, 8)
+    } else {
+        (5, 7)
+    };
+    let [serving, matrix, presets, apply, log] = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Length(matrix_rows),
+        Constraint::Length(3),
+        Constraint::Length(apply_rows),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    draw_region(
+        f,
+        serving,
+        "1 SERVING CELL",
+        serving_lines(app, area.width as usize),
+        t,
+    );
+    draw_region(
+        f,
+        matrix,
+        "2 BAND MATRIX · 3 MASK BITS",
+        matrix_lines(app, area.width as usize, false),
+        t,
+    );
+    draw_region(
+        f,
+        presets,
+        "5 PRESETS · s saves · x deletes",
+        presets_lines(app, area.width as usize, false),
+        t,
+    );
+    draw_region(
+        f,
+        apply,
+        "4 APPLY / VERIFY",
+        apply_lines(app, area.width as usize),
+        t,
+    );
+    draw_region(
+        f,
+        log,
+        "6 WRITE LOG",
+        log_lines(app, area.width as usize),
+        t,
     );
 }
 
@@ -1363,7 +1556,6 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
             &app.history_dl,
             top.width.saturating_sub(4) as usize,
             2,
-            app.graph.is_bars(),
             t.ok,
             app.chart_opts(),
         ));
@@ -1985,6 +2177,55 @@ pub fn clients_tab(f: &mut Frame, area: Rect, app: &App) {
 
 // --------------------------------------------------------------------- sms
 
+/// Word wrap for a message body. Explicit newlines from the device are kept,
+/// and a word wider than the pane is the only thing ever split: a body is read,
+/// not cut to fit.
+pub(crate) fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if width == 0 {
+        return out;
+    }
+    for raw in text.split('\n') {
+        let mut line = String::new();
+        for word in raw.split_whitespace() {
+            push_word(&mut out, &mut line, width, word);
+        }
+        out.push(line);
+    }
+    out
+}
+
+fn push_word(out: &mut Vec<String>, line: &mut String, width: usize, word: &str) {
+    if line.is_empty() {
+        if word.chars().count() <= width {
+            line.push_str(word);
+            return;
+        }
+        let mut rest = word;
+        while rest.chars().count() > width {
+            let cut = rest
+                .char_indices()
+                .nth(width)
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+            out.push(rest[..cut].to_string());
+            rest = &rest[cut..];
+        }
+        line.push_str(rest);
+        return;
+    }
+    if line.chars().count() + 1 + word.chars().count() <= width {
+        line.push(' ');
+        line.push_str(word);
+    } else {
+        out.push(std::mem::take(line));
+        push_word(out, line, width, word);
+    }
+}
+
+/// The inbox list, the detail pane under it, and the counters above both when
+/// the body is tall enough. Selection, the open message and the page all live in
+/// `app.sms`; this function draws state, it never fetches or writes.
 pub fn sms_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let Some(s) = &app.snap else {
@@ -1994,126 +2235,255 @@ pub fn sms_tab(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     };
-    let [counters_area, inbox_area] =
-        Layout::vertical([Constraint::Length(8), Constraint::Min(4)]).areas(area);
-
-    let mut lines = Vec::new();
-    match &s.sms {
-        Some(c) => {
-            lines.push(kv(
-                "inbox",
-                format!("{} ({} unread)", c.inbox, c.unread),
-                Style::default().fg(t.fg),
-                t.dim,
-            ));
-            lines.push(kv(
-                "outbox",
-                c.outbox.to_string(),
-                Style::default().fg(t.fg),
-                t.dim,
-            ));
-            lines.push(kv(
-                "draft",
-                c.draft.to_string(),
-                Style::default().fg(t.fg),
-                t.dim,
-            ));
-            lines.push(kv(
-                "capacity",
-                c.max.to_string(),
-                Style::default().fg(t.fg),
-                t.dim,
-            ));
-        }
-        None => lines.push(Line::from(Span::styled(
-            "counters unavailable",
-            Style::default().fg(t.dim),
-        ))),
+    if area.height < 3 || area.width < 6 {
+        return;
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "sending is not enabled in this build",
-        Style::default().fg(t.dim),
-    )));
-    f.render_widget(
-        Paragraph::new(lines).block(panel("COUNTERS".into(), t)),
-        counters_area,
-    );
 
-    let mut body = Vec::new();
-    match &app.extras {
-        None => body.push(Line::from(Span::styled(
+    // Counters are a nicety: the reader gets the height when the frame is short.
+    let (counters_area, rest) = if area.height >= 20 {
+        let [c, r] = Layout::vertical([Constraint::Length(6), Constraint::Min(4)]).areas(area);
+        (Some(c), r)
+    } else {
+        (None, area)
+    };
+    if let Some(ca) = counters_area {
+        let mut lines = Vec::new();
+        match &s.sms {
+            Some(c) => {
+                lines.push(kv(
+                    "inbox",
+                    format!("{} ({} unread)", c.inbox, c.unread),
+                    Style::default().fg(t.fg),
+                    t.dim,
+                ));
+                lines.push(kv(
+                    "outbox",
+                    c.outbox.to_string(),
+                    Style::default().fg(t.fg),
+                    t.dim,
+                ));
+                lines.push(kv(
+                    "draft",
+                    c.draft.to_string(),
+                    Style::default().fg(t.fg),
+                    t.dim,
+                ));
+                lines.push(kv(
+                    "capacity",
+                    c.max.to_string(),
+                    Style::default().fg(t.fg),
+                    t.dim,
+                ));
+            }
+            None => lines.push(Line::from(Span::styled(
+                "counters unavailable",
+                Style::default().fg(t.dim),
+            ))),
+        }
+        f.render_widget(Paragraph::new(lines).block(panel("COUNTERS".into(), t)), ca);
+    }
+
+    let (list_area, detail_area) = if rest.height >= 12 {
+        let list_h = ((rest.height as u32 * 4) / 10).clamp(4, 20) as u16;
+        let [l, d] = Layout::vertical([Constraint::Length(list_h), Constraint::Min(4)]).areas(rest);
+        (l, Some(d))
+    } else {
+        (rest, None)
+    };
+
+    sms_list(f, list_area, app, t);
+    if let Some(da) = detail_area {
+        sms_detail(f, da, app, t);
+    }
+}
+
+fn sms_list(f: &mut Frame, area: Rect, app: &App, t: &crate::theme::Theme) {
+    let mut title = String::from("INBOX");
+    let range = app.sms_range();
+    if !range.is_empty() {
+        title.push_str(&format!(" · {range}"));
+    }
+    if !app.sms.selected.is_empty() {
+        title.push_str(&format!(" · {} selected", app.sms.selected.len()));
+    }
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    if let Some(err) = app.extras.as_ref().and_then(|x| x.sms_error.as_ref()) {
+        lines.push(Line::from(Span::styled(
+            format!("blocked: {err}"),
+            Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            "the request carries the Ascending field this firmware needs, so the answer above",
+            Style::default().fg(t.fg),
+        )));
+        lines.push(Line::from(Span::styled(
+            "is the device's own: nothing was written and nothing was marked read.",
+            Style::default().fg(t.fg),
+        )));
+    } else if app.extras.is_none() {
+        lines.push(Line::from(Span::styled(
             if app.extras_requested {
                 "reading inbox…"
             } else {
                 "press R to read the inbox"
             },
             Style::default().fg(t.dim),
-        ))),
-        Some(x) => {
-            if let Some(err) = &x.sms_error {
-                body.push(Line::from(Span::styled(
-                    format!("blocked: {err}"),
-                    Style::default().fg(t.warn).add_modifier(Modifier::BOLD),
-                )));
-                body.push(Line::from(""));
-                body.push(Line::from(Span::styled(
-                    "the counters work, the message bodies do not: this firmware refuses",
+        )));
+    } else if app.sms_rows().is_empty() {
+        lines.push(Line::from(Span::styled(
+            "inbox is empty",
+            Style::default().fg(t.dim),
+        )));
+    } else {
+        // Optional columns go before the text does: an index is always shown,
+        // the date and then the sender are dropped as the pane narrows.
+        // A column keeps one blank cell after it, so a value that fills its
+        // width exactly can never run into the next one.
+        let show_date = inner_w >= 68;
+        let show_from = inner_w >= 44;
+        let fixed = 2 + 6 + if show_from { 18 } else { 0 } + if show_date { 20 } else { 0 };
+        let text_w = inner_w.saturating_sub(fixed).max(4);
+        let mut head = vec![Span::styled("    idx  ", Style::default().fg(t.dim))];
+        if show_from {
+            head.push(Span::styled(pad("from", 18), Style::default().fg(t.dim)));
+        }
+        if show_date {
+            head.push(Span::styled(pad("date", 20), Style::default().fg(t.dim)));
+        }
+        head.push(Span::styled("text", Style::default().fg(t.dim)));
+        lines.push(Line::from(head));
+
+        let rows = app.sms_rows();
+        let offset = if app.sms.cursor >= inner_h.saturating_sub(1) {
+            app.sms.cursor + 2 - inner_h
+        } else {
+            0
+        };
+        let room = inner_h.saturating_sub(1);
+        for (i, m) in rows.iter().enumerate().skip(offset).take(room) {
+            let index = m.index.as_deref().unwrap_or("-");
+            let marked = app.sms.selected.contains(index);
+            let at_cursor = i == app.sms.cursor;
+            let mut spans = vec![
+                Span::styled(
+                    if marked { "* " } else { "  " },
+                    Style::default().fg(if marked { t.accent } else { t.dim }),
+                ),
+                Span::styled(
+                    if m.unread { "● " } else { "  " },
+                    Style::default().fg(if m.unread { t.accent } else { t.dim }),
+                ),
+                Span::styled(
+                    pad(index, 6),
+                    Style::default().fg(if at_cursor { t.accent } else { t.fg }),
+                ),
+            ];
+            if show_from {
+                spans.push(Span::styled(
+                    pad(m.phone.as_deref().unwrap_or("-"), 18),
                     Style::default().fg(t.fg),
-                )));
-                body.push(Line::from(Span::styled(
-                    "sms/sms-list as a malformed request (error 100005).",
-                    Style::default().fg(t.fg),
-                )));
-                body.push(Line::from(""));
-                body.push(Line::from(Span::styled(
-                    "read them at http://192.168.8.1 → SMS, or with the HUAWEI AI Life app.",
+                ));
+            }
+            if show_date {
+                spans.push(Span::styled(
+                    pad(m.date.as_deref().unwrap_or("-"), 20),
+                    Style::default().fg(t.dim),
+                ));
+            }
+            let flat = m
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            spans.push(Span::styled(
+                truncate(&flat, text_w),
+                Style::default().fg(t.fg),
+            ));
+            let mut line = Line::from(spans);
+            if at_cursor {
+                line = line.style(Style::default().bg(t.selected));
+            }
+            lines.push(line);
+        }
+    }
+    f.render_widget(Paragraph::new(lines).block(panel(title, t)), area);
+}
+
+fn sms_detail(f: &mut Frame, area: Rect, app: &App, t: &crate::theme::Theme) {
+    let open = app.sms.open.as_ref().and_then(|want| {
+        app.sms_rows()
+            .iter()
+            .find(|m| m.index.as_deref() == Some(want.as_str()))
+    });
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    let title;
+    match open {
+        None => {
+            title = "MESSAGE".to_string();
+            lines.push(Line::from(Span::styled(
+                "no message open · Enter opens the row under the cursor",
+                Style::default().fg(t.dim),
+            )));
+            lines.push(Line::from(Span::styled(
+                "sending is not enabled in this build",
+                Style::default().fg(t.dim),
+            )));
+        }
+        Some(m) => {
+            let body = m.content.as_deref().unwrap_or("");
+            let wrapped = wrap_words(body, inner_w.max(1));
+            title = format!("MESSAGE · index {}", m.index.as_deref().unwrap_or("-"));
+            let head = vec![
+                Span::styled(
+                    format!("index {} · ", m.index.as_deref().unwrap_or("-")),
+                    Style::default().fg(t.dim),
+                ),
+                Span::styled(
+                    m.phone.as_deref().unwrap_or("-").to_string(),
                     Style::default().fg(t.accent),
+                ),
+                Span::styled(
+                    format!(" · {}", m.date.as_deref().unwrap_or("-")),
+                    Style::default().fg(t.dim),
+                ),
+                Span::styled(
+                    format!(
+                        " · {} chars · {} lines · {}",
+                        body.chars().count(),
+                        wrapped.len(),
+                        if m.unread { "unread" } else { "read" }
+                    ),
+                    Style::default().fg(t.dim),
+                ),
+            ];
+            lines.push(Line::from(head));
+            lines.push(Line::from(""));
+            // Scroll stays inside the pane: the header never scrolls away, so
+            // the reader always knows which message is on screen.
+            let room = inner_h.saturating_sub(3);
+            let scroll = (app.sms.scroll as usize).min(wrapped.len().saturating_sub(1));
+            for line in wrapped.iter().skip(scroll).take(room) {
+                lines.push(Line::from(Span::styled(
+                    line.clone(),
+                    Style::default().fg(t.fg),
                 )));
-            } else if x.sms_inbox.is_empty() {
-                body.push(Line::from(Span::styled(
-                    "inbox is empty",
+            }
+            if wrapped.len() > scroll + room {
+                lines.push(Line::from(Span::styled(
+                    format!("… {} more lines", wrapped.len() - scroll - room),
                     Style::default().fg(t.dim),
                 )));
-            } else {
-                body.push(Line::from(Span::styled(
-                    format!("{:<8} {:<16} {:<18} {}", "index", "phone", "date", "text"),
-                    Style::default().fg(t.dim),
-                )));
-                for m in x
-                    .sms_inbox
-                    .iter()
-                    .take(inbox_area.height.saturating_sub(2) as usize)
-                {
-                    body.push(Line::from(vec![
-                        Span::styled(
-                            if m.unread { "● " } else { "  " },
-                            Style::default().fg(if m.unread { t.accent } else { t.dim }),
-                        ),
-                        Span::styled(
-                            pad(m.phone.as_deref().unwrap_or("-"), 16),
-                            Style::default().fg(t.fg),
-                        ),
-                        Span::styled(
-                            pad(m.date.as_deref().unwrap_or("-"), 18),
-                            Style::default().fg(t.dim),
-                        ),
-                        Span::styled(
-                            truncate(
-                                m.content.as_deref().unwrap_or(""),
-                                inbox_area.width.saturating_sub(48) as usize,
-                            ),
-                            Style::default().fg(t.fg),
-                        ),
-                    ]));
-                }
             }
         }
     }
-    f.render_widget(
-        Paragraph::new(body).block(panel("INBOX".into(), t)),
-        inbox_area,
-    );
+    f.render_widget(Paragraph::new(lines).block(panel(title, t)), area);
 }
 
 // --------------------------------------------------------------------- dns
@@ -2895,6 +3265,17 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
     // The traces own their rows: the label, value and domain sit on the line
     // above, so there is no gutter to reserve and the trace runs to the edge.
     let width = (inner.width as usize).max(8);
+    // A braille cell holds two columns of samples, so the series is resampled
+    // at the cell's own resolution and the renderer's two-per-cell pass leaves
+    // no gap. The ascii fallback takes one sample per cell. Mapping the record
+    // straight in drew 120 samples as 60 cells in the right quarter.
+    let slots = if app.graph.is_ascii() {
+        width
+    } else {
+        width * 2
+    };
+    let secs_per_sample = (app.refresh_ms.max(1) / 1000).max(1);
+    let window = plot_window(app);
 
     let mut lines: Vec<Line> = Vec::new();
     for (label, hist, colour, min, max) in series {
@@ -2913,11 +3294,17 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
             Span::styled(format!("{min:.0}…{max:.0}"), Style::default().fg(t.dim)),
         ]));
         if rows > 0 {
-            lines.extend(crate::ui::chart::spark_lines_scaled(
+            let mapped = crate::ui::chart::resample_scaled_to_window(
                 hist,
+                min,
+                secs_per_sample,
+                window,
+                slots,
+            );
+            lines.extend(crate::ui::chart::spark_lines_scaled(
+                &mapped,
                 width,
                 rows,
-                app.graph.is_bars(),
                 colour,
                 min,
                 max,
@@ -3037,7 +3424,7 @@ pub fn dense(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{split, visible_rows};
+    use super::{graphs_panel, split, throughput_panel, visible_rows};
     use crate::app::{App, Tab};
     use crate::theme::{GraphStyle, Theme};
 
@@ -3047,7 +3434,7 @@ mod tests {
                 .expect("fixture snapshot");
         let mut app = App::new(
             Theme::get("terminal"),
-            GraphStyle::Dots,
+            GraphStyle::Braille,
             crate::app::View::Full,
             100,
             2000,
@@ -3207,5 +3594,190 @@ mod tests {
             !screen.contains("SPEED · "),
             "no history panel when the body is under 18 rows"
         );
+    }
+
+    // ----------------------------------------------------------- plot window
+
+    /// Render one panel alone into a text grid, so a test can measure the
+    /// columns its ink occupies rather than guess from a whole frame.
+    fn panel_rows<F>(w: u16, h: u16, draw: F) -> Vec<String>
+    where
+        F: FnOnce(&mut ratatui::Frame, ratatui::layout::Rect),
+    {
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        let area = ratatui::layout::Rect::new(0, 0, w, h);
+        terminal.draw(|f| draw(f, area)).expect("draw panel");
+        let buf = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect())
+            .collect()
+    }
+
+    /// The leftmost and rightmost column that carries plot ink between two
+    /// rows. Only braille and block glyphs count: the gutter prints scale
+    /// numbers on the plot's own rows, and a digit is not a sample.
+    fn ink_span(rows: &[String], from: usize, to: usize) -> Option<(usize, usize)> {
+        let mut lo: Option<usize> = None;
+        let mut hi: Option<usize> = None;
+        for line in rows.iter().take(to).skip(from) {
+            for (x, ch) in line.chars().enumerate() {
+                let plot_glyph = ('\u{2580}'..='\u{259f}').contains(&ch)
+                    || ('\u{2801}'..='\u{28ff}').contains(&ch);
+                if plot_glyph {
+                    lo = Some(lo.map_or(x, |v| v.min(x)));
+                    hi = Some(hi.map_or(x, |v| v.max(x)));
+                }
+            }
+        }
+        lo.map(|l| (l, hi.expect("ink needs a right edge")))
+    }
+
+    /// 120 samples at the 2000ms default: one full 240s window.
+    fn full_window_app() -> App {
+        let mut a = fixture_app();
+        a.history_dl.clear();
+        a.history_ul.clear();
+        for i in 0..120 {
+            a.history_dl.push_back(1_000_000.0 + i as f64);
+            a.history_ul.push_back(100_000.0);
+        }
+        a
+    }
+
+    /// The rows the rx series can ink: below the readings line and above the
+    /// zero row, which the renderer inks across the whole window by design.
+    fn rx_rows(h: u16) -> (usize, usize) {
+        let plot_h = h as usize - 4;
+        let rx_h = plot_h - plot_h / 2;
+        (2, 2 + rx_h - 1)
+    }
+
+    #[test]
+    fn the_throughput_plot_spans_the_window_at_every_size() {
+        let app = full_window_app();
+        for (w, h) in [(80u16, 24u16), (120, 34), (220, 50)] {
+            let rows = panel_rows(w, h, |f, a| throughput_panel(f, a, &app));
+            let (from, to) = rx_rows(h);
+            let (lo, hi) = ink_span(&rows, from, to).expect("plot ink");
+            assert!(
+                lo <= 14,
+                "the window opens at the plot's left edge at {w}x{h}: {lo}"
+            );
+            assert!(
+                hi >= w as usize - 3,
+                "the newest sample lands on the plot's right edge at {w}x{h}: {hi}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_throughput_axis_ticks_sit_on_the_window_edges() {
+        let app = full_window_app();
+        for (w, h) in [(120u16, 34u16), (220, 50)] {
+            let rows = panel_rows(w, h, |f, a| throughput_panel(f, a, &app));
+            let axis = &rows[h as usize - 2];
+            let left = axis.find("-240s").expect("window start tick");
+            let mid = axis.find("-120s").expect("window midpoint tick");
+            let now = axis.rfind("now").expect("now tick");
+            assert!(
+                left <= 14,
+                "the start tick sits on the plot's left edge: {axis}"
+            );
+            let centre = left + (w as usize - 2 - left) / 2;
+            assert!(
+                (mid as i32 - centre as i32).abs() <= 2,
+                "the midpoint tick sits mid-plot at {w}x{h}: {axis}"
+            );
+            assert!(
+                now + 3 >= w as usize - 2,
+                "the now tick sits on the right edge at {w}x{h}: {axis}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_throughput_history_keeps_the_window() {
+        let mut app = fixture_app();
+        app.history_dl.clear();
+        app.history_ul.clear();
+        for _ in 0..30 {
+            app.history_dl.push_back(1_000_000.0);
+            app.history_ul.push_back(100_000.0);
+        }
+        let (w, h) = (220u16, 50u16);
+        let rows = panel_rows(w, h, |f, a| throughput_panel(f, a, &app));
+        let axis = &rows[h as usize - 2];
+        assert!(
+            !axis.contains("-240s"),
+            "no tick may name time the record never covered: {axis}"
+        );
+        let start = axis.find("-60s").expect("the record start on the ruler");
+        assert!(axis.contains("now"), "the ruler still ends at now: {axis}");
+        let (from, to) = rx_rows(h);
+        let (lo, hi) = ink_span(&rows, from, to).expect("plot ink");
+        assert!(hi >= w as usize - 3, "the newest sample sits at now: {hi}");
+        // 60s of a 240s window: the ink starts three quarters in, and the tick
+        // naming that instant sits on the same column as the first sample.
+        assert!(
+            lo >= w as usize * 7 / 10,
+            "a quarter-full record must not stretch across the window: ink starts at {lo}"
+        );
+        // Nor may it be squeezed to the right edge: 60s of 240s begins at three
+        // quarters of the window, not at the last few columns.
+        assert!(
+            lo <= w as usize * 4 / 5,
+            "the record keeps its true age: ink starts at {lo}"
+        );
+        assert!(
+            (lo as i32 - start as i32).abs() <= 3,
+            "the record's first column and its tick must agree: ink {lo}, tick {start}"
+        );
+    }
+
+    #[test]
+    fn the_signal_graphs_span_the_window() {
+        for (w, h) in [(120u16, 34u16), (220, 50)] {
+            let mut app = fixture_app();
+            app.history_rsrp.clear();
+            for i in 0..120 {
+                app.history_rsrp
+                    .push_back(if i % 2 == 0 { -140.0 } else { -44.0 });
+            }
+            let rows = panel_rows(w, h, |f, a| graphs_panel(f, a, &app, true));
+            let inner_h = h as usize - 2;
+            let traces = ((inner_h - 3) / 3).min(4);
+            // Row 1 is the RSRP label; the traces follow; the last of them is
+            // the baseline, which is inked even with no data.
+            let (lo, _) = ink_span(&rows, 2, traces + 1).expect("trace ink");
+            assert!(
+                lo <= 2,
+                "the trace fills the window from its left edge at {w}x{h}: {lo}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_signal_history_stays_on_the_right() {
+        let (w, h) = (220u16, 50u16);
+        let mut app = fixture_app();
+        app.history_rsrp.clear();
+        for i in 0..30 {
+            app.history_rsrp
+                .push_back(if i % 2 == 0 { -140.0 } else { -44.0 });
+        }
+        let rows = panel_rows(w, h, |f, a| graphs_panel(f, a, &app, true));
+        let inner_h = h as usize - 2;
+        let traces = ((inner_h - 3) / 3).min(4);
+        let (lo, hi) = ink_span(&rows, 2, traces + 1).expect("trace ink");
+        assert!(
+            lo >= w as usize / 2,
+            "60s of a 240s window starts on the right half: ink starts at {lo}"
+        );
+        assert!(
+            lo <= w as usize * 4 / 5,
+            "the record keeps its true age instead of hugging the right edge: ink starts at {lo}"
+        );
+        assert!(hi >= w as usize - 3, "the newest sample sits at now: {hi}");
     }
 }

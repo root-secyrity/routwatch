@@ -11,7 +11,9 @@ use crate::headless;
 use crate::model::Snapshot;
 use crate::router::bands::BandPayload;
 use crate::router::HuaweiClient;
-use crate::write::{apply_bands_with, apply_dns, VerifyLimits, WriteIntent, WriteState};
+use crate::write::{
+    apply_bands_with, apply_dns, run_delete, run_mark_read, VerifyLimits, WriteIntent, WriteState,
+};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::Arc;
@@ -55,6 +57,12 @@ pub enum Cmd {
     Restart,
     /// Write a full JSON dump to this path.
     Dump(std::path::PathBuf),
+    /// One SMS write: delete the planned indexes, or mark one read. Every step
+    /// runs through the same gate the band writes use, and the result is a
+    /// report read back from the device, never the POST answer alone.
+    SmsOp(crate::app::SmsPlan),
+    /// Read one page of the inbox and hand it to the tab that asked for it.
+    SmsList(u32),
 }
 
 #[derive(Debug)]
@@ -81,6 +89,16 @@ pub enum Ev {
     },
     /// One-line message for the status bar (dump written, restart accepted…).
     Notice(String),
+    /// What an SMS write actually did, after the read-back.
+    SmsReport(Box<crate::write::SmsReport>),
+    /// One inbox page: the rows, the total when the device answered it, and why
+    /// the page could not be read.
+    SmsPage {
+        page: u32,
+        messages: Vec<crate::model::SmsMessage>,
+        total: Option<u32>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -418,6 +436,99 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             Ok(Cmd::Extras) => {
                 let extras = headless::fetch_extras(&mut client);
                 let _ = ev_tx.send(Ev::Extras(Box::new(extras)));
+                continue;
+            }
+            Ok(Cmd::SmsList(page)) => {
+                match client.sms_list(page) {
+                    Ok(node) => {
+                        let messages = crate::router::parse::parse_sms_list(&node);
+                        let total = client
+                            .get("sms/sms-count")
+                            .ok()
+                            .map(|n| crate::router::parse::parse_sms_count(&n).inbox);
+                        let _ = ev_tx.send(Ev::SmsPage {
+                            page,
+                            messages,
+                            total,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = ev_tx.send(Ev::SmsPage {
+                            page,
+                            messages: Vec::new(),
+                            total: None,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                }
+                continue;
+            }
+            Ok(Cmd::SmsOp(plan)) => {
+                // One client, two closures: the report reads the inbox back
+                // through the same session, so the borrow is shared and scoped.
+                let cell = std::cell::RefCell::new(&mut client);
+                let limits = VerifyLimits::from_secs(cfg.app.verify_secs);
+                let sleep = |d: Duration| std::thread::sleep(d);
+                let reread = || -> Result<Vec<String>, ApiError> {
+                    let mut seen = Vec::new();
+                    let mut page = 1u32;
+                    loop {
+                        let node = std::cell::RefCell::borrow_mut(&cell).sms_list(page)?;
+                        let rows = crate::router::parse::parse_sms_list(&node);
+                        if rows.is_empty() {
+                            break;
+                        }
+                        for m in &rows {
+                            if let Some(i) = &m.index {
+                                seen.push(i.clone());
+                            }
+                        }
+                        page += 1;
+                        if page > 25 {
+                            break;
+                        }
+                    }
+                    Ok(seen)
+                };
+                let report = match plan.op {
+                    crate::write::SmsOp::Delete => {
+                        let indexes = plan.indices.clone();
+                        run_delete(
+                            &indexes,
+                            |i| {
+                                std::cell::RefCell::borrow_mut(&cell)
+                                    .sms_delete(i)
+                                    .map(|_| ())
+                            },
+                            reread,
+                            limits,
+                            sleep,
+                        )
+                    }
+                    crate::write::SmsOp::MarkRead => {
+                        let index = plan.indices.first().cloned().unwrap_or_default();
+                        run_mark_read(
+                            &index,
+                            |i| {
+                                std::cell::RefCell::borrow_mut(&cell)
+                                    .sms_set_read(i)
+                                    .map(|_| ())
+                            },
+                            || -> Result<bool, ApiError> {
+                                let node = std::cell::RefCell::borrow_mut(&cell).sms_list(1)?;
+                                let rows = crate::router::parse::parse_sms_list(&node);
+                                Ok(rows
+                                    .iter()
+                                    .find(|m| m.index.as_deref() == Some(index.as_str()))
+                                    .is_some_and(|m| m.unread))
+                            },
+                            limits,
+                            sleep,
+                        )
+                    }
+                };
+                let _ = ev_tx.send(Ev::SmsReport(Box::new(report)));
                 continue;
             }
             Ok(Cmd::Dump(path)) => {
