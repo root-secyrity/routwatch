@@ -46,7 +46,7 @@ jobs:
           ./routwatch --version
           # renders with no config file at all (load_or_default)
           ./routwatch preview --tab bands --fixture "$GITHUB_WORKSPACE/fixtures/sample-snapshot.json" \
-            --config /tmp/absent/config.toml --size 100x20 | grep -q presets
+            --config /tmp/absent/config.toml --size 100x20 | grep -qi presets
 
       - name: Attach to the release
         env:
