@@ -127,6 +127,20 @@ enum Cmd {
         #[arg(long, value_name = "SECS", conflicts_with_all = ["save", "diff"])]
         watch: Option<u64>,
     },
+    /// Incidents derived from the logs: evidence, never a cause
+    Incidents {
+        #[command(subcommand)]
+        op: IncidentsCmd,
+    },
+    /// One incident as a document that can be pasted into an issue
+    Report {
+        /// The incident id from `incidents list`
+        #[arg(long, value_name = "ID")]
+        incident: String,
+        /// Hide every detail line (an error string can carry an address)
+        #[arg(long)]
+        redact: bool,
+    },
     /// Health check in netwatch's doctor --json shape
     Doctor {
         #[arg(long)]
@@ -418,6 +432,22 @@ enum SmsCmd {
 }
 
 #[derive(Subcommand)]
+enum IncidentsCmd {
+    /// Every incident the logs support, newest last
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// One incident and the rows behind it
+    Show {
+        /// The incident id from `incidents list`
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum IpAction {
     /// Drop the data connection, bring it back, and watch for the address
     Renew {
@@ -592,6 +622,70 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     eprintln!("\n##### {path} #####\n{}", body.trim());
                 }
             }
+            Ok(())
+        }
+        Some(Cmd::Incidents { op }) => {
+            let list = incidents_now();
+            match op {
+                IncidentsCmd::List { json } => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                    } else if list.is_empty() {
+                        println!("no incidents: the logs hold no fault rows");
+                    } else {
+                        for inc in &list {
+                            println!(
+                                "{:<22} {:<22} {:>4} rows  {:<6} {}",
+                                inc.id,
+                                inc.window(),
+                                inc.evidence,
+                                confidence_word(inc.confidence),
+                                inc.kind.title()
+                            );
+                            if let Some(c) = &inc.caveat {
+                                println!("  note: {c}");
+                            }
+                        }
+                    }
+                }
+                IncidentsCmd::Show { id, json } => {
+                    let inc = routwatch::incidents::find(&list, &id).ok_or_else(|| {
+                        ApiError::Usage(format!(
+                            "no incident with id {id}; run `routwatch incidents list`"
+                        ))
+                    })?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(inc).unwrap());
+                    } else {
+                        println!("{} · {}", inc.id, inc.kind.title());
+                        println!(
+                            "window {} · {} rows · {}",
+                            inc.window(),
+                            inc.evidence,
+                            confidence_word(inc.confidence)
+                        );
+                        for line in &inc.lines {
+                            println!("  {line}");
+                        }
+                        match &inc.caveat {
+                            Some(c) => println!("\n{c}"),
+                            None => println!(
+                                "\nNo cause is named: the logs record what answered, not why."
+                            ),
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Some(Cmd::Report { incident, redact }) => {
+            let list = incidents_now();
+            let inc = routwatch::incidents::find(&list, &incident).ok_or_else(|| {
+                ApiError::Usage(format!(
+                    "no incident with id {incident}; run `routwatch incidents list`"
+                ))
+            })?;
+            print!("{}", routwatch::incidents::markdown(inc, redact));
             Ok(())
         }
         Some(Cmd::Doctor { json, live }) => {
@@ -2289,6 +2383,19 @@ const SETTLE_SECS: u64 = 2;
 /// signal metric: reading it more often costs the router and buys nothing.
 const MIN_WATCH_SECS: u64 = 10;
 
+/// The incident list as the logs stand right now. Derived, never stored.
+fn incidents_now() -> Vec<routwatch::incidents::Incident> {
+    routwatch::incidents::detect(&routwatch::incidents::Source::load())
+}
+
+fn confidence_word(c: routwatch::incidents::Confidence) -> &'static str {
+    match c {
+        routwatch::incidents::Confidence::Low => "low",
+        routwatch::incidents::Confidence::Medium => "med",
+        routwatch::incidents::Confidence::High => "high",
+    }
+}
+
 fn privacy_baseline_path() -> Result<std::path::PathBuf, ApiError> {
     routwatch::privacy_drift::path()
         .ok_or_else(|| ApiError::Config("no data directory for the privacy baseline".to_string()))
@@ -2506,6 +2613,10 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     }
     // Read once at start; the panel stays current by appending what it records.
     app.load_history();
+    // Incidents are a reading of the logs, so they are re-derived on a slow
+    // timer rather than on every snapshot.
+    app.load_incidents();
+    let mut incidents_at = std::time::Instant::now();
     let (tx, rx) = worker::spawn(cfg, password);
 
     install_restore_hook();
@@ -2522,6 +2633,10 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     let mut painted = std::time::Instant::now();
     while !app.quit {
         drain(&mut app, &rx);
+        if incidents_at.elapsed().as_secs() >= 60 {
+            app.load_incidents();
+            incidents_at = std::time::Instant::now();
+        }
         // Once every 30 s, not on every poll: the ledger is a file, and the
         // counters move by kilobytes a second.
         if app.usage_dirty

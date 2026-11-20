@@ -167,6 +167,24 @@ why each one is stated instead of hidden.
   `unknown` is never folded into `off`; a check that is missing from a read says
   nothing. `--diff` exits 1 when it reports a drift, so a script can act on it.
 
+- **An incident is a window, never a cause**: `incidents` derives windows from
+  the observation log, the signal log and the speed history, all read from
+  `$XDG_DATA_HOME/routwatch/`. It reads no clock and writes nothing, so the same
+  logs always give the same list. Confidence is the count of rows that agree
+  (1 low, 2 to 3 medium, 4 or more high), not a probability.
+
+- **The ordering limit is measured, not assumed**: the radio tier is read on its
+  own cadence, and the gap between two radio samples was measured at p95 1748 ms
+  and worst 2860 ms (H122-373, WEBUI 11.0.2.21, 2026-11-20). Two events closer
+  together than 2860 ms cannot be ordered from their stamps, so an incident
+  states the smear and names no cause. A wider gap seen in the signal log itself
+  widens the refusal; it never narrows it.
+
+- **An incident reads the logs as they are**: a missing log is an empty log, not
+  an error, and a recovered fault is a row but never an incident. `report
+  --incident <id>` prints the window and its rows; `--redact` hides every detail
+  line, because an error string can carry a host or an address.
+
 - **`privacy --watch` holds one session and does not re-login**: it reads the same
   audit every N seconds (10 at the smallest) and prints a line when a drift
   settles. A router reboot or an expired session shows up as `unknown` rows, which

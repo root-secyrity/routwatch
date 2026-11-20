@@ -26,6 +26,7 @@ config.toml
 !/tests/fixtures/snapshot_fixed.json
 !/tests/live_guards.rs
 !/tests/obs_log.rs
+!/tests/incidents.rs
 !/tests/privacy_drift.rs
 !/tests/live_probe.rs
 !/tests/tier_*.rs

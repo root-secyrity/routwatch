@@ -14,6 +14,7 @@ pub mod error;
 pub mod events;
 pub mod headless;
 pub mod history;
+pub mod incidents;
 /// A fake firmware on a real socket, so the transport half has tests too.
 #[cfg(test)]
 mod mock_cpe;

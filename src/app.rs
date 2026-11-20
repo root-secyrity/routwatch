@@ -503,6 +503,9 @@ pub struct App {
     pub help: bool,
     pub client_sel: usize,
     pub error_log: VecDeque<String>,
+    /// Incidents derived from the logs on disk. Read at start and on a slow
+    /// timer, never per snapshot: they are a reading of history, not live state.
+    pub incidents: Vec<crate::incidents::Incident>,
     pub budget_gb: f64,
     /// Local ledger plus the budget baseline. Filled by `on_snapshot` and
     /// flushed by the TUI loop; `preview` and `status` never write it.
@@ -694,6 +697,7 @@ impl App {
             help: false,
             client_sel: 0,
             error_log: VecDeque::new(),
+            incidents: Vec::new(),
             budget_gb: budget_gb as f64,
             usage: crate::usage::Usage::default(),
             usage_path: None,
@@ -1968,6 +1972,12 @@ impl App {
                 self.note(format!("speed test failed: {e}"));
             }
         }
+    }
+
+    /// Re-derive the incident list from the logs on disk. Pure derivation: this
+    /// reads files and writes nothing, so calling it while the TUI runs is safe.
+    pub fn load_incidents(&mut self) {
+        self.incidents = crate::incidents::detect(&crate::incidents::Source::load());
     }
 
     /// Read the ledger and trim it. Called by the TUI only, never by `App::new`,

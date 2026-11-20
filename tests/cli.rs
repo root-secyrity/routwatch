@@ -824,3 +824,83 @@ fn bands_watch_without_set_is_refused_before_any_connection() {
     );
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
 }
+
+/// A data dir of its own: incidents read files, so the test writes them. The
+/// config home is redirected too, so no run reads the developer's real config.
+fn log_home(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("rw-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("routwatch")).expect("temp data home");
+    // A run that finds a config home but no file fails before reaching the logs,
+    // so the base config lives here too. No credential: nothing in these tests
+    // is allowed to reach a router.
+    let cfg = d.join("routwatch").join("config.toml");
+    std::fs::write(
+        &cfg,
+        "[router]\nip = \"192.168.8.1\"\nusername = \"admin\"\n",
+    )
+    .expect("config");
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    d
+}
+
+fn write_events(home: &std::path::Path) {
+    let body = concat!(
+        r#"{"v":1,"at_unix":1000,"tier":"signal","kind":"read","outcome":"failed"}"#,
+        "\n",
+        r#"{"v":1,"at_unix":1060,"tier":"signal","kind":"read","outcome":"failed"}"#,
+        "\n",
+        r#"{"v":1,"at_unix":1200,"tier":"wan","kind":"wan","outcome":"up"}"#,
+        "\n"
+    );
+    std::fs::write(home.join("routwatch").join("events.jsonl"), body).expect("events");
+}
+
+#[test]
+fn incidents_come_from_the_logs_and_never_from_a_router() {
+    let home = log_home("incidents");
+    write_events(&home);
+    let h = home.to_str().unwrap();
+    let out = run(
+        &["incidents", "list"],
+        &[("XDG_DATA_HOME", h), ("XDG_CONFIG_HOME", h)],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("read-1000"), "{text}");
+    assert!(
+        text.contains("2 rows"),
+        "the recovery row is not a row: {text}"
+    );
+}
+
+#[test]
+fn a_report_names_an_incident_and_can_hide_its_detail() {
+    let home = log_home("report");
+    write_events(&home);
+    let h = home.to_str().unwrap();
+    let envs = [("XDG_DATA_HOME", h), ("XDG_CONFIG_HOME", h)];
+    let out = run(&["report", "--incident", "read-1000"], &envs);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("# routwatch incident"), "{text}");
+    assert!(text.contains("signal read: failed"), "{text}");
+    assert!(text.contains("No cause is named"), "{text}");
+
+    let out = run(&["report", "--incident", "read-1000", "--redact"], &envs);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("(hidden)"), "{text}");
+    assert!(
+        !text.contains("signal read: failed"),
+        "a redacted report must not carry the detail line: {text}"
+    );
+
+    let out = run(&["incidents", "show", "wan-9999"], &envs);
+    assert!(!out.status.success(), "an unknown id must fail");
+    assert!(
+        stderr(&out).contains("no incident with id"),
+        "{}",
+        stderr(&out)
+    );
+}

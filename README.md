@@ -163,6 +163,28 @@ Two rules make a reported drift trustworthy: a refusal (`unknown`, `not exposed`
 is never counted as a change, and a value needs two reads to agree before it is
 reported, because this firmware serves some documents in a flaky tail.
 
+## Incidents: what the logs support, and what they cannot
+
+`incidents` turns the observation log, the signal log and the speed history into
+windows of the same fault. It reads files only: no router, no clock, so the same
+logs always produce the same list.
+
+```sh
+routwatch incidents list              # id, window, rows, confidence, no cause
+routwatch incidents show wan-1795139583
+routwatch report --incident wan-1795139583 --redact   # a pasteable document
+```
+
+Two limits are printed rather than hidden. Confidence is the count of rows that
+agree (one row is low, two or three medium, four or more high), never a
+probability. And no incident names a cause: the radio tier is read on its own
+cadence, measured at p95 1748 ms and worst 2860 ms between samples on this
+firmware, so two events closer than that cannot be ordered from their stamps.
+When a pair falls inside that window the incident says so.
+
+The dashboard's EVENTS panel shows the newest incidents the same way: an id, a
+row count, a confidence, and `no cause`.
+
 ## Limits, the short list
 
 - **5G per-field metrics can be empty** on some firmware: the signal panel shows
