@@ -16,10 +16,10 @@ a headless mode for Waybar and scripts.
 
 ![routwatch dashboard](docs/screenshots/01-dashboard.png)
 
-Every screenshot here is rendered from `fixtures/sample-snapshot*.json` with
+Every screenshot is rendered from `fixtures/sample-snapshot*.json` with
 `routwatch preview --ansi`, so it is synthetic: device names, MACs, WAN address and
-identifiers are placeholders. The remaining seven sections are in
-[`docs/screenshots/more/`](docs/screenshots/more).
+identifiers are placeholders. The other eight sections are in
+[`docs/screenshots/`](docs/screenshots).
 
 ## Install
 
@@ -103,6 +103,7 @@ question.
 | put it in Waybar, or script against `--json` | [`docs/headless.md`](docs/headless.md) |
 | change the colours | [`docs/themes.md`](docs/themes.md) |
 | know what does not work, and why | [`docs/limits.md`](docs/limits.md) |
+| audit what the router exposes, and catch a change | [`docs/privacy.md`](docs/privacy.md) |
 | know who wrote what | [`docs/credits.md`](docs/credits.md) · [`NOTICE`](NOTICE) |
 | contribute, or read the promises a change must keep | [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`docs/contracts.md`](docs/contracts.md) |
 
@@ -138,30 +139,15 @@ Delete and mark-read are the only SMS writes. Both need the same gate as band
 changes: `--allow-write` on the CLI, `--dry-run` (or no `--yes`) to see the payload,
 and `y` inside the TUI. Every delete is verified by re-reading the inbox and
 reported per index, and a firmware that refuses the path is reported as
-"unsupported (100003)", not as done. Neither path has been measured on the
-H122-373 (see [limits.md](docs/limits.md)); the simulator is where they are tested.
+"unsupported (100003)", not as done.
 
 ## Privacy: watch a setting, not a guess
 
-`privacy` is a read-only audit: remote management, DNS, firewall, whether the
-admin page is reachable. `--save` records what it answered as the baseline you
-accept, `--diff` reads twice and reports only the answers that moved away from
-that baseline, and `--watch` keeps asking on one session.
-
-```sh
-routwatch privacy                 # the audit, as a table
-routwatch privacy --save          # record the answers you accept (0600 file)
-routwatch privacy --diff          # exits 1 and names each settled drift
-routwatch privacy --watch 60      # a line whenever a drift settles
-```
-
-The clients tab also carries an inspector for the selected host: the fields the
-firmware sent, the age of the last client read, and the columns this firmware
-does not report, named rather than left blank.
-
-Two rules make a reported drift trustworthy: a refusal (`unknown`, `not exposed`)
-is never counted as a change, and a value needs two reads to agree before it is
-reported, because this firmware serves some documents in a flaky tail.
+`privacy` is a read-only audit of remote management, DNS, firewall and the admin
+surface. `--save` records the answers you accept (0600), `--diff` reads twice and
+reports only a value both reads agree on, and `--watch 60` keeps asking on one
+session. The four checks and the two rules behind a believable drift are in
+[`docs/privacy.md`](docs/privacy.md).
 
 ## Incidents: what the logs support, and what they cannot
 
@@ -207,8 +193,7 @@ row count, a confidence, and `no cause`.
   prints the saved rows and `--no-save` keeps a run out of the file.
 - **SMS delete is verified, not assumed**: each index is posted on its own and the
   verdict comes from re-reading the inbox, so a refusal is listed with its code
-  and a half-finished bulk delete says which rows failed. Delete and mark-read
-  have not been measured on a real H122-373 yet; the inbox itself has.
+  and a half-finished bulk delete says which rows failed.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
   (`0600`, last 1440 rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`

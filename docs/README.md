@@ -15,6 +15,7 @@ lives here, one file per question, so you can read only the part you need.
 | put it in Waybar, or script against `--json` | [`headless.md`](headless.md) |
 | change the colours | [`themes.md`](themes.md) |
 | know what does not work, and why | [`limits.md`](limits.md) |
+| audit what the router exposes, and catch a change | [`privacy.md`](privacy.md) |
 | know who wrote what | [`credits.md`](credits.md) |
 | contribute, or read the promises a change must keep | [`../CONTRIBUTING.md`](../CONTRIBUTING.md), [`contracts.md`](contracts.md) |
 
