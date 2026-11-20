@@ -10,6 +10,7 @@ pub mod config;
 #[cfg(test)]
 mod contracts;
 pub mod error;
+pub mod events;
 pub mod headless;
 pub mod history;
 /// A fake firmware on a real socket, so the transport half has tests too.

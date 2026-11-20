@@ -50,7 +50,10 @@ It polls the router: this firmware has no push channel (seven stream candidates
 answer `100003`), so the screen can never be fresher than one read. Reads are
 grouped by how fast they answer - signal, status and traffic on the refresh
 period, the client list every 30 s, the ten static documents every 60 s - and the
-header shows an age for each group. The measured tail behind those numbers is in
+header shows an age for each group. What changes is written to an append-only log
+under `$XDG_DATA_HOME/routwatch/events.jsonl`: band and DNS writes, IP renewals,
+the WAN going down and coming back, a tier read that failed, and the signal
+crossing into poor. The measured tail behind those numbers is in
 [`docs/limits.md`](docs/limits.md).
 
 ## Does it work with my router?

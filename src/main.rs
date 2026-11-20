@@ -853,6 +853,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     &mut progress,
                     limits,
                 );
+                if let Some(path) = routwatch::events::path() {
+                    let e = routwatch::events::write_verdict(
+                        routwatch::record::now_unix(),
+                        &settled,
+                        "bands",
+                    );
+                    let _ = routwatch::events::append(&path, &e);
+                }
                 let undo_payload = bands::BandPayload {
                     network_mode: current
                         .network_mode
@@ -1240,6 +1248,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 &mut progress,
             );
             client.logout();
+            if let Some(path) = routwatch::events::path() {
+                let e = routwatch::events::write_verdict(
+                    routwatch::record::now_unix(),
+                    &settled,
+                    "dns",
+                );
+                let _ = routwatch::events::append(&path, &e);
+            }
             println!("result: {}", settled.label());
             match settled {
                 WriteState::Success { .. } => Ok(()),
@@ -1545,6 +1561,30 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let limits = routwatch::write::VerifyLimits::from_secs(settle);
             let out = routwatch::write::renew_ip(&mut client, limits, std::thread::sleep);
             client.logout();
+            // The log takes the verdict and how long it took, never the address:
+            // a WAN IP in a tracked-adjacent file is the leak this project bans.
+            if let Some(path) = routwatch::events::path() {
+                let (outcome, detail) = match &out {
+                    routwatch::write::RenewOutcome::Changed { secs, .. } => {
+                        ("changed", Some(format!("{secs} s")))
+                    }
+                    routwatch::write::RenewOutcome::Unchanged { secs, .. } => {
+                        ("unchanged", Some(format!("{secs} s")))
+                    }
+                    routwatch::write::RenewOutcome::LinkDown { .. } => ("link down", None),
+                    routwatch::write::RenewOutcome::NoAddress { attempts, .. } => {
+                        ("no address", Some(format!("{attempts} reads")))
+                    }
+                };
+                let _ = routwatch::events::append(
+                    &path,
+                    &routwatch::events::renew_settled(
+                        routwatch::record::now_unix(),
+                        outcome,
+                        detail,
+                    ),
+                );
+            }
             if json {
                 let v = match &out {
                     routwatch::write::RenewOutcome::Changed {

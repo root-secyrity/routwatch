@@ -207,6 +207,16 @@ why each one is stated instead of hidden.
   "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
   log off for scripts that read every second.
 
+- **The observation log records changes, not attempts**: band and DNS writes,
+  IP renewals, the WAN going down and coming back, a tier read that failed, and
+  the signal crossing into poor or out of it are appended to
+  `$XDG_DATA_HOME/routwatch/events.jsonl` (0600, one row per line, 2000 rows kept
+  by compaction). Each row is stamped with the moment its tier's state was
+  observed, never with the clock of the write, and a link that stays poor for an
+  hour writes one row. A refused or busy read is a row; a retry that succeeded is
+  not. The address a renew produced is deliberately not a field: the log is not a
+  place a WAN IP may live.
+
 - **The screen is polled, never pushed**: measured 2026-11-19 on the H122-373
   (WEBUI 11.0.2.21), seven stream candidates (`websocket`, `ws`, `events`,
   `webserver/events`, `notification`, `sse`, `event-stream`) all answered
