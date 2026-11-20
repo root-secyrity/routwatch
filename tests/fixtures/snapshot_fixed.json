@@ -1,0 +1,128 @@
+{
+  "generated_at": 1770000000,
+  "router": "192.168.8.1",
+  "signal": {
+    "rsrp_dbm": -95.0,
+    "rsrq_db": -6.0,
+    "sinr_db": 8.0,
+    "rssi_dbm": -67.0,
+    "band": "B1",
+    "dl_mhz": 2120,
+    "ul_mhz": 1930,
+    "dl_bw": "20MHz",
+    "ul_bw": "20MHz",
+    "earfcn": "DL:100 UL:18100",
+    "pci": 99,
+    "cell_id": "0000001-001",
+    "enodeb": "0000001",
+    "tac": 516,
+    "tm": "TM[4]",
+    "dl_mcs": 13,
+    "dl_mcs_secondary": 9,
+    "ul_mcs": 30,
+    "cqi": 11,
+    "pusch_dbm": 2.0,
+    "nr": null
+  },
+  "traffic": {
+    "dl_rate_bytes": 500000,
+    "ul_rate_bytes": 25000,
+    "session_dl_bytes": 1234567890,
+    "session_ul_bytes": 12345678,
+    "total_dl_bytes": 98765432100,
+    "total_ul_bytes": 9876543210,
+    "session_secs": 3600,
+    "total_secs": 864000
+  },
+  "connection": {
+    "status_code": 901,
+    "status": "connected",
+    "net_type": "LTE",
+    "net_type_ex": "1011",
+    "endc": false,
+    "endc_restricted": false,
+    "signal_bars": 5,
+    "nr_bars": 0,
+    "roaming": false
+  },
+  "plmn": {
+    "name": "Test Net",
+    "short": "Test Net",
+    "numeric": "00101"
+  },
+  "device": {
+    "name": "H122-373",
+    "serial": "TESTSERIAL0001",
+    "imei": "000000000000000",
+    "hardware": "TESTHW1",
+    "software": "1.0.0.0(TEST)",
+    "webui": "WEBUI 1.0.0.0(TEST)",
+    "wan_ip": "203.0.113.7",
+    "wan_ipv6": "2001:db8::7",
+    "mac": "02:00:00:00:00:01",
+    "uptime_secs": 3600,
+    "workmode": "LTE"
+  },
+  "net_mode": {
+    "network_mode": "03",
+    "network_band": "88080095",
+    "lte_band": "88080095",
+    "network_option": "0"
+  },
+  "clients": [
+    {
+      "name": "living-room-tv",
+      "ip": "192.168.8.104",
+      "mac": "02:00:00:00:00:11",
+      "freq": "5GHz",
+      "ssid": "Test Net",
+      "associated_secs": 3600
+    },
+    {
+      "name": "phone-1",
+      "ip": "192.168.8.136",
+      "mac": "02:00:00:00:00:12",
+      "freq": "5GHz",
+      "ssid": "Test Net",
+      "associated_secs": 0
+    },
+    {
+      "name": null,
+      "ip": "192.168.8.149",
+      "mac": "02:00:00:00:00:13",
+      "freq": "2.4GHz",
+      "ssid": "Test Net",
+      "associated_secs": 600
+    }
+  ],
+  "sms": {
+    "unread": 1,
+    "inbox": 5,
+    "outbox": 0,
+    "draft": 0,
+    "max": 500
+  },
+  "supported_bands": [
+    1,
+    3,
+    5,
+    7,
+    8,
+    20,
+    28,
+    32,
+    34,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43
+  ],
+  "all_bands_mask": "7FFFFFFFFFFFFFFF",
+  "dns": {
+    "status": "0",
+    "primary": "203.0.113.53",
+    "secondary": "203.0.113.54"
+  }
+}

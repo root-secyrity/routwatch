@@ -3358,4 +3358,28 @@ mod tests {
             .count();
         assert_eq!(cells, 3, "one cell per sample, no invented points: {strip}");
     }
+
+    #[test]
+    fn the_dashboard_counts_incidents_and_never_names_a_cause() {
+        let mut app = fixture_app();
+        let quiet = render_to_string(&app, 120, 40);
+        assert!(
+            !quiet.contains(" INC "),
+            "a quiet log must not draw an incident line: {quiet}"
+        );
+        app.incidents = vec![crate::incidents::Incident {
+            id: "wan-4242".to_string(),
+            kind: crate::incidents::Kind::Wan,
+            start_unix: 4242,
+            end_unix: 4300,
+            evidence: 3,
+            confidence: crate::incidents::Confidence::Medium,
+            lines: vec!["signal wan: down".to_string()],
+            caveat: Some("a read failed within 2860 ms of this window".to_string()),
+        }];
+        let text = render_to_string(&app, 120, 40);
+        assert!(text.contains(" INC "), "{text}");
+        assert!(text.contains("wan-4242"), "the id must be named: {text}");
+        assert!(text.contains("no cause"), "{text}");
+    }
 }

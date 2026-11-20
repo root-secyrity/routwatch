@@ -14,6 +14,7 @@ use crate::router::HuaweiClient;
 use crate::write::{
     apply_bands_with, apply_dns, run_delete, run_mark_read, VerifyLimits, WriteIntent, WriteState,
 };
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::Arc;
@@ -355,10 +356,15 @@ pub fn tier_label(tier: Tier) -> &'static str {
 /// How often a tier is due. Only the radio tier follows the refresh knob: the
 /// slower tiers hold reads whose cost is the firmware's answer time, and polling
 /// them at the radio cadence is what made one cycle five seconds long.
+///
+/// The client list answers in p50 1191 ms and p95 2297 ms (measured 2026-11-19,
+/// WEBUI 11.0.2.21), so it is read half as often as the screen: the worst gap
+/// stays about 2860 ms and falls half as often, which is the honest trade a
+/// thirty second cadence buys.
 pub fn tier_cadence(tier: Tier, refresh_ms: u64) -> Duration {
     match tier {
         Tier::Radio => Duration::from_millis(refresh_ms.max(500)),
-        Tier::Clients => Duration::from_secs(15),
+        Tier::Clients => Duration::from_secs(30),
         Tier::Static => Duration::from_secs(60),
     }
 }
@@ -471,16 +477,32 @@ fn collect_failed(
 const BACKOFF: [u64; 4] = [2, 5, 10, 20];
 
 pub fn spawn(cfg: Config, password: String) -> (Sender<Cmd>, Receiver<Ev>) {
+    spawn_at(cfg, password, crate::events::path())
+}
+
+/// The log path is a parameter so a test can pass `None`: a suite that writes the
+/// real user's event log is a suite that edits their machine.
+pub fn spawn_at(
+    cfg: Config,
+    password: String,
+    log: Option<PathBuf>,
+) -> (Sender<Cmd>, Receiver<Ev>) {
     let (cmd_tx, cmd_rx) = channel::<Cmd>();
     let (ev_tx, ev_rx) = channel::<Ev>();
     std::thread::Builder::new()
         .name("routwatch-router".into())
-        .spawn(move || run(cfg, password, cmd_rx, ev_tx))
+        .spawn(move || run(cfg, password, log, cmd_rx, ev_tx))
         .expect("spawn router thread");
     (cmd_tx, ev_rx)
 }
 
-fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) {
+fn run(
+    cfg: Config,
+    password: String,
+    log: Option<PathBuf>,
+    cmd_rx: Receiver<Cmd>,
+    ev_tx: Sender<Ev>,
+) {
     let mut interval = Duration::from_millis(cfg.app.refresh_ms.max(500));
     let mut client = HuaweiClient::new(&cfg.router.ip, cfg.app.timeout_ms);
     let mut authed = false;
@@ -497,6 +519,17 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
     let mut held: Option<Snapshot> = None;
     let mut due = [Instant::now(); Tier::ALL.len()];
     let mut stamps = TierStamp::default();
+    // Rows are earned by a change, so the watch carries the previous read. A
+    // failed event write is dropped: an observation log that can stop the poller
+    // is a liability, and the next transition is another row.
+    let mut watch = crate::events::Watch::default();
+    let note = |watch: &mut crate::events::Watch, snap: &Snapshot| {
+        if let Some(path) = log.as_deref() {
+            for e in watch.radio(snap, crate::record::now_unix()) {
+                let _ = crate::events::append(path, &e);
+            }
+        }
+    };
 
     let _ = ev_tx.send(Ev::Session(SessionState::Connecting));
 
@@ -552,6 +585,11 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 };
                 let settled = apply_dns(&mut client, &p, &sec, intent, false, &mut progress);
                 let reset_ok = matches!(&settled, WriteState::Success { .. });
+                if let Some(path) = log.as_deref() {
+                    let e =
+                        crate::events::write_verdict(crate::record::now_unix(), &settled, "dns");
+                    let _ = crate::events::append(path, &e);
+                }
                 let _ = ev_tx.send(Ev::Write(settled));
                 if reset_ok {
                     // DNS does not restart the radio; just refresh on the next tick.
@@ -717,6 +755,11 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 let settled =
                     apply_bands_with(&mut client, &payload, intent, force, &mut progress, limits);
                 let link_dropped = matches!(&settled, WriteState::Success { note, .. } if !note.contains("nothing sent"));
+                if let Some(path) = log.as_deref() {
+                    let e =
+                        crate::events::write_verdict(crate::record::now_unix(), &settled, "bands");
+                    let _ = crate::events::append(path, &e);
+                }
                 let _ = ev_tx.send(Ev::Write(settled));
                 if link_dropped {
                     // Expected: the radio restarts. Do not call it an error.
@@ -784,6 +827,7 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
         match tier {
             None => match headless::collect_traced(&mut client, &cfg.router.ip, &mut trace) {
                 Ok(snap) => {
+                    watch.prime(&snap);
                     let at = Instant::now();
                     stamps = TierStamp::default();
                     for each in Tier::ALL {
@@ -808,17 +852,29 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 // Moved on either way: a tier that failed must not be retried in
                 // the same breath, or a refusing endpoint becomes a hot loop.
                 due[tier.index()] = due_at(started, cadence(tier, interval), Instant::now());
+                let at_unix = clock();
                 match read {
                     Ok(()) => {
-                        snap.generated_at = clock();
+                        snap.generated_at = at_unix;
                         stamps.set(tier, Instant::now());
+                        if tier == Tier::Radio {
+                            note(&mut watch, snap);
+                        }
                         let _ = ev_tx.send(Ev::Snapshot {
                             snap: Box::new(snap.clone()),
                             poll_ms: started.elapsed().as_millis(),
                             stamps: stamps.clone(),
                         });
                     }
-                    Err(e) => collect_failed(e, &mut authed, &mut attempt, &mut next_try, &ev_tx),
+                    Err(e) => {
+                        if let Some(path) = log.as_deref() {
+                            let _ = crate::events::append(
+                                path,
+                                &crate::events::read_failed(tier, at_unix, &e),
+                            );
+                        }
+                        collect_failed(e, &mut authed, &mut attempt, &mut next_try, &ev_tx)
+                    }
                 }
             }
         }
@@ -839,7 +895,7 @@ mod tests {
     #[test]
     fn stopping_the_worker_logs_out_before_acknowledging() {
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
-        let (tx, _rx) = spawn(cfg_for(&mock), "pw".into());
+        let (tx, _rx) = spawn_at(cfg_for(&mock), "pw".into(), None);
 
         // Give the worker its first login; it retries on its own schedule.
         let mut waited = 0u32;
@@ -864,7 +920,7 @@ mod tests {
     #[test]
     fn changing_the_interval_takes_effect_without_a_respawn() {
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
-        let (tx, _rx) = spawn(cfg_for(&mock), "pw".into());
+        let (tx, _rx) = spawn_at(cfg_for(&mock), "pw".into(), None);
 
         let mut waited = 0u32;
         while mock.signals() == 0 && waited < 100 {

@@ -49,8 +49,11 @@ need `a` then `y` (see [Safety](#safety)).
 It polls the router: this firmware has no push channel (seven stream candidates
 answer `100003`), so the screen can never be fresher than one read. Reads are
 grouped by how fast they answer - signal, status and traffic on the refresh
-period, the client list every 15 s, the ten static documents every 60 s - and the
-header shows an age for each group. The measured tail behind those numbers is in
+period, the client list every 30 s, the ten static documents every 60 s - and the
+header shows an age for each group. What changes is written to an append-only log
+under `$XDG_DATA_HOME/routwatch/events.jsonl`: band and DNS writes, IP renewals,
+the WAN going down and coming back, a tier read that failed, and the signal
+crossing into poor. The measured tail behind those numbers is in
 [`docs/limits.md`](docs/limits.md).
 
 ## Does it work with my router?
@@ -137,6 +140,50 @@ and `y` inside the TUI. Every delete is verified by re-reading the inbox and
 reported per index, and a firmware that refuses the path is reported as
 "unsupported (100003)", not as done. Neither path has been measured on the
 H122-373 (see [limits.md](docs/limits.md)); the simulator is where they are tested.
+
+## Privacy: watch a setting, not a guess
+
+`privacy` is a read-only audit: remote management, DNS, firewall, whether the
+admin page is reachable. `--save` records what it answered as the baseline you
+accept, `--diff` reads twice and reports only the answers that moved away from
+that baseline, and `--watch` keeps asking on one session.
+
+```sh
+routwatch privacy                 # the audit, as a table
+routwatch privacy --save          # record the answers you accept (0600 file)
+routwatch privacy --diff          # exits 1 and names each settled drift
+routwatch privacy --watch 60      # a line whenever a drift settles
+```
+
+The clients tab also carries an inspector for the selected host: the fields the
+firmware sent, the age of the last client read, and the columns this firmware
+does not report, named rather than left blank.
+
+Two rules make a reported drift trustworthy: a refusal (`unknown`, `not exposed`)
+is never counted as a change, and a value needs two reads to agree before it is
+reported, because this firmware serves some documents in a flaky tail.
+
+## Incidents: what the logs support, and what they cannot
+
+`incidents` turns the observation log, the signal log and the speed history into
+windows of the same fault. It reads files only: no router, no clock, so the same
+logs always produce the same list.
+
+```sh
+routwatch incidents list              # id, window, rows, confidence, no cause
+routwatch incidents show wan-1795139583
+routwatch report --incident wan-1795139583 --redact   # a pasteable document
+```
+
+Two limits are printed rather than hidden. Confidence is the count of rows that
+agree (one row is low, two or three medium, four or more high), never a
+probability. And no incident names a cause: the radio tier is read on its own
+cadence, measured at p95 1748 ms and worst 2860 ms between samples on this
+firmware, so two events closer than that cannot be ordered from their stamps.
+When a pair falls inside that window the incident says so.
+
+The dashboard's EVENTS panel shows the newest incidents the same way: an id, a
+row count, a confidence, and `no cause`.
 
 ## Limits, the short list
 

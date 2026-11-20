@@ -192,7 +192,7 @@ pub fn load(path: &Path) -> Loaded {
     }
 }
 
-fn ensure_dir(path: &Path) -> std::io::Result<()> {
+pub(crate) fn ensure_dir(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let Some(dir) = path.parent() else {
         return Ok(());
@@ -202,7 +202,7 @@ fn ensure_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let created = !path.exists();
     let f = std::fs::OpenOptions::new()
@@ -223,7 +223,7 @@ fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
 /// A log whose last byte is not a newline ends in a torn row. Put the newline
 /// back first, so this write starts its own line and the damaged row stays one
 /// damaged row instead of swallowing the next one.
-fn repair_tail(f: &mut std::fs::File) -> std::io::Result<()> {
+pub(crate) fn repair_tail(f: &mut std::fs::File) -> std::io::Result<()> {
     let len = f.metadata()?.len();
     if len == 0 {
         return Ok(());

@@ -4,14 +4,17 @@
 //! `App` from a fixture and assert on the produced frame.
 
 pub mod app;
+pub mod client_detail;
 pub mod completion;
 pub mod config;
 /// The design contracts in `docs/contracts.md`, checked against the source.
 #[cfg(test)]
 mod contracts;
 pub mod error;
+pub mod events;
 pub mod headless;
 pub mod history;
+pub mod incidents;
 /// A fake firmware on a real socket, so the transport half has tests too.
 #[cfg(test)]
 mod mock_cpe;
@@ -19,6 +22,7 @@ pub mod model;
 pub mod output;
 pub mod preflight;
 pub mod privacy;
+pub mod privacy_drift;
 pub mod record;
 pub mod report;
 pub mod router;

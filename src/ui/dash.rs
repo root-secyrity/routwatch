@@ -968,7 +968,36 @@ fn events(f: &mut Frame, area: Rect, app: &App, lines_wanted: usize) {
     if room > 0 {
         lines.push(Line::from(""));
     }
-    for entry in app.event_log.iter().take(room.saturating_sub(1)) {
+    // The newest incidents first: an incident is why this log reads the way it
+    // does. A window, a row count and a confidence, never a cause.
+    let mut shown = 0;
+    for inc in app
+        .incidents
+        .iter()
+        .rev()
+        .take(2.min(room.saturating_sub(1)))
+    {
+        let conf = match inc.confidence {
+            crate::incidents::Confidence::Low => "low",
+            crate::incidents::Confidence::Medium => "med",
+            crate::incidents::Confidence::High => "high",
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" INC ", Style::default().fg(t.warn)),
+            Span::styled(
+                truncate(
+                    // Short by design: the pane is about 39 cells wide, and an
+                    // incident line that loses its "no cause" clause has lost the
+                    // point of being drawn.
+                    &format!("{} {}r {conf} · no cause", inc.id, inc.evidence),
+                    area.width.saturating_sub(16) as usize,
+                ),
+                Style::default().fg(t.warn),
+            ),
+        ]));
+        shown += 1;
+    }
+    for entry in app.event_log.iter().take(room.saturating_sub(1 + shown)) {
         let colour = match entry.level {
             crate::app::LogLevel::Error => t.danger,
             crate::app::LogLevel::Warn => t.warn,

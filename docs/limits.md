@@ -159,6 +159,39 @@ why each one is stated instead of hidden.
   password over WLAN is not a field this firmware exposes: the check prints
   `unknown` rather than a pass.
 
+- **A privacy drift needs two reads, and a baseline you saved**: `privacy --diff`
+  compares the live audit with `$XDG_DATA_HOME/routwatch/privacy-baseline.json`
+  (0600, written by `privacy --save`). A check counts as drifted only when two
+  reads agree on the new value: one read of a document this firmware answers from
+  a flaky tail is a rumour, not evidence. A refusal is never a change, and
+  `unknown` is never folded into `off`; a check that is missing from a read says
+  nothing. `--diff` exits 1 when it reports a drift, so a script can act on it.
+
+- **An incident is a window, never a cause**: `incidents` derives windows from
+  the observation log, the signal log and the speed history, all read from
+  `$XDG_DATA_HOME/routwatch/`. It reads no clock and writes nothing, so the same
+  logs always give the same list. Confidence is the count of rows that agree
+  (1 low, 2 to 3 medium, 4 or more high), not a probability.
+
+- **The ordering limit is measured, not assumed**: the radio tier is read on its
+  own cadence, and the gap between two radio samples was measured at p95 1748 ms
+  and worst 2860 ms (H122-373, WEBUI 11.0.2.21, 2026-11-20). Two events closer
+  together than 2860 ms cannot be ordered from their stamps, so an incident
+  states the smear and names no cause. A wider gap seen in the signal log itself
+  widens the refusal; it never narrows it.
+
+- **An incident reads the logs as they are**: a missing log is an empty log, not
+  an error, and a recovered fault is a row but never an incident. `report
+  --incident <id>` prints the window and its rows; `--redact` hides every detail
+  line, because an error string can carry a host or an address.
+
+- **`privacy --watch` holds one session and does not re-login**: it reads the same
+  audit every N seconds (10 at the smallest) and prints a line when a drift
+  settles. A router reboot or an expired session shows up as `unknown` rows, which
+  are not drift, so a watch left running reports nothing rather than inventing a
+  change. Restart it after a reboot. It reads only; no privacy setting is written
+  by any of these flags.
+
 - **The watch is a read, and the revert is a question**: `--watch` holds the
   session open for the requested seconds and reads `monitoring/status` every five
   seconds; it writes nothing on its own, and the window ending leaves the mask as
@@ -207,16 +240,37 @@ why each one is stated instead of hidden.
   "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
   log off for scripts that read every second.
 
+- **The observation log records changes, not attempts**: band and DNS writes,
+  IP renewals, the WAN going down and coming back, a tier read that failed, and
+  the signal crossing into poor or out of it are appended to
+  `$XDG_DATA_HOME/routwatch/events.jsonl` (0600, one row per line, 2000 rows kept
+  by compaction). Each row is stamped with the moment its tier's state was
+  observed, never with the clock of the write, and a link that stays poor for an
+  hour writes one row. A refused or busy read is a row; a retry that succeeded is
+  not. The address a renew produced is deliberately not a field: the log is not a
+  place a WAN IP may live.
+
 - **The screen is polled, never pushed**: measured 2026-11-19 on the H122-373
   (WEBUI 11.0.2.21), seven stream candidates (`websocket`, `ws`, `events`,
   `webserver/events`, `notification`, `sse`, `event-stream`) all answered
   `100003 ERROR_NO_RIGHT`, and `user/state-login` serves a document, not a
   stream. Polling is the ceiling: no screen can be fresher than one read.
+- **The client inspector is the 30 s client read, not a faster one**: the pane
+  under the client table shows the six fields `wlan/host-list` carries (name, IP,
+  MAC, band, SSID, time associated), the age of that read, and names the columns
+  this firmware does not send (per-client traffic, per-client signal, per-client
+  uptime) instead of printing a zero. No per-client detail endpoint exists on the
+  H122-373 (`PROBE` carries none and the WebUI's host list is one document), so an
+  inspector cannot be fresher than the tier: measured 2026-11-19, `wlan/host-list`
+  p50 1191 ms, p95 2297 ms, and the pane says how old its data is.
+
 - **Reads are grouped by how fast this firmware answers them**: signal, status
-  and traffic on the refresh period, `wlan/host-list` every 15 s, and the ten
+  and traffic on the refresh period, `wlan/host-list` every 30 s, and the ten
   static documents (device, net-mode, DHCP, SMS count, month counters) every
-  60 s. Measured 2026-11-19: `wlan/host-list` p95 2297 ms against signal p95
-  1575 ms, so reading the client list at the screen's cadence would starve it.
+  60 s. Measured 2026-11-19: `wlan/host-list` p50 1191 ms, p95 2297 ms, the
+  worst observed gap 2860 ms - a slower cadence does not shorten that gap, it
+  makes it fall half as often, so the client panel can be up to about three
+  seconds behind and often is.
 - **The signal read is bimodal on this firmware**: 60 reads measured p50 457 ms
   and p95 1575 ms, with nine over 800 ms, clustered near 450 ms or near
   1500 ms. A single screen cannot promise better than that tail, whatever the

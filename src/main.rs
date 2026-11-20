@@ -117,6 +117,29 @@ enum Cmd {
         /// Print the raw XML of every probed endpoint (contains device data)
         #[arg(long)]
         raw: bool,
+        /// Record these answers as the baseline a later --diff compares against
+        #[arg(long)]
+        save: bool,
+        /// Read twice and report the answers that moved away from the baseline
+        #[arg(long, conflicts_with = "save")]
+        diff: bool,
+        /// Keep reading every SECS and print a line when a drift settles
+        #[arg(long, value_name = "SECS", conflicts_with_all = ["save", "diff"])]
+        watch: Option<u64>,
+    },
+    /// Incidents derived from the logs: evidence, never a cause
+    Incidents {
+        #[command(subcommand)]
+        op: IncidentsCmd,
+    },
+    /// One incident as a document that can be pasted into an issue
+    Report {
+        /// The incident id from `incidents list`
+        #[arg(long, value_name = "ID")]
+        incident: String,
+        /// Hide every detail line (an error string can carry an address)
+        #[arg(long)]
+        redact: bool,
     },
     /// Health check in netwatch's doctor --json shape
     Doctor {
@@ -409,6 +432,22 @@ enum SmsCmd {
 }
 
 #[derive(Subcommand)]
+enum IncidentsCmd {
+    /// Every incident the logs support, newest last
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// One incident and the rows behind it
+    Show {
+        /// The incident id from `incidents list`
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum IpAction {
     /// Drop the data connection, bring it back, and watch for the address
     Renew {
@@ -540,7 +579,19 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let password = read_password(&cfg, stdin_password.as_deref())?;
             run_tui(app, cfg, password)
         }
-        Some(Cmd::Privacy { json, raw }) => {
+        Some(Cmd::Privacy {
+            json,
+            raw,
+            save,
+            diff,
+            watch,
+        }) => {
+            if let Some(secs) = watch {
+                return privacy_watch(&cfg, cli.password_stdin, secs);
+            }
+            if save || diff {
+                return privacy_baseline(&cfg, cli.password_stdin, json, save);
+            }
             let mut client = connect(&cfg, cli.password_stdin)?;
             let audit = routwatch::privacy::Audit::collect(&mut client);
             let bodies: Vec<(&'static str, String)> = if raw {
@@ -571,6 +622,70 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     eprintln!("\n##### {path} #####\n{}", body.trim());
                 }
             }
+            Ok(())
+        }
+        Some(Cmd::Incidents { op }) => {
+            let list = incidents_now();
+            match op {
+                IncidentsCmd::List { json } => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&list).unwrap());
+                    } else if list.is_empty() {
+                        println!("no incidents: the logs hold no fault rows");
+                    } else {
+                        for inc in &list {
+                            println!(
+                                "{:<22} {:<22} {:>4} rows  {:<6} {}",
+                                inc.id,
+                                inc.window(),
+                                inc.evidence,
+                                confidence_word(inc.confidence),
+                                inc.kind.title()
+                            );
+                            if let Some(c) = &inc.caveat {
+                                println!("  note: {c}");
+                            }
+                        }
+                    }
+                }
+                IncidentsCmd::Show { id, json } => {
+                    let inc = routwatch::incidents::find(&list, &id).ok_or_else(|| {
+                        ApiError::Usage(format!(
+                            "no incident with id {id}; run `routwatch incidents list`"
+                        ))
+                    })?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(inc).unwrap());
+                    } else {
+                        println!("{} · {}", inc.id, inc.kind.title());
+                        println!(
+                            "window {} · {} rows · {}",
+                            inc.window(),
+                            inc.evidence,
+                            confidence_word(inc.confidence)
+                        );
+                        for line in &inc.lines {
+                            println!("  {line}");
+                        }
+                        match &inc.caveat {
+                            Some(c) => println!("\n{c}"),
+                            None => println!(
+                                "\nNo cause is named: the logs record what answered, not why."
+                            ),
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Some(Cmd::Report { incident, redact }) => {
+            let list = incidents_now();
+            let inc = routwatch::incidents::find(&list, &incident).ok_or_else(|| {
+                ApiError::Usage(format!(
+                    "no incident with id {incident}; run `routwatch incidents list`"
+                ))
+            })?;
+            print!("{}", routwatch::incidents::markdown(inc, redact));
             Ok(())
         }
         Some(Cmd::Doctor { json, live }) => {
@@ -853,6 +968,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     &mut progress,
                     limits,
                 );
+                if let Some(path) = routwatch::events::path() {
+                    let e = routwatch::events::write_verdict(
+                        routwatch::record::now_unix(),
+                        &settled,
+                        "bands",
+                    );
+                    let _ = routwatch::events::append(&path, &e);
+                }
                 let undo_payload = bands::BandPayload {
                     network_mode: current
                         .network_mode
@@ -1240,6 +1363,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 &mut progress,
             );
             client.logout();
+            if let Some(path) = routwatch::events::path() {
+                let e = routwatch::events::write_verdict(
+                    routwatch::record::now_unix(),
+                    &settled,
+                    "dns",
+                );
+                let _ = routwatch::events::append(&path, &e);
+            }
             println!("result: {}", settled.label());
             match settled {
                 WriteState::Success { .. } => Ok(()),
@@ -1545,6 +1676,30 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let limits = routwatch::write::VerifyLimits::from_secs(settle);
             let out = routwatch::write::renew_ip(&mut client, limits, std::thread::sleep);
             client.logout();
+            // The log takes the verdict and how long it took, never the address:
+            // a WAN IP in a tracked-adjacent file is the leak this project bans.
+            if let Some(path) = routwatch::events::path() {
+                let (outcome, detail) = match &out {
+                    routwatch::write::RenewOutcome::Changed { secs, .. } => {
+                        ("changed", Some(format!("{secs} s")))
+                    }
+                    routwatch::write::RenewOutcome::Unchanged { secs, .. } => {
+                        ("unchanged", Some(format!("{secs} s")))
+                    }
+                    routwatch::write::RenewOutcome::LinkDown { .. } => ("link down", None),
+                    routwatch::write::RenewOutcome::NoAddress { attempts, .. } => {
+                        ("no address", Some(format!("{attempts} reads")))
+                    }
+                };
+                let _ = routwatch::events::append(
+                    &path,
+                    &routwatch::events::renew_settled(
+                        routwatch::record::now_unix(),
+                        outcome,
+                        detail,
+                    ),
+                );
+            }
             if json {
                 let v = match &out {
                     routwatch::write::RenewOutcome::Changed {
@@ -2218,6 +2373,147 @@ fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, A
     Ok(connect_with(cfg, password_stdin)?.0)
 }
 
+/// How long `privacy --diff` waits between its two reads. The firmware answers
+/// some documents in about 45 ms and others in about 1500 ms depending on which
+/// tail it is in, so a second read with no pause could be the same fluke as the
+/// first. Two seconds is cheap next to a false alarm about a security setting.
+const SETTLE_SECS: u64 = 2;
+
+/// The shortest interval `privacy --watch` accepts. A privacy answer is not a
+/// signal metric: reading it more often costs the router and buys nothing.
+const MIN_WATCH_SECS: u64 = 10;
+
+/// The incident list as the logs stand right now. Derived, never stored.
+fn incidents_now() -> Vec<routwatch::incidents::Incident> {
+    routwatch::incidents::detect(&routwatch::incidents::Source::load())
+}
+
+fn confidence_word(c: routwatch::incidents::Confidence) -> &'static str {
+    match c {
+        routwatch::incidents::Confidence::Low => "low",
+        routwatch::incidents::Confidence::Medium => "med",
+        routwatch::incidents::Confidence::High => "high",
+    }
+}
+
+fn privacy_baseline_path() -> Result<std::path::PathBuf, ApiError> {
+    routwatch::privacy_drift::path()
+        .ok_or_else(|| ApiError::Config("no data directory for the privacy baseline".to_string()))
+}
+
+/// `privacy --save` records the baseline; `privacy --diff` reads twice and
+/// reports what moved. Both exit non-zero on a failure the caller can act on:
+/// a saved baseline cannot be written, a baseline is missing, or a drift settled.
+fn privacy_baseline(
+    cfg: &config::Config,
+    stdin_password: bool,
+    json: bool,
+    save: bool,
+) -> Result<(), ApiError> {
+    let path = privacy_baseline_path()?;
+    let mut client = connect(cfg, stdin_password)?;
+    let first = routwatch::privacy::Audit::collect(&mut client);
+    if save {
+        let base = routwatch::privacy_drift::Baseline::from_audit(&first, record::now_unix());
+        routwatch::privacy_drift::save(&path, &base)
+            .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
+        client.logout();
+        if json {
+            println!("{}", serde_json::to_string_pretty(&base).unwrap());
+        } else {
+            println!(
+                "baseline saved: {} ({} checks, mode 0600)",
+                path.display(),
+                base.checks.len()
+            );
+        }
+        return Ok(());
+    }
+    let base = match routwatch::privacy_drift::load(&path).map_err(ApiError::Config)? {
+        Some(b) => b,
+        None => {
+            client.logout();
+            return Err(ApiError::Usage(format!(
+                "no baseline at {}: run `routwatch privacy --save` first",
+                path.display()
+            )));
+        }
+    };
+    std::thread::sleep(Duration::from_secs(SETTLE_SECS));
+    let second = routwatch::privacy::Audit::collect(&mut client);
+    client.logout();
+    // One filter for both reads: the first arms a candidate, the second settles
+    // it. Neither read alone can report anything.
+    let mut agree = routwatch::privacy_drift::Agree::default();
+    let _ = agree.observe(&base, &first);
+    let drifts = agree.observe(&base, &second);
+    if json {
+        let rows: Vec<_> = drifts
+            .iter()
+            .map(|d| serde_json::json!({"name": d.name, "from": d.from, "to": d.to}))
+            .collect();
+        let out = serde_json::json!({
+            "baseline": path.display().to_string(),
+            "saved_at": base.saved_at,
+            "checks": base.checks.len(),
+            "drift": rows,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else if drifts.is_empty() {
+        println!(
+            "no drift: {} checks still answer what the baseline recorded",
+            base.checks.len()
+        );
+    } else {
+        for d in &drifts {
+            println!("{}", d.line());
+        }
+        println!(
+            "{} drift(s) against the baseline saved at {} (unix)",
+            drifts.len(),
+            base.saved_at
+        );
+    }
+    if drifts.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::Quiet(1))
+    }
+}
+
+/// Watch the same checks on one session. The connection is not re-established
+/// here: a lost session shows up as `unknown` rows, which are not drift, so a
+/// watch left alone cannot invent a change. Restart it after a router reboot.
+fn privacy_watch(cfg: &config::Config, stdin_password: bool, secs: u64) -> Result<(), ApiError> {
+    let path = privacy_baseline_path()?;
+    let base = match routwatch::privacy_drift::load(&path).map_err(ApiError::Config)? {
+        Some(b) => b,
+        None => {
+            return Err(ApiError::Usage(format!(
+                "no baseline at {}: run `routwatch privacy --save` first",
+                path.display()
+            )))
+        }
+    };
+    let every = Duration::from_secs(secs.max(MIN_WATCH_SECS));
+    let mut client = connect(cfg, stdin_password)?;
+    let mut agree = routwatch::privacy_drift::Agree::default();
+    let started = Instant::now();
+    println!(
+        "watching {} checks every {}s against {} (Ctrl-C to stop)",
+        base.checks.len(),
+        every.as_secs(),
+        path.display()
+    );
+    loop {
+        let audit = routwatch::privacy::Audit::collect(&mut client);
+        for d in agree.observe(&base, &audit) {
+            println!("[+{}s] {}", started.elapsed().as_secs(), d.line());
+        }
+        std::thread::sleep(every);
+    }
+}
+
 /// The same login, keeping the credentials: a command that holds the session
 /// open across a radio restart must be able to sign in again on its own.
 fn connect_with(
@@ -2317,6 +2613,10 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     }
     // Read once at start; the panel stays current by appending what it records.
     app.load_history();
+    // Incidents are a reading of the logs, so they are re-derived on a slow
+    // timer rather than on every snapshot.
+    app.load_incidents();
+    let mut incidents_at = std::time::Instant::now();
     let (tx, rx) = worker::spawn(cfg, password);
 
     install_restore_hook();
@@ -2333,6 +2633,10 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     let mut painted = std::time::Instant::now();
     while !app.quit {
         drain(&mut app, &rx);
+        if incidents_at.elapsed().as_secs() >= 60 {
+            app.load_incidents();
+            incidents_at = std::time::Instant::now();
+        }
         // Once every 30 s, not on every poll: the ledger is a file, and the
         // counters move by kilobytes a second.
         if app.usage_dirty
