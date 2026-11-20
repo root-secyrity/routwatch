@@ -465,6 +465,17 @@ fn draw_sms_modal(f: &mut Frame, area: Rect, app: &App, plan: &crate::app::SmsPl
     f.render_widget(para, rect);
 }
 
+/// `0.6s` under ten seconds, `41s` above: the header is one row, and the
+/// difference between 12.3 and 12 does not earn two more columns.
+fn short_age(age: std::time::Duration) -> String {
+    let secs = age.as_secs_f32();
+    if secs < 10.0 {
+        format!("{secs:.1}s")
+    } else {
+        format!("{}s", age.as_secs())
+    }
+}
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let plmn = app
@@ -511,7 +522,30 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if app.paused {
         right.push(Span::styled(" · paused", Style::default().fg(t.warn)));
     }
-    right.push(Span::styled(format!(" · {age_text}"), age_style));
+    let mut right_width: u16 = right
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()) as u16)
+        .sum();
+    // One age per tier: a single number could not say which group was late, so a
+    // clients read that took 2.3 s looked like dead data behind a live state.
+    let ages = crate::worker::Tier::ALL
+        .iter()
+        .filter_map(|tier| {
+            app.age_for(*tier)
+                .map(|age| format!("{} {}", crate::worker::tier_label(*tier), short_age(age)))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let age_span = if ages.is_empty() {
+        format!(" · {age_text}")
+    } else {
+        format!(" · {ages}")
+    };
+    let age_w = UnicodeWidthStr::width(age_span.as_str()) as u16;
+    if right_width + age_w + 34 <= area.width {
+        right.push(Span::styled(age_span, age_style));
+        right_width += age_w;
+    }
     // The endpoint being read right now, and how far the scan got. Hidden when
     // no scan is in flight, so an idle header stays quiet.
     if let Some(phase) = app.current_phase() {
@@ -522,10 +556,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(t.accent),
         ));
     }
-    let mut right_width: u16 = right
-        .iter()
-        .map(|span| UnicodeWidthStr::width(span.content.as_ref()) as u16)
-        .sum();
     let poll = format!(" · poll {}ms ", app.last_poll_ms);
     // Keep at least 34 columns for the left side: the PLMN is worth more than
     // the polling interval.
@@ -1613,6 +1643,23 @@ mod tests {
             text.contains("1 cell = ") && text.contains("last 240s"),
             "the cell widens when the plot does not: {text}"
         );
+    }
+
+    #[test]
+    fn the_header_shows_an_age_per_tier() {
+        use crate::worker::Tier;
+        let mut app = fixture_app();
+        let now = std::time::Instant::now();
+        app.stamps.set(Tier::Radio, now);
+        app.stamps
+            .set(Tier::Clients, now - std::time::Duration::from_secs(12));
+        app.stamps
+            .set(Tier::Static, now - std::time::Duration::from_secs(41));
+        let text = render_to_string(&app, 140, 30);
+        let head = text.lines().next().unwrap_or_default();
+        assert!(head.contains("signal "), "no radio age: {head}");
+        assert!(head.contains("clients 12s"), "no clients age: {head}");
+        assert!(head.contains("device 41s"), "no device age: {head}");
     }
 
     #[test]
@@ -3310,5 +3357,29 @@ mod tests {
             .take_while(|c| GLYPHS.contains(*c))
             .count();
         assert_eq!(cells, 3, "one cell per sample, no invented points: {strip}");
+    }
+
+    #[test]
+    fn the_dashboard_counts_incidents_and_never_names_a_cause() {
+        let mut app = fixture_app();
+        let quiet = render_to_string(&app, 120, 40);
+        assert!(
+            !quiet.contains(" INC "),
+            "a quiet log must not draw an incident line: {quiet}"
+        );
+        app.incidents = vec![crate::incidents::Incident {
+            id: "wan-4242".to_string(),
+            kind: crate::incidents::Kind::Wan,
+            start_unix: 4242,
+            end_unix: 4300,
+            evidence: 3,
+            confidence: crate::incidents::Confidence::Medium,
+            lines: vec!["signal wan: down".to_string()],
+            caveat: Some("a read failed within 601 ms of this window".to_string()),
+        }];
+        let text = render_to_string(&app, 120, 40);
+        assert!(text.contains(" INC "), "{text}");
+        assert!(text.contains("wan-4242"), "the id must be named: {text}");
+        assert!(text.contains("no cause"), "{text}");
     }
 }

@@ -217,8 +217,19 @@ fn firewall_check(client: &mut HuaweiClient) -> Check {
                 .push_str(" · FirewallMainSwitch on security/firewall-switch");
             c
         }
-        Err(e) => classify_error("firewall", &e),
+        Err(e) => with_matrix_note(classify_error("firewall", &e), "security/firewall-switch"),
     }
+}
+
+/// Append what the capability matrix recorded for this endpoint, when it has
+/// news. The matrix never changes an outcome here: it only says what was
+/// measured, so a refusal reads as a measured refusal rather than a guess.
+fn with_matrix_note(mut check: Check, endpoint: &str) -> Check {
+    if let Some(note) = crate::capabilities::note_for(endpoint) {
+        check.detail.push_str(" · ");
+        check.detail.push_str(&note);
+    }
+    check
 }
 
 /// Whether an unauthenticated client on the WLAN reaches the admin pages is not

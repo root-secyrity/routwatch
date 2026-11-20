@@ -159,6 +159,40 @@ why each one is stated instead of hidden.
   password over WLAN is not a field this firmware exposes: the check prints
   `unknown` rather than a pass.
 
+- **A privacy drift needs two reads, and a baseline you saved**: `privacy --diff`
+  compares the live audit with `$XDG_DATA_HOME/routwatch/privacy-baseline.json`
+  (0600, written by `privacy --save`). A check counts as drifted only when two
+  reads agree on the new value: one read of a document this firmware answers from
+  a flaky tail is a rumour, not evidence. A refusal is never a change, and
+  `unknown` is never folded into `off`; a check that is missing from a read says
+  nothing. `--diff` exits 1 when it reports a drift, so a script can act on it.
+
+- **An incident is a window, never a cause**: `incidents` derives windows from
+  the observation log, the signal log and the speed history, all read from
+  `$XDG_DATA_HOME/routwatch/`. It reads no clock and writes nothing, so the same
+  logs always give the same list. Confidence is the count of rows that agree
+  (1 low, 2 to 3 medium, 4 or more high), not a probability.
+
+- **The ordering limit is derived from the samples around the incident**: two
+  events can be ordered only if the signal log brackets both of them, and only if
+  the widest gap between those samples is narrower than the distance between the
+  events. The incident prints that gap as the smear it used, so the number moves
+  when the cadence moves: at the radio tier's measured cadence it lands near a
+  second, and at the one-row-a-minute fallback it runs to a minute. When the log
+  does not bracket both moments, the order is `unknown` and no cause is named.
+
+- **An incident reads the logs as they are**: a missing log is an empty log, not
+  an error, and a recovered fault is a row but never an incident. `report
+  --incident <id>` prints the window and its rows; `--redact` hides every detail
+  line, because an error string can carry a host or an address.
+
+- **`privacy --watch` holds one session and does not re-login**: it reads the same
+  audit every N seconds (10 at the smallest) and prints a line when a drift
+  settles. A router reboot or an expired session shows up as `unknown` rows, which
+  are not drift, so a watch left running reports nothing rather than inventing a
+  change. Restart it after a reboot. It reads only; no privacy setting is written
+  by any of these flags.
+
 - **The watch is a read, and the revert is a question**: `--watch` holds the
   session open for the requested seconds and reads `monitoring/status` every five
   seconds; it writes nothing on its own, and the window ending leaves the mask as
@@ -206,6 +240,96 @@ why each one is stated instead of hidden.
   sidecar lock being held by another routwatch, which is why a gap in the log is read as
   "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
   log off for scripts that read every second.
+
+- **The observation log records changes, not attempts**: band and DNS writes,
+  IP renewals, the WAN going down and coming back, a tier read that failed, and
+  the signal crossing into poor or out of it are appended to
+  `$XDG_DATA_HOME/routwatch/events.jsonl` (0600, one row per line, 2000 rows kept
+  by compaction). Each row is stamped with the moment its tier's state was
+  observed, never with the clock of the write, and a link that stays poor for an
+  hour writes one row. A refused or busy read is a row; a retry that succeeded is
+  not. The address a renew produced is deliberately not a field: the log is not a
+  place a WAN IP may live.
+
+- **The screen is polled, never pushed**: measured 2026-11-19 on the H122-373
+  (WEBUI 11.0.2.21), seven stream candidates (`websocket`, `ws`, `events`,
+  `webserver/events`, `notification`, `sse`, `event-stream`) all answered
+  `100003 ERROR_NO_RIGHT`, and `user/state-login` serves a document, not a
+  stream. Polling is the ceiling: no screen can be fresher than one read.
+- **The client inspector is the 30 s client read, not a faster one**: the pane
+  under the client table shows the six fields `wlan/host-list` carries (name, IP,
+  MAC, band, SSID, time associated), the age of that read, and names the columns
+  this firmware does not send (per-client traffic, per-client signal, per-client
+  uptime) instead of printing a zero. No per-client detail endpoint exists on the
+  H122-373 (`PROBE` carries none and the WebUI's host list is one document), so an
+  inspector cannot be fresher than the tier: measured 2026-11-19, `wlan/host-list`
+  p50 1191 ms, p95 2297 ms, and the pane says how old its data is.
+
+- **Reads are grouped by how fast this firmware answers them**: signal, status
+  and traffic on the refresh period, `wlan/host-list` every 30 s, and the ten
+  static documents (device, net-mode, DHCP, SMS count, month counters) every
+  60 s. Measured 2026-11-19: `wlan/host-list` p50 1191 ms, p95 2297 ms, the
+  worst observed gap 2860 ms - a slower cadence does not shorten that gap, it
+  makes it fall half as often, so the client panel can be up to about three
+  seconds behind and often is.
+- **The signal read is bimodal on this firmware**: 60 reads measured p50 457 ms
+  and p95 1575 ms, with nine over 800 ms, clustered near 450 ms or near
+  1500 ms. A single screen cannot promise better than that tail, whatever the
+  timer says.
+- **A slow read delays the next poll and never stacks**: there is one collection
+  thread, and a tick that overruns its deadline is not replayed, so a 1.6 s read
+  at a 600 ms period means one sample per 1.6 s, not a burst of catching up.
+  The default period is 600 ms for that reason: a 30 s soak at 500 ms carried
+  132 reads with no busy code and no re-login.
+- **The frame is redrawn on a change, not on a timer alone**: a snapshot event or
+  a key press asks for a frame, and a one second pulse keeps the age text moving
+  when nothing else arrives. Repainting identical cells at the poll rate was pure
+  terminal work.
+- **The age is shown per group**: `signal 0.6s · clients 12s · device 41s` in the
+  header, because one age for the whole screen could not say which read was late.
+  Narrow terminals fall back to the single age of the last full snapshot.
+- **The signal log row is stamped at the radio read**: the row written to
+  `$XDG_DATA_HOME/routwatch/signal-history.jsonl` carries the moment the signal
+  endpoint answered, not the moment the whole snapshot was assembled, so a slow
+  client list never shifts the logged sample by seconds.
+- **The tests never write your data directory.** Every test that can reach a
+  persistent log points `XDG_DATA_HOME` at its own scratch directory and removes it
+  on drop, so a plain `cargo test --locked` leaves `$XDG_DATA_HOME/routwatch/`
+  byte-identical and creates nothing there. `scripts/gate-isolation.sh` proves it:
+  a run against a sentinel directory of marker logs (which must not move), a run
+  against an empty directory (which must stay empty), and, when the TUI is not
+  running, a run against the real directory. The sentinel check alone can miss a
+  leak, because the signal log writes at most one row a minute.
+
+- **The capability matrix records what this firmware answered**: one state per
+  endpoint, `answered`, `refused` with the firmware's code, `not served` (a 404) or
+  `untested`, keyed by the firmware string and the moment it was measured. A refusal
+  is recorded, never folded into "this firmware lacks the feature", and an `untested`
+  endpoint never hides a feature: the matrix is a record, not a permission system.
+- **A config snapshot keeps field names and salted fingerprints, never a value**:
+  `wlan/basic-settings#WifiKey` is recorded by name and its presence, and the digest
+  needs both the salt file (`$XDG_DATA_HOME/routwatch/config-salt`, 0600) and the
+  value to be useful, which is what makes the fingerprint change detection and not
+  storage. A changed secret reads as presence only. There is no restore command.
+- **A config change needs two reads that agree, and a firmware difference mutes the
+  rest**: `config diff` reads every endpoint twice, and a field the two reads disagree
+  on is printed as `unsettled` rather than reported. An endpoint that answered before
+  and refuses now is one `visibility-changed` row, not a removal. When the two
+  snapshots were taken on different firmware versions the field rows are suppressed
+  and the version difference is the finding.
+- **Band advice is per served band, except what came from a scan**: the signal log
+  records the band that was served, not the set that was configured, so the served
+  ranking says so and set advice comes only from `scan --json` results passed with
+  `--scans`. The two rankings are never mixed, a reading inside the derived smear is
+  not attributed to either band, and a figure beside a band is associated with it,
+  never caused by it. The derived smear is the 95th percentile gap between the samples
+  inside the window, not the widest gap in the log: a pause of hours is absence of
+  observation, and letting it mute the day would hide every real change.
+- **Band advice has four confidence levels and no write path**: `insufficient`, `low`,
+  `medium`, `high`, from the rows and the measured scans, and the weakest link sets the
+  whole advice. `bands advise` prints the command that would add evidence, switches
+  nothing, writes no log and needs no router (an unreachable router narrows the advice
+  instead of stopping it).
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the

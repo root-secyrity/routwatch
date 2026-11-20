@@ -291,6 +291,18 @@ pub const RSRP_DOMAIN: (f32, f32) = (-140.0, -44.0);
 pub const RSRQ_DOMAIN: (f32, f32) = (-20.0, -3.0);
 pub const SINR_DOMAIN: (f32, f32) = (-10.0, 30.0);
 
+/// The worst of the three steps, over whatever readings exist: `Some(0)` means
+/// at least one of them is poor. The thresholds stay in this module, so a panel
+/// and the observation log cannot disagree about what poor means.
+pub fn worst_step(rsrp: Option<f32>, rsrq: Option<f32>, sinr: Option<f32>) -> Option<u8> {
+    let steps = [
+        rsrp.map(|v| step_of(v, RSRP_GOOD, RSRP_FAIR)),
+        rsrq.map(|v| step_of(v, RSRQ_GOOD, RSRQ_FAIR)),
+        sinr.map(|v| step_of(v, SINR_GOOD, SINR_FAIR)),
+    ];
+    steps.into_iter().flatten().min()
+}
+
 const RSRP_GOOD: f32 = -80.0;
 const RSRP_FAIR: f32 = -100.0;
 const RSRQ_GOOD: f32 = -10.0;

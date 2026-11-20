@@ -209,6 +209,122 @@ pub fn collect_traced(
     Ok(snap)
 }
 
+/// Read one tier into an existing snapshot.
+///
+/// The tier owns its endpoints and nothing else: the radio tier never writes a
+/// client name, and the static tier never writes a signal value, so a run cannot
+/// publish a half-updated group. The CLI keeps `collect_traced`, which reads all
+/// fourteen in one pass; this is the path the TUI worker schedules.
+///
+/// `now` is the wall clock in unix seconds, passed in because the signal row must
+/// carry the moment of the radio read, not the moment the frame was assembled:
+/// a test asserts exactly that with a fixed value.
+pub fn collect_tier(
+    c: &mut HuaweiClient,
+    snap: &mut Snapshot,
+    tier: crate::worker::Tier,
+    now: &dyn Fn() -> u64,
+    trace: &mut impl FnMut(Phase, PhaseState),
+) -> Result<(), ApiError> {
+    use crate::worker::Tier;
+    match tier {
+        Tier::Radio => {
+            let signal =
+                parse::parse_signal(&step(trace, Phase::Signal, || c.get("device/signal"))?);
+            // Stamped here, at the read that produced it. Taking it after the
+            // whole frame is what made the logged minute drift behind the data.
+            let at = now();
+            let status = parse::parse_connection(&step(trace, Phase::Status, || {
+                c.get("monitoring/status")
+            })?);
+            let traffic = parse::parse_traffic(&step(trace, Phase::Traffic, || {
+                c.get("monitoring/traffic-statistics")
+            })?);
+            snap.signal = signal;
+            snap.connection = status;
+            snap.traffic = traffic;
+            // One row a minute, written when the radio tier completes. A write
+            // that only happened at the end of a full collect would stop the log
+            // the moment the TUI took the tiered path.
+            if std::env::var_os("ROUTWATCH_DISABLE_SIGNAL_LOG").is_none() {
+                if let Some(path) = signal_history::path() {
+                    let _ = signal_history::record_if_due(snap, at, &path);
+                }
+            }
+        }
+        Tier::Clients => {
+            let clients = match step(trace, Phase::Clients, || c.get("wlan/host-list")) {
+                Ok(node) => {
+                    snap.unsupported.retain(|id| id != "clients");
+                    parse::parse_clients(&node)
+                }
+                Err(e) => {
+                    note_unsupported(&mut snap.unsupported, "clients", &e);
+                    Vec::new()
+                }
+            };
+            snap.clients = clients;
+        }
+        Tier::Static => {
+            snap.plmn = parse::parse_plmn(&step(trace, Phase::Plmn, || c.get("net/current-plmn"))?);
+            snap.device =
+                parse::parse_device(&step(trace, Phase::Device, || c.get("device/information"))?);
+            snap.net_mode =
+                parse::parse_net_mode(&step(trace, Phase::NetMode, || c.get("net/net-mode"))?);
+            // Optional sensor: a firmware without it answers an error, which is
+            // not a failed scan - the TEMP tile simply does not exist.
+            snap.temperature = step(trace, Phase::Device, || c.get("device/temperature").ok())
+                .and_then(|node| parse::parse_temperature(&node));
+            // The router's own month counter, and the cycle day only when the
+            // counter answered at all.
+            snap.quota = match step(trace, Phase::Traffic, || {
+                c.get("monitoring/month_statistics")
+            }) {
+                Ok(node) => {
+                    snap.unsupported.retain(|id| id != "quota");
+                    let start = step(trace, Phase::Traffic, || {
+                        c.get("monitoring/start_date").ok()
+                    });
+                    Some(parse::parse_quota(&node, start.as_ref()))
+                }
+                Err(e) => {
+                    note_unsupported(&mut snap.unsupported, "quota", &e);
+                    None
+                }
+            };
+            snap.sms = step(trace, Phase::Sms, || c.get("sms/sms-count").ok())
+                .map(|n| parse::parse_sms_count(&n));
+            // The same flag the web UI checks before drawing the DNS fields.
+            snap.dns = step(trace, Phase::Dns, || c.get("dhcp/settings").ok())
+                .map(|n| parse::parse_dns(&n))
+                .map(|mut d| {
+                    d.editable = c.dhcp_dns_editable();
+                    d
+                });
+            let (supported, all_mask, network_mask) =
+                match step(trace, Phase::Bands, || c.get("net/net-mode-list")) {
+                    Ok(node) => {
+                        let catalog = bands::from_net_mode_list(&node);
+                        (
+                            catalog
+                                .defs
+                                .iter()
+                                .filter_map(|d| d.band.map(u32::from))
+                                .collect(),
+                            catalog.lte_all.map(bands::to_hex),
+                            catalog.network_all.map(bands::to_hex),
+                        )
+                    }
+                    Err(_) => (Vec::new(), None, None),
+                };
+            snap.supported_bands = supported;
+            snap.all_bands_mask = all_mask;
+            snap.network_bands_mask = network_mask;
+        }
+    }
+    Ok(())
+}
+
 /// Lazily-fetched extras (opened by the SMS/Device tabs, the `R` key, or `sms`).
 /// Kept out of the 2s poll: each of these costs a round trip the dashboard
 /// does not need.
@@ -978,6 +1094,7 @@ mod doctor_tests {
     /// doctor: a 404 is "not served", not "broken router".
     #[test]
     fn a_live_doctor_on_a_healthy_mock_has_no_core_failure() {
+        let _home = crate::test_env::isolate_data_home("doctor-core");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
         let mut cfg = Config::default();
         cfg.router.ip = mock.addr().to_string();
@@ -1001,6 +1118,7 @@ mod doctor_tests {
     /// server the firmware reports, in one row of the doctor table.
     #[test]
     fn doctor_text_names_the_privacy_line() {
+        let _home = crate::test_env::isolate_data_home("doctor-text");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
         let mut cfg = Config::default();
         cfg.router.ip = mock.addr().to_string();
@@ -1024,6 +1142,7 @@ mod doctor_tests {
     /// snapshot, because the panels and the confirm modal both read it from there.
     #[test]
     fn a_firmware_without_the_dns_row_reaches_the_snapshot() {
+        let _home = crate::test_env::isolate_data_home("collect-dns-off");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpNoDns);
         let mut c = HuaweiClient::new(mock.addr(), 2000);
         c.login("admin", "demo").expect("mock login");
@@ -1039,6 +1158,7 @@ mod doctor_tests {
     /// refusal that fires on every device would be the same bug facing the other way.
     #[test]
     fn a_firmware_with_the_dns_row_is_not_marked_uneditable() {
+        let _home = crate::test_env::isolate_data_home("collect-dns-on");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpWithDns);
         let mut c = HuaweiClient::new(mock.addr(), 2000);
         c.login("admin", "demo").expect("mock login");

@@ -2164,6 +2164,48 @@ pub fn clients_tab(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(t.dim),
         )));
     }
+    // The inspector is this pane, not a second read: the client tier carries
+    // these fields, and a per-client path does not exist on this firmware, so a
+    // panel that polled faster would only cost the router and buy nothing. It is
+    // drawn only when the pane has the rows to show all of it: a clipped pane
+    // would hide the "not reported" line, which is the reason it exists.
+    let mut inspector: Vec<Line> = Vec::new();
+    if let Some(c) = app.selected_client().and_then(|i| clients.get(i)) {
+        // Built in its own buffer so a short pane can drop it whole.
+        let lines = &mut inspector;
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "selected {} {}",
+                pad(c.name.as_deref().unwrap_or("(unnamed)"), 24),
+                pad(c.ip.as_deref().unwrap_or("-"), 15)
+            ),
+            Style::default().fg(t.dim),
+        )));
+        for (label, value) in crate::client_detail::rows(c) {
+            lines.push(Line::from(format!("  {} {}", pad(label, 10), value)));
+        }
+        let age = match app.age_for(crate::worker::Tier::Clients) {
+            Some(age) => format!("read {} ago", crate::client_detail::age_word(age)),
+            None => "not read yet".to_string(),
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  {} {}", pad("age", 10), age),
+            Style::default().fg(t.dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  not reported by this firmware: {}",
+                crate::client_detail::NOT_REPORTED.join(", ")
+            ),
+            Style::default().fg(t.warn),
+        )));
+    }
+    // The sort key is always visible; the inspector yields to it on a short pane.
+    let room = area.height.saturating_sub(2) as usize;
+    if lines.len() + inspector.len() + 2 <= room {
+        lines.extend(inspector);
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("sort {}", app.client_sort.name()),
@@ -3442,6 +3484,37 @@ mod tests {
         app.on_snapshot(snap, 432);
         app.tab = Tab::Network;
         app
+    }
+
+    // ---------------------------------------------------------------- clients
+
+    #[test]
+    fn the_clients_pane_shows_the_fields_it_has_and_names_the_ones_it_lacks() {
+        let mut app = fixture_app();
+        app.tab = Tab::Clients;
+        let screen = crate::ui::render_to_string(&app, 120, 40);
+        assert!(screen.contains("selected"), "the inspector pane is missing");
+        assert!(screen.contains("living-room-tv"));
+        assert!(screen.contains("02:00:00:00:00:01"));
+        assert!(screen.contains("not reported by this firmware"));
+        assert!(screen.contains("per-client traffic"));
+    }
+
+    #[test]
+    fn a_client_field_the_firmware_did_not_send_is_not_a_zero() {
+        let mut app = fixture_app();
+        app.tab = Tab::Clients;
+        if let Some(snap) = app.snap.as_mut() {
+            for c in &mut snap.clients {
+                c.mac = None;
+                c.ssid = None;
+            }
+        }
+        let screen = crate::ui::render_to_string(&app, 120, 40);
+        assert!(
+            screen.matches("not reported").count() >= 2,
+            "an absent mac or ssid must read as not reported"
+        );
     }
 
     fn app_with_history(n: usize) -> App {

@@ -14,6 +14,7 @@ use crate::router::HuaweiClient;
 use crate::write::{
     apply_bands_with, apply_dns, run_delete, run_mark_read, VerifyLimits, WriteIntent, WriteState,
 };
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::Arc;
@@ -70,6 +71,10 @@ pub enum Ev {
     Snapshot {
         snap: Box<Snapshot>,
         poll_ms: u128,
+        /// When each tier last answered. The stage a tier is in, not the age of
+        /// the frame: a clients tick that took 2.3 s must not make the signal
+        /// value look fresh.
+        stamps: TierStamp,
     },
     Session(SessionState),
     Error(String),
@@ -314,6 +319,98 @@ fn pausing(pause_until: Option<Instant>, now: Instant) -> bool {
     pause_until.is_some_and(|t| now < t)
 }
 
+/// The endpoint groups the loop schedules. One interval cannot serve a read that
+/// answers in 43 ms (`monitoring/traffic-statistics`) and one that answers in
+/// 1191 ms (`wlan/host-list`, p95 2297 ms, measured on the H122373 firmware
+/// 2026-11-19), so each group carries its own deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// `device/signal`, `monitoring/status`, `monitoring/traffic-statistics`:
+    /// what the panels behind the header repaint every second.
+    Radio,
+    /// `wlan/host-list`: the slowest read in the tree, and nothing else.
+    Clients,
+    /// The rest of the collection: identity, network mode, bands, DNS, SMS,
+    /// quota and temperature.
+    Static,
+}
+
+impl Tier {
+    pub const ALL: [Tier; 3] = [Tier::Radio, Tier::Clients, Tier::Static];
+
+    pub fn index(self) -> usize {
+        Tier::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+}
+
+/// The label the header prints next to a tier's age. `Static` reads as "device"
+/// because `device/information` is the field a reader watches there.
+pub fn tier_label(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Radio => "signal",
+        Tier::Clients => "clients",
+        Tier::Static => "device",
+    }
+}
+
+/// How often a tier is due. Only the radio tier follows the refresh knob: the
+/// slower tiers hold reads whose cost is the firmware's answer time, and polling
+/// them at the radio cadence is what made one cycle five seconds long.
+///
+/// The client list answers in p50 1191 ms and p95 2297 ms (measured 2026-11-19,
+/// WEBUI 11.0.2.21), so it is read half as often as the screen: the worst gap
+/// stays about 2860 ms and falls half as often, which is the honest trade a
+/// thirty second cadence buys.
+pub fn tier_cadence(tier: Tier, refresh_ms: u64) -> Duration {
+    match tier {
+        Tier::Radio => Duration::from_millis(refresh_ms.max(500)),
+        Tier::Clients => Duration::from_secs(30),
+        Tier::Static => Duration::from_secs(60),
+    }
+}
+
+/// The deadline after a read that started at `started`. It is counted from the
+/// start, so the read's own duration is not added to the cadence, which is the
+/// 3088 ms the measured cycle carried. A deadline already a full interval in the
+/// past is dropped instead of replayed: one run at the first opportunity, then a
+/// fresh deadline, so a slow answer cannot start a burst of reads.
+pub fn due_at(started: Instant, interval: Duration, now: Instant) -> Instant {
+    let next = started + interval;
+    if next <= now {
+        now + interval
+    } else {
+        next
+    }
+}
+
+/// The tier whose deadline has passed and is the earliest, or `None` when the
+/// loop may sleep.
+pub fn due_tier(due: &[Instant; 3], now: Instant) -> Option<Tier> {
+    Tier::ALL
+        .iter()
+        .copied()
+        .filter(|t| due[t.index()] <= now)
+        .min_by_key(|t| due[t.index()])
+}
+
+/// The moment each tier last answered, carried to the UI on the event and not on
+/// `Snapshot`: that struct is the `--json` contract, and a timestamp that only
+/// the TUI needs does not belong in it.
+#[derive(Clone, Debug, Default)]
+pub struct TierStamp {
+    pub observed_at: [Option<Instant>; Tier::ALL.len()],
+}
+
+impl TierStamp {
+    pub fn get(&self, tier: Tier) -> Option<Instant> {
+        self.observed_at[tier.index()]
+    }
+
+    pub fn set(&mut self, tier: Tier, at: Instant) {
+        self.observed_at[tier.index()] = Some(at);
+    }
+}
+
 /// Run the transfer off both the UI thread and the router thread: a test can
 /// last a minute and must not delay a poll or a redraw. `id` comes back on
 /// every event, so a late answer can be recognised and dropped.
@@ -345,20 +442,67 @@ fn spawn_speed(
     }
 }
 
+/// `tier_cadence` with the loop's live interval, which `SetInterval` moves away
+/// from the configured value.
+fn cadence(tier: Tier, interval: Duration) -> Duration {
+    tier_cadence(tier, interval.as_millis() as u64)
+}
+
+/// One failed read: reported, and a session-level failure hands the next tick
+/// back to the login ladder instead of retrying against a dead cookie.
+fn collect_failed(
+    e: ApiError,
+    authed: &mut bool,
+    attempt: &mut usize,
+    next_try: &mut Instant,
+    ev_tx: &Sender<Ev>,
+) {
+    let _ = ev_tx.send(Ev::Error(e.to_string()));
+    if matches!(
+        e,
+        ApiError::Invalid(_) | ApiError::Denied(_) | ApiError::Network(_) | ApiError::Http(_)
+    ) {
+        *authed = false;
+        let wait_s = BACKOFF[(*attempt).min(BACKOFF.len() - 1)];
+        *attempt = (*attempt + 1).min(BACKOFF.len());
+        let _ = ev_tx.send(Ev::Session(SessionState::Recovering {
+            attempt: *attempt as u8,
+            wait_s,
+        }));
+        *next_try = Instant::now() + Duration::from_secs(wait_s);
+    }
+}
+
 /// Backoff ladder for a lost session (plan §4.1): 2/5/10/20s inside a 60s window.
 const BACKOFF: [u64; 4] = [2, 5, 10, 20];
 
 pub fn spawn(cfg: Config, password: String) -> (Sender<Cmd>, Receiver<Ev>) {
+    spawn_at(cfg, password, crate::events::path())
+}
+
+/// The log path is a parameter so a test can pass `None`: a suite that writes the
+/// real user's event log is a suite that edits their machine.
+pub fn spawn_at(
+    cfg: Config,
+    password: String,
+    log: Option<PathBuf>,
+) -> (Sender<Cmd>, Receiver<Ev>) {
     let (cmd_tx, cmd_rx) = channel::<Cmd>();
     let (ev_tx, ev_rx) = channel::<Ev>();
     std::thread::Builder::new()
         .name("routwatch-router".into())
-        .spawn(move || run(cfg, password, cmd_rx, ev_tx))
+        .spawn(move || run(cfg, password, log, cmd_rx, ev_tx))
         .expect("spawn router thread");
     (cmd_tx, ev_rx)
 }
 
-fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) {
+fn run(
+    cfg: Config,
+    password: String,
+    log: Option<PathBuf>,
+    cmd_rx: Receiver<Cmd>,
+    ev_tx: Sender<Ev>,
+) {
     let mut interval = Duration::from_millis(cfg.app.refresh_ms.max(500));
     let mut client = HuaweiClient::new(&cfg.router.ip, cfg.app.timeout_ms);
     let mut authed = false;
@@ -368,16 +512,41 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
     let mut pause_until: Option<Instant> = None;
     let mut attempt: usize = 0;
     let mut next_try = Instant::now();
+    // The frame the loop mutates one group at a time. It is held rather than
+    // rebuilt so a tier that has not run yet cannot blank a panel it does not
+    // own; the first frame is still one full collect, so every field exists
+    // before any group is replaced.
+    let mut held: Option<Snapshot> = None;
+    let mut due = [Instant::now(); Tier::ALL.len()];
+    let mut stamps = TierStamp::default();
+    // Rows are earned by a change, so the watch carries the previous read. A
+    // failed event write is dropped: an observation log that can stop the poller
+    // is a liability, and the next transition is another row.
+    let mut watch = crate::events::Watch::default();
+    let note = |watch: &mut crate::events::Watch, snap: &Snapshot| {
+        if let Some(path) = log.as_deref() {
+            for e in watch.radio(snap, crate::record::now_unix()) {
+                let _ = crate::events::append(path, &e);
+            }
+        }
+    };
 
     let _ = ev_tx.send(Ev::Session(SessionState::Connecting));
 
     loop {
         // Wait for the tick, or handle a command immediately.
+        // The wait is the distance to the earliest deadline, not the interval:
+        // a 600 ms tier and a 60 s tier cannot share one sleep.
         let wait = if !authed {
             let now = Instant::now();
             next_try.saturating_duration_since(now).min(interval)
+        } else if held.is_none() {
+            Duration::ZERO
         } else {
-            interval
+            due.iter()
+                .min()
+                .expect("three deadlines")
+                .saturating_duration_since(Instant::now())
         };
         match cmd_rx.recv_timeout(wait) {
             Ok(Cmd::Stop(ack)) => {
@@ -393,6 +562,11 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             }
             Ok(Cmd::SetInterval(ms)) => {
                 interval = Duration::from_millis(ms.clamp(500, 10_000));
+                // The radio tier is the one the knob speaks to, and the change
+                // takes effect on this pass: a deadline already stored under the
+                // old interval would keep the old cadence for one round.
+                let radio = Tier::Radio.index();
+                due[radio] = due[radio].min(Instant::now());
                 continue;
             }
             Ok(Cmd::ApplyDns {
@@ -411,6 +585,11 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 };
                 let settled = apply_dns(&mut client, &p, &sec, intent, false, &mut progress);
                 let reset_ok = matches!(&settled, WriteState::Success { .. });
+                if let Some(path) = log.as_deref() {
+                    let e =
+                        crate::events::write_verdict(crate::record::now_unix(), &settled, "dns");
+                    let _ = crate::events::append(path, &e);
+                }
                 let _ = ev_tx.send(Ev::Write(settled));
                 if reset_ok {
                     // DNS does not restart the radio; just refresh on the next tick.
@@ -576,6 +755,11 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 let settled =
                     apply_bands_with(&mut client, &payload, intent, force, &mut progress, limits);
                 let link_dropped = matches!(&settled, WriteState::Success { note, .. } if !note.contains("nothing sent"));
+                if let Some(path) = log.as_deref() {
+                    let e =
+                        crate::events::write_verdict(crate::record::now_unix(), &settled, "bands");
+                    let _ = crate::events::append(path, &e);
+                }
                 let _ = ev_tx.send(Ev::Write(settled));
                 if link_dropped {
                     // Expected: the radio restarts. Do not call it an error.
@@ -586,7 +770,12 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
                 }
                 continue;
             }
-            Ok(Cmd::Refresh) => {}
+            Ok(Cmd::Refresh) => {
+                // A refresh is a request for every group now; the loop picks the
+                // earliest deadline each pass, so this spreads one read per tick
+                // instead of stacking three reads into one frame.
+                due = [Instant::now(); Tier::ALL.len()];
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -626,35 +815,66 @@ fn run(cfg: Config, password: String, cmd_rx: Receiver<Cmd>, ev_tx: Sender<Ev>) 
             }
         }
 
+        let tier = if held.is_none() {
+            None
+        } else {
+            due_tier(&due, Instant::now())
+        };
         let started = Instant::now();
         let mut trace = |phase, state| {
             let _ = ev_tx.send(Ev::Phase { phase, state });
         };
-        match headless::collect_traced(&mut client, &cfg.router.ip, &mut trace) {
-            Ok(snap) => {
-                let _ = ev_tx.send(Ev::Snapshot {
-                    snap: Box::new(snap),
-                    poll_ms: started.elapsed().as_millis(),
-                });
-            }
-            Err(e) => {
-                let _ = ev_tx.send(Ev::Error(e.to_string()));
-                // Session-level failures mean the next tick must log in again.
-                if matches!(
-                    e,
-                    ApiError::Invalid(_)
-                        | ApiError::Denied(_)
-                        | ApiError::Network(_)
-                        | ApiError::Http(_)
-                ) {
-                    authed = false;
-                    let wait_s = BACKOFF[attempt.min(BACKOFF.len() - 1)];
-                    attempt = (attempt + 1).min(BACKOFF.len());
-                    let _ = ev_tx.send(Ev::Session(SessionState::Recovering {
-                        attempt: attempt as u8,
-                        wait_s,
-                    }));
-                    next_try = Instant::now() + Duration::from_secs(wait_s);
+        match tier {
+            None => match headless::collect_traced(&mut client, &cfg.router.ip, &mut trace) {
+                Ok(snap) => {
+                    watch.prime(&snap);
+                    let at = Instant::now();
+                    stamps = TierStamp::default();
+                    for each in Tier::ALL {
+                        stamps.set(each, at);
+                        due[each.index()] = due_at(at, cadence(each, interval), at);
+                    }
+                    let _ = ev_tx.send(Ev::Snapshot {
+                        snap: Box::new(snap.clone()),
+                        poll_ms: started.elapsed().as_millis(),
+                        stamps: stamps.clone(),
+                    });
+                    held = Some(snap);
+                }
+                Err(e) => collect_failed(e, &mut authed, &mut attempt, &mut next_try, &ev_tx),
+            },
+            Some(tier) => {
+                let clock = crate::record::now_unix;
+                let Some(snap) = held.as_mut() else {
+                    continue;
+                };
+                let read = headless::collect_tier(&mut client, snap, tier, &clock, &mut trace);
+                // Moved on either way: a tier that failed must not be retried in
+                // the same breath, or a refusing endpoint becomes a hot loop.
+                due[tier.index()] = due_at(started, cadence(tier, interval), Instant::now());
+                let at_unix = clock();
+                match read {
+                    Ok(()) => {
+                        snap.generated_at = at_unix;
+                        stamps.set(tier, Instant::now());
+                        if tier == Tier::Radio {
+                            note(&mut watch, snap);
+                        }
+                        let _ = ev_tx.send(Ev::Snapshot {
+                            snap: Box::new(snap.clone()),
+                            poll_ms: started.elapsed().as_millis(),
+                            stamps: stamps.clone(),
+                        });
+                    }
+                    Err(e) => {
+                        if let Some(path) = log.as_deref() {
+                            let _ = crate::events::append(
+                                path,
+                                &crate::events::read_failed(tier, at_unix, &e),
+                            );
+                        }
+                        collect_failed(e, &mut authed, &mut attempt, &mut next_try, &ev_tx)
+                    }
                 }
             }
         }
@@ -674,8 +894,9 @@ mod tests {
 
     #[test]
     fn stopping_the_worker_logs_out_before_acknowledging() {
+        let _home = crate::test_env::isolate_data_home("worker-stop");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
-        let (tx, _rx) = spawn(cfg_for(&mock), "pw".into());
+        let (tx, _rx) = spawn_at(cfg_for(&mock), "pw".into(), None);
 
         // Give the worker its first login; it retries on its own schedule.
         let mut waited = 0u32;
@@ -699,8 +920,9 @@ mod tests {
 
     #[test]
     fn changing_the_interval_takes_effect_without_a_respawn() {
+        let _home = crate::test_env::isolate_data_home("worker-interval");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
-        let (tx, _rx) = spawn(cfg_for(&mock), "pw".into());
+        let (tx, _rx) = spawn_at(cfg_for(&mock), "pw".into(), None);
 
         let mut waited = 0u32;
         while mock.signals() == 0 && waited < 100 {

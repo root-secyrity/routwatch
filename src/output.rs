@@ -46,15 +46,20 @@ pub fn write_private(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<
 mod tests {
     use super::*;
 
+    /// One scratch directory per test, named after it, removed by the test that
+    /// created it: a run that leaves `routwatch-out-*` behind fills the scratch
+    /// tree with empty directories nobody owns.
     fn tmp(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("routwatch-out-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("routwatch-out-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        d.join(name)
+        d
     }
 
     #[test]
     fn new_files_are_0600_and_existing_ones_are_refused() {
-        let p = tmp("a.txt");
+        let d = tmp("private");
+        let p = d.join("a.txt");
         let _ = std::fs::remove_file(&p);
         write_private(&p, b"one", false).unwrap();
         assert_eq!(
@@ -67,12 +72,13 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), b"one");
         write_private(&p, b"two", true).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"two");
-        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn an_existing_0644_file_is_tightened_on_rewrite() {
-        let p = tmp("b.txt");
+        let d = tmp("tighten");
+        let p = d.join("b.txt");
         let _ = std::fs::remove_file(&p);
         std::fs::write(&p, b"old").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -81,7 +87,7 @@ mod tests {
             std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

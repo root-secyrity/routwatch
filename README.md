@@ -16,16 +16,16 @@ a headless mode for Waybar and scripts.
 
 ![routwatch dashboard](docs/screenshots/01-dashboard.png)
 
-Every screenshot here is rendered from `fixtures/sample-snapshot*.json` with
+Every screenshot is rendered from `fixtures/sample-snapshot*.json` with
 `routwatch preview --ansi`, so it is synthetic: device names, MACs, WAN address and
-identifiers are placeholders. The remaining seven sections are in
-[`docs/screenshots/more/`](docs/screenshots/more).
+identifiers are placeholders. The other eight sections are in
+[`docs/screenshots/`](docs/screenshots).
 
 ## Install
 
 | Route | Command |
 |---|---|
-| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.9.0/routwatch-0.9.0-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.9.0-1-x86_64.pkg.tar.zst` |
+| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.9.1/routwatch-0.9.1-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.9.1-1-x86_64.pkg.tar.zst` |
 | Static musl binary | [routwatch-x86_64-linux-musl](https://github.com/root-secyrity/routwatch/releases/latest/download/routwatch-x86_64-linux-musl) - links nothing, runs on Arch, Debian, Ubuntu, Fedora, Alpine, Raspberry Pi OS |
 | Any distro, from source | `git clone https://github.com/root-secyrity/routwatch.git && cd routwatch && sudo make install` |
 | Windows 10/11, via WSL2 | no separate build: install the static binary inside WSL ([details](docs/platforms.md#windows)) |
@@ -45,6 +45,16 @@ routwatch
 
 Then `?` for the keys and `,` for the settings overlay. Reads are free; writes
 need `a` then `y` (see [Safety](#safety)).
+
+It polls the router: this firmware has no push channel (seven stream candidates
+answer `100003`), so the screen can never be fresher than one read. Reads are
+grouped by how fast they answer - signal, status and traffic on the refresh
+period, the client list every 30 s, the ten static documents every 60 s - and the
+header shows an age for each group. What changes is written to an append-only log
+under `$XDG_DATA_HOME/routwatch/events.jsonl`: band and DNS writes, IP renewals,
+the WAN going down and coming back, a tier read that failed, and the signal
+crossing into poor. The measured tail behind those numbers is in
+[`docs/limits.md`](docs/limits.md).
 
 ## Does it work with my router?
 
@@ -93,6 +103,7 @@ question.
 | put it in Waybar, or script against `--json` | [`docs/headless.md`](docs/headless.md) |
 | change the colours | [`docs/themes.md`](docs/themes.md) |
 | know what does not work, and why | [`docs/limits.md`](docs/limits.md) |
+| audit what the router exposes, and catch a change | [`docs/privacy.md`](docs/privacy.md) |
 | know who wrote what | [`docs/credits.md`](docs/credits.md) · [`NOTICE`](NOTICE) |
 | contribute, or read the promises a change must keep | [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`docs/contracts.md`](docs/contracts.md) |
 
@@ -128,8 +139,58 @@ Delete and mark-read are the only SMS writes. Both need the same gate as band
 changes: `--allow-write` on the CLI, `--dry-run` (or no `--yes`) to see the payload,
 and `y` inside the TUI. Every delete is verified by re-reading the inbox and
 reported per index, and a firmware that refuses the path is reported as
-"unsupported (100003)", not as done. Neither path has been measured on the
-H122-373 (see [limits.md](docs/limits.md)); the simulator is where they are tested.
+"unsupported (100003)", not as done.
+
+## Privacy: watch a setting, not a guess
+
+`privacy` is a read-only audit of remote management, DNS, firewall and the admin
+surface. `--save` records the answers you accept (0600), `--diff` reads twice and
+reports only a value both reads agree on, and `--watch 60` keeps asking on one
+session. The four checks and the two rules behind a believable drift are in
+[`docs/privacy.md`](docs/privacy.md).
+
+## Incidents: what the logs support, and what they cannot
+
+`incidents` turns the observation log, the signal log and the speed history into
+windows of the same fault. It reads files only: no router, no clock, so the same
+logs always produce the same list.
+
+```sh
+routwatch incidents list              # id, window, rows, confidence, no cause
+routwatch incidents show wan-1795139583
+routwatch report --incident wan-1795139583 --redact   # a pasteable document
+```
+
+Two limits are printed rather than hidden. Confidence is the count of rows that
+agree (one row is low, two or three medium, four or more high), never a
+probability. And no incident names a cause: the radio tier is read on its own
+cadence, measured at p95 1748 ms and worst 2860 ms between samples on this
+firmware, so two events closer than that cannot be ordered from their stamps.
+When a pair falls inside that window the incident says so.
+
+The dashboard's EVENTS panel shows the newest incidents the same way: an id, a
+row count, a confidence, and `no cause`.
+
+## What the firmware answers, and what it does not
+
+`capabilities` records one state per endpoint: answered, refused with the firmware's
+code, not served, or never tested, keyed by the firmware version it was measured on. It
+is a record, never a permission: an untested endpoint does not hide a feature. `config`
+keeps field names and salted fingerprints, never a value, and calls a change only when
+two reads agree; there is no restore. `bands advise` ranks what the logs support, says
+what the evidence cannot, and changes nothing.
+
+```sh
+routwatch capabilities --json            # the matrix, as recorded
+routwatch capabilities --probe           # read it once, on one session
+routwatch config snapshot                # fingerprints, never values
+routwatch config diff                    # two reads, five change classes
+routwatch bands advise --window 86400    # served bands, and what is missing
+routwatch bands advise --scans scan.json # set advice, only from a measured scan
+```
+
+The four states, the two-read rule, the fingerprint, the smear and the four
+confidence levels are stated in [`docs/limits.md`](docs/limits.md).
 
 ## Limits, the short list
 
@@ -153,8 +214,7 @@ H122-373 (see [limits.md](docs/limits.md)); the simulator is where they are test
   prints the saved rows and `--no-save` keeps a run out of the file.
 - **SMS delete is verified, not assumed**: each index is posted on its own and the
   verdict comes from re-reading the inbox, so a refusal is listed with its code
-  and a half-finished bulk delete says which rows failed. Delete and mark-read
-  have not been measured on a real H122-373 yet; the inbox itself has.
+  and a half-finished bulk delete says which rows failed.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
   (`0600`, last 1440 rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`

@@ -14,7 +14,27 @@ config.toml
 
 # internal, not published
 /DOCK/
-/tests/
+# The live test files and the CLI tests are the exception, and they are
+# published: a guard that lives on one machine guards nothing. This firmware has
+# no push channel and no second session to measure against, so a reader without
+# the device can still compile and run them. The CLI fixture is synthetic for the
+# same reason: it stays and the device capture does not.
+/tests/*
+!/tests/cli.rs
+!/tests/common/
+!/tests/common/mod.rs
+!/tests/fixtures/
+/tests/fixtures/*
+!/tests/fixtures/snapshot_fixed.json
+!/tests/capabilities.rs
+!/tests/config_snapshot.rs
+!/tests/live_guards.rs
+!/tests/obs_log.rs
+!/tests/incidents.rs
+!/tests/privacy_drift.rs
+!/tests/live_probe.rs
+!/tests/tier_*.rs
+!/tests/advisor.rs
 
 # static binaries from packaging/musl-build.sh
 /dist/
