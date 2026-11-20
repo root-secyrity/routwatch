@@ -486,7 +486,7 @@ fn the_observed_cadence_is_measured_end_to_end() {
 ///
 /// Budget, declared before the first request: reads are counted by the worker,
 /// not decided here; at 600 ms the radio tier issues 3 reads per period, the
-/// client tier 1 read per 15 s and the static tier 10 reads per 60 s, about 3000
+/// client tier 1 read per 30 s and the static tier 10 reads per 60 s, about 3100
 /// reads in ten minutes on one session. Read only: the worker posts nothing but
 /// its login and its logout. Phase events and errors are counted, never guessed.
 #[test]

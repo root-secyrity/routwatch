@@ -50,7 +50,7 @@ fn a_tier_is_not_read_before_its_due() {
     let t0 = Instant::now();
     let due = [
         t0 + Duration::from_millis(600),
-        t0 + Duration::from_secs(15),
+        t0 + Duration::from_secs(30),
         t0 + Duration::from_secs(60),
     ];
 
@@ -71,7 +71,7 @@ fn the_radio_tier_cadence_is_independent_of_the_clients_tier() {
 
     assert_eq!(fast, Duration::from_millis(600));
     assert_eq!(slow, Duration::from_millis(2_000));
-    assert_eq!(tier_cadence(Tier::Clients, 600), Duration::from_secs(15));
-    assert_eq!(tier_cadence(Tier::Clients, 2_000), Duration::from_secs(15));
+    assert_eq!(tier_cadence(Tier::Clients, 600), Duration::from_secs(30));
+    assert_eq!(tier_cadence(Tier::Clients, 2_000), Duration::from_secs(30));
     assert_eq!(tier_cadence(Tier::Static, 600), Duration::from_secs(60));
 }

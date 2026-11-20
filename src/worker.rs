@@ -355,10 +355,15 @@ pub fn tier_label(tier: Tier) -> &'static str {
 /// How often a tier is due. Only the radio tier follows the refresh knob: the
 /// slower tiers hold reads whose cost is the firmware's answer time, and polling
 /// them at the radio cadence is what made one cycle five seconds long.
+///
+/// The client list answers in p50 1191 ms and p95 2297 ms (measured 2026-11-19,
+/// WEBUI 11.0.2.21), so it is read half as often as the screen: the worst gap
+/// stays about 2860 ms and falls half as often, which is the honest trade a
+/// thirty second cadence buys.
 pub fn tier_cadence(tier: Tier, refresh_ms: u64) -> Duration {
     match tier {
         Tier::Radio => Duration::from_millis(refresh_ms.max(500)),
-        Tier::Clients => Duration::from_secs(15),
+        Tier::Clients => Duration::from_secs(30),
         Tier::Static => Duration::from_secs(60),
     }
 }

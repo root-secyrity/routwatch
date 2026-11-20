@@ -213,10 +213,12 @@ why each one is stated instead of hidden.
   `100003 ERROR_NO_RIGHT`, and `user/state-login` serves a document, not a
   stream. Polling is the ceiling: no screen can be fresher than one read.
 - **Reads are grouped by how fast this firmware answers them**: signal, status
-  and traffic on the refresh period, `wlan/host-list` every 15 s, and the ten
+  and traffic on the refresh period, `wlan/host-list` every 30 s, and the ten
   static documents (device, net-mode, DHCP, SMS count, month counters) every
-  60 s. Measured 2026-11-19: `wlan/host-list` p95 2297 ms against signal p95
-  1575 ms, so reading the client list at the screen's cadence would starve it.
+  60 s. Measured 2026-11-19: `wlan/host-list` p50 1191 ms, p95 2297 ms, the
+  worst observed gap 2860 ms - a slower cadence does not shorten that gap, it
+  makes it fall half as often, so the client panel can be up to about three
+  seconds behind and often is.
 - **The signal read is bimodal on this firmware**: 60 reads measured p50 457 ms
   and p95 1575 ms, with nine over 800 ms, clustered near 450 ms or near
   1500 ms. A single screen cannot promise better than that tail, whatever the
