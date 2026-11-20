@@ -4,22 +4,19 @@
 //! is derived, never recorded: nothing here writes a file, reads a clock or
 //! contacts the router, so the same logs always produce the same list.
 //!
-//! The one rule that shapes the whole module: this tool refuses causality. The
-//! radio tier is read on its own cadence and its gap was measured at p95 1748 ms
-//! and worst 2860 ms (H122-373, WEBUI 11.0.2.21, 2026-11-20), so two events
-//! closer together than that cannot be ordered from the timestamps. When a pair
-//! falls inside the smear the incident says so, and no incident ever names a
-//! cause. Confidence is the count of rows that agree, not a probability.
+//! The one rule that shapes the whole module: this tool refuses causality. Two
+//! events can only be ordered if the signal samples bracket both of them, and
+//! only if the gap between those samples is narrower than the distance between
+//! the events. The smear is therefore read off the log around the pair, never
+//! taken from a constant: a cadence change moves it. When the samples do not
+//! bracket the pair, or the gap is wider than the distance, the incident says so
+//! and no incident ever names a cause. Confidence is the count of rows that
+//! agree, not a probability.
 
 use std::path::Path;
 
 use crate::history;
 use crate::signal_history::{self, Row};
-
-/// The measured worst gap between two radio samples, in milliseconds. Two events
-/// closer than this cannot be ordered: the stamp of a row is the moment its read
-/// came back, and the reads themselves are that far apart.
-pub const SMEAR_MS: u64 = 2_860;
 
 /// Rows of the same fault further apart than this are two incidents, not one.
 pub const WINDOW_SECS: u64 = 300;
@@ -175,36 +172,68 @@ impl Source {
     }
 }
 
-/// The smear actually in force: the measured floor, or a wider gap the signal
-/// log itself shows. A wider observed gap only ever widens the refusal.
+/// The widest gap the signal log itself shows, in milliseconds. Zero means the
+/// log holds fewer than two samples, so it brackets nothing on its own.
 pub fn smear_ms(src: &Source) -> u64 {
     let mut worst = 0;
     let mut prev: Option<u64> = None;
     for row in &src.signal {
         if let Some(p) = prev {
-            worst = worst.max(row.at_unix.saturating_sub(p).saturating_mul(1000));
+            worst = worst.max(row.at_unix.saturating_sub(p) * 1000);
         }
         prev = Some(row.at_unix);
     }
-    SMEAR_MS.max(worst)
+    worst
 }
 
-fn caveat_for(kind: Kind, at_unix: u64, others: &[(Kind, u64)], smear: u64) -> Option<String> {
-    let near = others
-        .iter()
-        .filter(|(k, t)| *k != kind && t.abs_diff(at_unix).saturating_mul(1000) <= smear)
-        .map(|(k, _)| k.title())
-        .next()?;
-    Some(format!(
-        "a {near} happened within {smear} ms of this window; edits and reads share the \
-         radio tier's measured gap (p95 1748 ms, worst 2860 ms), so their order is not \
-         resolvable and this incident names no cause"
-    ))
+/// The smear that covers two moments: the widest gap between the signal samples
+/// that bracket them. `None` means the samples do not reach both moments, so
+/// their order is unknown. Every argument is milliseconds, and `samples` must be
+/// sorted oldest first.
+pub fn smear_between(samples: &[u64], a: u64, b: u64) -> Option<u64> {
+    let lo = a.min(b);
+    let hi = a.max(b);
+    let last_before = samples.iter().rposition(|s| *s <= lo)?;
+    let first_after = samples.iter().position(|s| *s >= hi)?;
+    if first_after < last_before {
+        return None;
+    }
+    let mut worst = 0;
+    for pair in samples[last_before..=first_after].windows(2) {
+        worst = worst.max(pair[1] - pair[0]);
+    }
+    Some(worst)
+}
+
+/// The sentence an incident carries when a second kind sits inside the smear of
+/// the pair. It always names the samples it was read from.
+fn caveat_for(kind: Kind, at_ms: u64, others: &[(Kind, u64)], samples: &[u64]) -> Option<String> {
+    for (other, at) in others.iter().filter(|(k, _)| *k != kind) {
+        let title = other.title();
+        match smear_between(samples, at_ms, *at) {
+            Some(smear) if at.abs_diff(at_ms) <= smear => {
+                return Some(format!(
+                    "a {title} happened within {smear} ms of this window; that is the widest \
+                     gap between the signal samples around both moments, so their order is not \
+                     resolvable and this incident names no cause"
+                ));
+            }
+            Some(_) => continue,
+            None => {
+                return Some(format!(
+                    "a {title} happened near this window and the signal log does not bracket \
+                     both moments, so their order is unknown and this incident names no cause"
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// Group the logs into incidents. Pure: same input, same output.
 pub fn detect(src: &Source) -> Vec<Incident> {
-    let smear = smear_ms(src);
+    let mut samples: Vec<u64> = src.signal.iter().map(|r| r.at_unix * 1000).collect();
+    samples.sort_unstable();
     let mut rows: Vec<(Kind, u64, String)> = Vec::new();
     for e in &src.events {
         let Some(kind) = Kind::parse(&e.kind) else {
@@ -260,11 +289,15 @@ pub fn detect(src: &Source) -> Vec<Incident> {
 
     let others: Vec<(Kind, u64)> = out
         .iter()
-        .map(|i| (i.kind, i.start_unix))
-        .chain(src.speed.iter().map(|e| (Kind::Speed, e.started_unix)))
+        .map(|i| (i.kind, i.start_unix * 1000))
+        .chain(
+            src.speed
+                .iter()
+                .map(|e| (Kind::Speed, e.started_unix * 1000)),
+        )
         .collect();
     for inc in out.iter_mut() {
-        inc.caveat = caveat_for(inc.kind, inc.start_unix, &others, smear);
+        inc.caveat = caveat_for(inc.kind, inc.start_unix * 1000, &others, &samples);
     }
     out
 }
@@ -373,12 +406,62 @@ mod tests {
     }
 
     #[test]
-    fn a_pair_past_the_smear_carries_no_caveat() {
-        let out = detect(&src(vec![
-            ev(EventKind::ReadFail, "failed", 1000),
-            ev(EventKind::Wan, "down", 1000 + SMEAR_MS / 1000 + 1),
-        ]));
-        assert!(out.iter().all(|i| i.caveat.is_none()));
+    fn the_same_gap_with_500ms_samples_is_ordered() {
+        let smear = smear_between(&[100_000, 100_500, 101_000], 100_000, 101_000);
+        assert_eq!(smear, Some(500), "the widest bracketing gap, in ms");
+        let caveat = caveat_for(
+            Kind::Read,
+            100_000,
+            &[(Kind::Wan, 101_000)],
+            &[100_000, 100_500, 101_000],
+        );
+        assert!(
+            caveat.is_none(),
+            "a thousand ms apart is wider than a 500 ms gap, so the order holds"
+        );
+    }
+
+    #[test]
+    fn the_same_gap_with_3000ms_samples_is_unknown() {
+        let caveat = caveat_for(
+            Kind::Read,
+            100_000,
+            &[(Kind::Wan, 101_000)],
+            &[100_000, 103_000],
+        )
+        .expect("a 1000 ms pair inside a 3000 ms gap cannot be ordered");
+        assert!(caveat.contains("within 3000 ms"), "{caveat}");
+        assert!(caveat.contains("no cause"), "{caveat}");
+    }
+
+    #[test]
+    fn missing_samples_mean_no_cause() {
+        let caveat = caveat_for(Kind::Read, 100_000, &[(Kind::Wan, 101_000)], &[])
+            .expect("an unbracketed pair still states the limit");
+        assert!(caveat.contains("does not bracket"), "{caveat}");
+        assert!(caveat.contains("no cause"), "{caveat}");
+        assert_eq!(smear_between(&[], 1, 2), None, "no sample reaches the pair");
+        assert_eq!(
+            smear_between(&[100_000], 100_000, 101_000),
+            None,
+            "one sample brackets one moment only"
+        );
+    }
+
+    #[test]
+    fn the_printed_smear_is_the_measured_one() {
+        let caveat = caveat_for(
+            Kind::Read,
+            100_000,
+            &[(Kind::Wan, 101_000)],
+            &[100_000, 102_740],
+        )
+        .expect("the pair is inside the gap");
+        assert!(caveat.contains("within 2740 ms"), "{caveat}");
+        assert!(
+            !caveat.contains("2860"),
+            "no constant may stand in for the samples: {caveat}"
+        );
     }
 
     #[test]

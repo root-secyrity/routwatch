@@ -3375,7 +3375,7 @@ mod tests {
             evidence: 3,
             confidence: crate::incidents::Confidence::Medium,
             lines: vec!["signal wan: down".to_string()],
-            caveat: Some("a read failed within 2860 ms of this window".to_string()),
+            caveat: Some("a read failed within 601 ms of this window".to_string()),
         }];
         let text = render_to_string(&app, 120, 40);
         assert!(text.contains(" INC "), "{text}");
