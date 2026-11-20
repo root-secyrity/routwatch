@@ -159,6 +159,21 @@ why each one is stated instead of hidden.
   password over WLAN is not a field this firmware exposes: the check prints
   `unknown` rather than a pass.
 
+- **A privacy drift needs two reads, and a baseline you saved**: `privacy --diff`
+  compares the live audit with `$XDG_DATA_HOME/routwatch/privacy-baseline.json`
+  (0600, written by `privacy --save`). A check counts as drifted only when two
+  reads agree on the new value: one read of a document this firmware answers from
+  a flaky tail is a rumour, not evidence. A refusal is never a change, and
+  `unknown` is never folded into `off`; a check that is missing from a read says
+  nothing. `--diff` exits 1 when it reports a drift, so a script can act on it.
+
+- **`privacy --watch` holds one session and does not re-login**: it reads the same
+  audit every N seconds (10 at the smallest) and prints a line when a drift
+  settles. A router reboot or an expired session shows up as `unknown` rows, which
+  are not drift, so a watch left running reports nothing rather than inventing a
+  change. Restart it after a reboot. It reads only; no privacy setting is written
+  by any of these flags.
+
 - **The watch is a read, and the revert is a question**: `--watch` holds the
   session open for the requested seconds and reads `monitoring/status` every five
   seconds; it writes nothing on its own, and the window ending leaves the mask as

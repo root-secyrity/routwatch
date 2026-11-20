@@ -141,6 +141,24 @@ reported per index, and a firmware that refuses the path is reported as
 "unsupported (100003)", not as done. Neither path has been measured on the
 H122-373 (see [limits.md](docs/limits.md)); the simulator is where they are tested.
 
+## Privacy: watch a setting, not a guess
+
+`privacy` is a read-only audit: remote management, DNS, firewall, whether the
+admin page is reachable. `--save` records what it answered as the baseline you
+accept, `--diff` reads twice and reports only the answers that moved away from
+that baseline, and `--watch` keeps asking on one session.
+
+```sh
+routwatch privacy                 # the audit, as a table
+routwatch privacy --save          # record the answers you accept (0600 file)
+routwatch privacy --diff          # exits 1 and names each settled drift
+routwatch privacy --watch 60      # a line whenever a drift settles
+```
+
+Two rules make a reported drift trustworthy: a refusal (`unknown`, `not exposed`)
+is never counted as a change, and a value needs two reads to agree before it is
+reported, because this firmware serves some documents in a flaky tail.
+
 ## Limits, the short list
 
 - **5G per-field metrics can be empty** on some firmware: the signal panel shows

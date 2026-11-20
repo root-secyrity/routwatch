@@ -20,6 +20,7 @@ pub mod model;
 pub mod output;
 pub mod preflight;
 pub mod privacy;
+pub mod privacy_drift;
 pub mod record;
 pub mod report;
 pub mod router;

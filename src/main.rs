@@ -117,6 +117,15 @@ enum Cmd {
         /// Print the raw XML of every probed endpoint (contains device data)
         #[arg(long)]
         raw: bool,
+        /// Record these answers as the baseline a later --diff compares against
+        #[arg(long)]
+        save: bool,
+        /// Read twice and report the answers that moved away from the baseline
+        #[arg(long, conflicts_with = "save")]
+        diff: bool,
+        /// Keep reading every SECS and print a line when a drift settles
+        #[arg(long, value_name = "SECS", conflicts_with_all = ["save", "diff"])]
+        watch: Option<u64>,
     },
     /// Health check in netwatch's doctor --json shape
     Doctor {
@@ -540,7 +549,19 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let password = read_password(&cfg, stdin_password.as_deref())?;
             run_tui(app, cfg, password)
         }
-        Some(Cmd::Privacy { json, raw }) => {
+        Some(Cmd::Privacy {
+            json,
+            raw,
+            save,
+            diff,
+            watch,
+        }) => {
+            if let Some(secs) = watch {
+                return privacy_watch(&cfg, cli.password_stdin, secs);
+            }
+            if save || diff {
+                return privacy_baseline(&cfg, cli.password_stdin, json, save);
+            }
             let mut client = connect(&cfg, cli.password_stdin)?;
             let audit = routwatch::privacy::Audit::collect(&mut client);
             let bodies: Vec<(&'static str, String)> = if raw {
@@ -2256,6 +2277,134 @@ fn sms_delete_cmd(
 
 fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, ApiError> {
     Ok(connect_with(cfg, password_stdin)?.0)
+}
+
+/// How long `privacy --diff` waits between its two reads. The firmware answers
+/// some documents in about 45 ms and others in about 1500 ms depending on which
+/// tail it is in, so a second read with no pause could be the same fluke as the
+/// first. Two seconds is cheap next to a false alarm about a security setting.
+const SETTLE_SECS: u64 = 2;
+
+/// The shortest interval `privacy --watch` accepts. A privacy answer is not a
+/// signal metric: reading it more often costs the router and buys nothing.
+const MIN_WATCH_SECS: u64 = 10;
+
+fn privacy_baseline_path() -> Result<std::path::PathBuf, ApiError> {
+    routwatch::privacy_drift::path()
+        .ok_or_else(|| ApiError::Config("no data directory for the privacy baseline".to_string()))
+}
+
+/// `privacy --save` records the baseline; `privacy --diff` reads twice and
+/// reports what moved. Both exit non-zero on a failure the caller can act on:
+/// a saved baseline cannot be written, a baseline is missing, or a drift settled.
+fn privacy_baseline(
+    cfg: &config::Config,
+    stdin_password: bool,
+    json: bool,
+    save: bool,
+) -> Result<(), ApiError> {
+    let path = privacy_baseline_path()?;
+    let mut client = connect(cfg, stdin_password)?;
+    let first = routwatch::privacy::Audit::collect(&mut client);
+    if save {
+        let base = routwatch::privacy_drift::Baseline::from_audit(&first, record::now_unix());
+        routwatch::privacy_drift::save(&path, &base)
+            .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
+        client.logout();
+        if json {
+            println!("{}", serde_json::to_string_pretty(&base).unwrap());
+        } else {
+            println!(
+                "baseline saved: {} ({} checks, mode 0600)",
+                path.display(),
+                base.checks.len()
+            );
+        }
+        return Ok(());
+    }
+    let base = match routwatch::privacy_drift::load(&path).map_err(ApiError::Config)? {
+        Some(b) => b,
+        None => {
+            client.logout();
+            return Err(ApiError::Usage(format!(
+                "no baseline at {}: run `routwatch privacy --save` first",
+                path.display()
+            )));
+        }
+    };
+    std::thread::sleep(Duration::from_secs(SETTLE_SECS));
+    let second = routwatch::privacy::Audit::collect(&mut client);
+    client.logout();
+    // One filter for both reads: the first arms a candidate, the second settles
+    // it. Neither read alone can report anything.
+    let mut agree = routwatch::privacy_drift::Agree::default();
+    let _ = agree.observe(&base, &first);
+    let drifts = agree.observe(&base, &second);
+    if json {
+        let rows: Vec<_> = drifts
+            .iter()
+            .map(|d| serde_json::json!({"name": d.name, "from": d.from, "to": d.to}))
+            .collect();
+        let out = serde_json::json!({
+            "baseline": path.display().to_string(),
+            "saved_at": base.saved_at,
+            "checks": base.checks.len(),
+            "drift": rows,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else if drifts.is_empty() {
+        println!(
+            "no drift: {} checks still answer what the baseline recorded",
+            base.checks.len()
+        );
+    } else {
+        for d in &drifts {
+            println!("{}", d.line());
+        }
+        println!(
+            "{} drift(s) against the baseline saved at {} (unix)",
+            drifts.len(),
+            base.saved_at
+        );
+    }
+    if drifts.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::Quiet(1))
+    }
+}
+
+/// Watch the same checks on one session. The connection is not re-established
+/// here: a lost session shows up as `unknown` rows, which are not drift, so a
+/// watch left alone cannot invent a change. Restart it after a router reboot.
+fn privacy_watch(cfg: &config::Config, stdin_password: bool, secs: u64) -> Result<(), ApiError> {
+    let path = privacy_baseline_path()?;
+    let base = match routwatch::privacy_drift::load(&path).map_err(ApiError::Config)? {
+        Some(b) => b,
+        None => {
+            return Err(ApiError::Usage(format!(
+                "no baseline at {}: run `routwatch privacy --save` first",
+                path.display()
+            )))
+        }
+    };
+    let every = Duration::from_secs(secs.max(MIN_WATCH_SECS));
+    let mut client = connect(cfg, stdin_password)?;
+    let mut agree = routwatch::privacy_drift::Agree::default();
+    let started = Instant::now();
+    println!(
+        "watching {} checks every {}s against {} (Ctrl-C to stop)",
+        base.checks.len(),
+        every.as_secs(),
+        path.display()
+    );
+    loop {
+        let audit = routwatch::privacy::Audit::collect(&mut client);
+        for d in agree.observe(&base, &audit) {
+            println!("[+{}s] {}", started.elapsed().as_secs(), d.line());
+        }
+        std::thread::sleep(every);
+    }
 }
 
 /// The same login, keeping the credentials: a command that holds the session

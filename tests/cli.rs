@@ -1,7 +1,7 @@
 //! CLI-level regression tests.
 //!
 //! These exercise the real binary: exit codes, JSON shapes and the render path
-//! that packaging depends on. Nothing here talks to the router — every test is
+//! that packaging depends on. Nothing here talks to the router: every test is
 //! either a fixture render or a deliberate offline failure.
 
 use std::os::unix::fs::PermissionsExt;
