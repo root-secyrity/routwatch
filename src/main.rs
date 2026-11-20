@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use routwatch::app::{App, InputKind, PresetSaved, Tab, View};
+use routwatch::capabilities;
 use routwatch::config;
+use routwatch::config_snapshot;
 use routwatch::error::ApiError;
 use routwatch::headless;
 use routwatch::model::{DnsInfo, Snapshot};
@@ -127,6 +129,20 @@ enum Cmd {
         #[arg(long, value_name = "SECS", conflicts_with_all = ["save", "diff"])]
         watch: Option<u64>,
     },
+    /// Record what this firmware answers per endpoint, and read it back
+    Capabilities {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Read every probe endpoint now and update the matrix (read-only)
+        #[arg(long)]
+        probe: bool,
+    },
+    /// Fingerprint the settings, and diff them without storing a value
+    Config {
+        #[command(subcommand)]
+        op: ConfigCmd,
+    },
     /// Incidents derived from the logs: evidence, never a cause
     Incidents {
         #[command(subcommand)]
@@ -151,6 +167,9 @@ enum Cmd {
     },
     /// Bands: read them, or apply a selection
     Bands {
+        /// A subcommand: `advise` reads the logs and changes nothing
+        #[command(subcommand)]
+        op: Option<BandsCmd>,
         #[arg(long)]
         list: bool,
         #[arg(long)]
@@ -432,6 +451,46 @@ enum SmsCmd {
 }
 
 #[derive(Subcommand)]
+enum BandsCmd {
+    /// Advice from the logs: what the evidence supports, and what it cannot
+    Advise {
+        #[arg(long)]
+        json: bool,
+        /// Window into the signal log, in seconds
+        #[arg(long, value_name = "SECS")]
+        window: Option<u64>,
+        /// Rows in the window needed before any advice is offered
+        #[arg(long, value_name = "N")]
+        min_rows: Option<usize>,
+        /// A file holding `scan --json` output: the only source of set advice
+        #[arg(long, value_name = "FILE")]
+        scans: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Read the settings now and store fingerprints of them
+    Snapshot {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read twice, then report the settings that moved since a snapshot
+    Diff {
+        /// A snapshot path, or `latest` for the newest one on disk
+        #[arg(long, value_name = "FILE", default_value = "latest")]
+        against: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Every snapshot on disk, oldest first
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum IncidentsCmd {
     /// Every incident the logs support, newest last
     List {
@@ -623,6 +682,210 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 }
             }
             Ok(())
+        }
+        Some(Cmd::Capabilities { json, probe }) => {
+            let path = capabilities::capabilities_path()
+                .ok_or_else(|| ApiError::Config("no data directory: set XDG_DATA_HOME".into()))?;
+            let store = if probe {
+                let mut client = connect(&cfg, cli.password_stdin)?;
+                // The key is the firmware build, so an answer from another build
+                // is never read as a fact about this one.
+                let firmware = parse::parse_device(&client.get("device/information")?)
+                    .software
+                    .unwrap_or_else(|| "unknown".into());
+                let results = routwatch::router::endpoints::probe_all(&mut client);
+                client.logout();
+                let store = capabilities::CapabilityStore::from_probe(
+                    &firmware,
+                    record::now_unix(),
+                    &results,
+                );
+                capabilities::save(&path, &store)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
+                store
+            } else {
+                match capabilities::load(&path).map_err(ApiError::Config)? {
+                    Some(store) => store,
+                    None => {
+                        if json {
+                            println!("{{\"measured\": false}}");
+                        } else {
+                            println!(
+                                "no matrix yet: run `routwatch capabilities --probe` to read one"
+                            );
+                        }
+                        return Ok(());
+                    }
+                }
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&store).unwrap());
+            } else {
+                for (path, entry) in &store.entries {
+                    let mark = match (entry.code, entry.status) {
+                        (Some(code), _) => format!("code {code}"),
+                        (_, Some(status)) => format!("http {status}"),
+                        _ => String::new(),
+                    };
+                    println!("{:<36} {:<11} {}", path, entry.state.as_str(), mark);
+                }
+                let [answered, refused, not_served, untested] = store.counts();
+                println!(
+                    "\n{answered} answered, {refused} refused, {not_served} not served, {untested} untested"
+                );
+                println!(
+                    "firmware {}, measured at {} (unix)",
+                    store.firmware, store.measured_at
+                );
+            }
+            Ok(())
+        }
+        Some(Cmd::Config { op }) => {
+            let dir = config_snapshot::dir().ok_or_else(|| {
+                ApiError::Config("no data directory: set XDG_DATA_HOME".to_string())
+            })?;
+            match op {
+                ConfigCmd::Snapshot { json } => {
+                    let mut client = connect(&cfg, cli.password_stdin)?;
+                    let snap = config_snapshot::collect(&mut client, record::now_unix())?;
+                    client.logout();
+                    let before =
+                        config_snapshot::latest(&dir).and_then(|p| config_snapshot::load(&p).ok());
+                    let path = config_snapshot::save(&dir, &snap)
+                        .map_err(|e| ApiError::Config(format!("{}: {e}", dir.display())))?;
+                    if let Some(before) = before {
+                        log_config_change(&before, &snap);
+                    }
+                    if json {
+                        let out = serde_json::json!({
+                            "path": path.display().to_string(),
+                            "at_unix": snap.at_unix,
+                            "firmware": snap.firmware,
+                            "fields": snap.fields.len(),
+                            "presence_only": snap.secrets.len(),
+                            "refused": snap.refused.keys().cloned().collect::<Vec<_>>(),
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    } else {
+                        println!(
+                            "snapshot saved: {} ({} fields, {} presence-only, {} refused) firmware {}",
+                            path.display(),
+                            snap.fields.len(),
+                            snap.secrets.len(),
+                            snap.refused.len(),
+                            snap.firmware
+                        );
+                    }
+                    Ok(())
+                }
+                ConfigCmd::Diff { against, json } => {
+                    let base_path = if against == "latest" {
+                        config_snapshot::latest(&dir)
+                    } else {
+                        Some(PathBuf::from(&against))
+                    }
+                    .ok_or_else(|| {
+                        ApiError::Usage(format!(
+                            "no snapshot in {}: run `routwatch config snapshot` first",
+                            dir.display()
+                        ))
+                    })?;
+                    let before = config_snapshot::load(&base_path)
+                        .map_err(|e| ApiError::Config(format!("{}: {e}", base_path.display())))?;
+                    let mut client = connect(&cfg, cli.password_stdin)?;
+                    let first = config_snapshot::collect(&mut client, record::now_unix())?;
+                    std::thread::sleep(Duration::from_secs(SETTLE_SECS));
+                    let second = config_snapshot::collect(&mut client, record::now_unix())?;
+                    client.logout();
+                    let (settled, unsettled) = config_snapshot::settle(&first, &second);
+                    let mut report = config_snapshot::diff_skipping(&before, &settled, &unsettled);
+                    report.unsettled = unsettled.len();
+                    if json {
+                        let rows: Vec<_> = report
+                            .rows
+                            .iter()
+                            .map(|r| serde_json::json!({"class": r.class.as_str(), "field": r.key}))
+                            .collect();
+                        let out = serde_json::json!({
+                            "baseline": base_path.display().to_string(),
+                            "baseline_at_unix": before.at_unix,
+                            "firmware_before": before.firmware,
+                            "firmware_now": settled.firmware,
+                            "firmware_changed": report.firmware_changed,
+                            "unsettled": report.unsettled,
+                            "drift": rows,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    } else if report.firmware_changed {
+                        println!(
+                            "firmware changed since the baseline ({} -> {}): field changes are not compared across builds",
+                            before.firmware, settled.firmware
+                        );
+                    } else if report.rows.is_empty() {
+                        println!(
+                            "no drift: {} fields still read as the snapshot taken at {} (unix) recorded{}",
+                            settled.fields.len(),
+                            before.at_unix,
+                            if report.unsettled > 0 {
+                                format!("; {} unsettled readings left out", report.unsettled)
+                            } else {
+                                String::new()
+                            }
+                        );
+                    } else {
+                        for row in &report.rows {
+                            println!("{:<19} {}", row.class.as_str(), row.key);
+                        }
+                        println!(
+                            "{} change(s) against the snapshot taken at {} (unix)",
+                            report.rows.len(),
+                            before.at_unix
+                        );
+                    }
+                    if report.drifted() {
+                        Err(ApiError::Quiet(1))
+                    } else {
+                        Ok(())
+                    }
+                }
+                ConfigCmd::List { json } => {
+                    let paths = config_snapshot::list(&dir);
+                    if json {
+                        let rows: Vec<_> = paths
+                            .iter()
+                            .filter_map(|p| config_snapshot::load(p).ok())
+                            .map(|s| {
+                                serde_json::json!({
+                                    "at_unix": s.at_unix,
+                                    "firmware": s.firmware,
+                                    "fields": s.fields.len(),
+                                    "presence_only": s.secrets.len(),
+                                    "refused": s.refused.len(),
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+                    } else if paths.is_empty() {
+                        println!(
+                            "no snapshots in {}: run `routwatch config snapshot`",
+                            dir.display()
+                        );
+                    } else {
+                        for path in paths {
+                            match config_snapshot::load(&path) {
+                                Ok(s) => println!(
+                                    "{:<12} firmware {:<16} {} fields",
+                                    s.at_unix,
+                                    s.firmware,
+                                    s.fields.len()
+                                ),
+                                Err(e) => println!("{} unreadable: {e}", path.display()),
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+            }
         }
         Some(Cmd::Incidents { op }) => {
             let list = incidents_now();
@@ -863,6 +1126,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             Ok(())
         }
         Some(Cmd::Bands {
+            op,
             list,
             json,
             set,
@@ -873,6 +1137,15 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             force,
             watch,
         }) => {
+            if let Some(BandsCmd::Advise {
+                json,
+                window,
+                min_rows,
+                scans,
+            }) = op
+            {
+                return bands_advise(&cfg, cli.password_stdin, json, window, min_rows, scans);
+            }
             if watch.is_some() && set.is_none() {
                 return Err(ApiError::Usage(
                     "--watch needs --set: there is no write to watch".into(),
@@ -2369,6 +2642,187 @@ fn sms_delete_cmd(
     Ok(())
 }
 
+/// The smear the advice uses: the 95th percentile gap between the samples
+/// inside the window, not the widest gap in the whole log. An overnight pause
+/// is absence of observation, and letting it mute a whole day of readings would
+/// hide every real change instead of protecting them.
+fn window_smear(rows: &[routwatch::signal_history::Row], now: u64, window_secs: u64) -> u64 {
+    let since = now.saturating_sub(window_secs);
+    let mut gaps: Vec<u64> = rows
+        .windows(2)
+        .filter(|w| w[1].at_unix >= since && w[1].at_unix <= now)
+        .map(|w| w[1].at_unix.saturating_sub(w[0].at_unix) * 1000)
+        .filter(|ms| *ms > 0)
+        .collect();
+    if gaps.is_empty() {
+        return 0;
+    }
+    gaps.sort_unstable();
+    gaps[(gaps.len() * 95) / 100]
+}
+
+/// Band advice from the logs. Reads only: the one request it makes is the
+/// advertised list, and a router that does not answer narrows the advice
+/// instead of stopping it.
+fn bands_advise(
+    cfg: &config::Config,
+    password_stdin: bool,
+    json: bool,
+    window: Option<u64>,
+    min_rows: Option<usize>,
+    scans_path: Option<PathBuf>,
+) -> Result<(), ApiError> {
+    let source = routwatch::incidents::Source::load();
+    let window_secs = window.unwrap_or(routwatch::advisor::WINDOW_SECS);
+    let smear = window_smear(&source.signal, routwatch::record::now_unix(), window_secs);
+
+    let scans = match scans_path.as_deref() {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
+            serde_json::from_str::<Vec<routwatch::scan::SetResult>>(&raw).map_err(|e| {
+                ApiError::Config(format!(
+                    "{}: not the output of `scan --json` ({e})",
+                    path.display()
+                ))
+            })?
+        }
+        None => Vec::new(),
+    };
+
+    let mut extra: Vec<String> = Vec::new();
+    let advertised = match connect(cfg, password_stdin) {
+        Ok(mut client) => {
+            let list = match client.get("net/net-mode-list") {
+                Ok(node) => routwatch::router::bands::from_net_mode_list(&node)
+                    .defs
+                    .iter()
+                    .filter_map(|d| d.band)
+                    .collect::<Vec<u8>>(),
+                Err(e) => {
+                    extra.push(format!("the router did not answer net/net-mode-list: {e}"));
+                    Vec::new()
+                }
+            };
+            client.logout();
+            list
+        }
+        Err(e) => {
+            extra.push(format!("the router was not read: {e}"));
+            Vec::new()
+        }
+    };
+    if advertised.is_empty() {
+        extra.push(
+            "the advertised band list is unknown: a set is not checked against the firmware".into(),
+        );
+    }
+    if scans.is_empty() {
+        extra.push("no scan results were given: set advice needs `scan --json` output".into());
+    }
+
+    let presets: Vec<(String, Vec<u8>)> = cfg
+        .app
+        .presets
+        .clone()
+        .unwrap_or_else(config::default_presets)
+        .into_iter()
+        .map(|p| (p.name, p.bands))
+        .collect();
+
+    let advice = routwatch::advisor::advise(&routwatch::advisor::Input {
+        signal: &source.signal,
+        speed: &source.speed,
+        scans: &scans,
+        advertised: &advertised,
+        presets: &presets,
+        now_unix: routwatch::record::now_unix(),
+        window_secs,
+        min_rows: min_rows.unwrap_or(routwatch::advisor::MIN_ROWS),
+        smear_ms: smear,
+    });
+
+    if json {
+        let mut out = advice.clone();
+        out.notes.extend(extra);
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        return Ok(());
+    }
+
+    let mhz = |band: &str| -> String { band.to_string() };
+    println!(
+        "window: last {} s, {} rows used, smear {} ms",
+        advice.window_secs, advice.rows_used, advice.smear_ms
+    );
+    println!(
+        "confidence: {} (served {}, sets {})",
+        advice.confidence.as_str(),
+        advice.served_confidence.as_str(),
+        advice.set_confidence.as_str()
+    );
+    if advice.dropped_in_smear > 0 {
+        println!(
+            "dropped: {} read(s) inside a band change stay unattributed",
+            advice.dropped_in_smear
+        );
+    }
+    println!();
+    println!("served bands: the log records what was served, not the set configured");
+    if advice.served.is_empty() {
+        println!("  none in the window");
+    }
+    for row in &advice.served {
+        let mbps = row
+            .download_median_mbps
+            .map(|m| format!("{m:.1} Mbps"))
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "  {:<6} {:>5} rows {:>4.0}%  rsrp {}  sinr {}  {} ({} measured)",
+            mhz(&row.band),
+            row.rows,
+            row.share * 100.0,
+            row.rsrp_median
+                .map(|v| format!("{v:.0}"))
+                .unwrap_or_else(|| "-".into()),
+            row.sinr_median
+                .map(|v| format!("{v:.1}"))
+                .unwrap_or_else(|| "-".into()),
+            mbps,
+            row.measurements
+        );
+    }
+    println!();
+    println!("sets: only from scan results");
+    if advice.sets.is_empty() {
+        println!("  none measured");
+    }
+    for set in &advice.sets {
+        let names: Vec<String> = set.bands.iter().map(|b| format!("B{b}")).collect();
+        println!(
+            "  {:<20} {:>3} measured  median {}",
+            names.join("+"),
+            set.measurements,
+            set.download_median_mbps
+                .map(|m| format!("{m:.1} Mbps"))
+                .unwrap_or_else(|| "-".into())
+        );
+    }
+    println!();
+    println!("notes:");
+    for note in advice.notes.iter().chain(extra.iter()) {
+        println!("  - {note}");
+    }
+    if advice.missing.is_empty() {
+        println!("missing: nothing");
+    } else {
+        println!("missing:");
+        for item in &advice.missing {
+            println!("  - {item}");
+        }
+    }
+    Ok(())
+}
+
 fn connect(cfg: &config::Config, password_stdin: bool) -> Result<HuaweiClient, ApiError> {
     Ok(connect_with(cfg, password_stdin)?.0)
 }
@@ -2382,6 +2836,43 @@ const SETTLE_SECS: u64 = 2;
 /// The shortest interval `privacy --watch` accepts. A privacy answer is not a
 /// signal metric: reading it more often costs the router and buys nothing.
 const MIN_WATCH_SECS: u64 = 10;
+
+/// One event row when a snapshot found field names that moved. Names only: a
+/// value here would put a setting into a file the diff deliberately keeps clean,
+/// and a fingerprint would be one more thing to steal without saying what moved.
+fn log_config_change(before: &config_snapshot::Snapshot, now: &config_snapshot::Snapshot) {
+    let Some(path) = routwatch::events::path() else {
+        return;
+    };
+    let report = config_snapshot::diff(before, now);
+    let (outcome, detail) = if report.firmware_changed {
+        ("firmware-changed", None)
+    } else if report.rows.is_empty() {
+        return;
+    } else {
+        let mut names: Vec<String> = report
+            .rows
+            .iter()
+            .map(|r| {
+                r.key
+                    .split(" (presence only)")
+                    .next()
+                    .unwrap_or(&r.key)
+                    .to_string()
+            })
+            .collect();
+        names.truncate(12);
+        ("changed", Some(names.join(", ")))
+    };
+    let row = routwatch::events::ObsEvent::new(
+        routwatch::events::EventKind::Config,
+        "device",
+        now.at_unix,
+        outcome,
+        detail,
+    );
+    let _ = routwatch::events::append(&path, &row);
+}
 
 /// The incident list as the logs stand right now. Derived, never stored.
 fn incidents_now() -> Vec<routwatch::incidents::Incident> {

@@ -171,6 +171,27 @@ When a pair falls inside that window the incident says so.
 The dashboard's EVENTS panel shows the newest incidents the same way: an id, a
 row count, a confidence, and `no cause`.
 
+## What the firmware answers, and what it does not
+
+`capabilities` records one state per endpoint: answered, refused with the firmware's
+code, not served, or never tested, keyed by the firmware version it was measured on. It
+is a record, never a permission: an untested endpoint does not hide a feature. `config`
+keeps field names and salted fingerprints, never a value, and calls a change only when
+two reads agree; there is no restore. `bands advise` ranks what the logs support, says
+what the evidence cannot, and changes nothing.
+
+```sh
+routwatch capabilities --json            # the matrix, as recorded
+routwatch capabilities --probe           # read it once, on one session
+routwatch config snapshot                # fingerprints, never values
+routwatch config diff                    # two reads, five change classes
+routwatch bands advise --window 86400    # served bands, and what is missing
+routwatch bands advise --scans scan.json # set advice, only from a measured scan
+```
+
+The four states, the two-read rule, the fingerprint, the smear and the four
+confidence levels are stated in [`docs/limits.md`](docs/limits.md).
+
 ## Limits, the short list
 
 - **5G per-field metrics can be empty** on some firmware: the signal panel shows

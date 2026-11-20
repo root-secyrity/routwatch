@@ -40,6 +40,23 @@ Newest first. Each section lists what changed, in the words the release uses.
   snapshot_fixed.json` was rebuilt from synthetic values, because the published file
   carried real device data.
 
+- **Capability matrix.** `capabilities [--json] [--probe]` records, per endpoint,
+  whether this firmware answered, refused it with a code, did not serve it (404) or was
+  never tested, keyed by the firmware string and the measurement moment, at
+  `$XDG_DATA_HOME/routwatch/capabilities.json` (0600). Refusals are recorded, not read
+  as absence, and an untested endpoint never hides a feature.
+- **Config snapshots and diffs.** `config snapshot`, `config diff [--against
+  latest|<file>]` and `config list` keep field names and salted fingerprints only,
+  never a value, in `$XDG_DATA_HOME/routwatch/config-snapshots/` (files 0600, directory
+  0700, the newest 20 kept). A change needs two agreeing reads, an endpoint that stops
+  answering reads as `visibility-changed`, a firmware difference between the two
+  snapshots suppresses the field alarms, and there is no restore.
+- **Bands advisor.** `bands advise [--json] [--window <secs>] [--min-rows N] [--scans
+  <file>]` ranks what the logs support. The log records the served band, not the
+  configured set, so set advice comes only from `scan --json` results and the two are
+  never mixed. Four confidence levels, a reading inside the derived smear stays
+  unattributed, and correlation is printed as association. It writes nothing, needs no
+  router, and switches nothing.
 ## 0.9.0
 
 The first release with the dashboard, bands, traffic, clients, SMS, device, DNS and

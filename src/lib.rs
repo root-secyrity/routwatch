@@ -3,10 +3,13 @@
 //! Keeping this as a library (not only a binary) lets the render tests build an
 //! `App` from a fixture and assert on the produced frame.
 
+pub mod advisor;
 pub mod app;
+pub mod capabilities;
 pub mod client_detail;
 pub mod completion;
 pub mod config;
+pub mod config_snapshot;
 /// The design contracts in `docs/contracts.md`, checked against the source.
 #[cfg(test)]
 mod contracts;
