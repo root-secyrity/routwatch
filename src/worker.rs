@@ -314,6 +314,75 @@ fn pausing(pause_until: Option<Instant>, now: Instant) -> bool {
     pause_until.is_some_and(|t| now < t)
 }
 
+/// The endpoint groups the loop schedules. One interval cannot serve a read that
+/// answers in 43 ms (`monitoring/traffic-statistics`) and one that answers in
+/// 1191 ms (`wlan/host-list`, p95 2297 ms, measured on the H122373 firmware
+/// 2026-11-19), so each group carries its own deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// `device/signal`, `monitoring/status`, `monitoring/traffic-statistics`:
+    /// what the panels behind the header repaint every second.
+    Radio,
+    /// `wlan/host-list`: the slowest read in the tree, and nothing else.
+    Clients,
+    /// The rest of the collection: identity, network mode, bands, DNS, SMS,
+    /// quota and temperature.
+    Static,
+}
+
+impl Tier {
+    pub const ALL: [Tier; 3] = [Tier::Radio, Tier::Clients, Tier::Static];
+
+    pub fn index(self) -> usize {
+        Tier::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+}
+
+/// The label the header prints next to a tier's age. `Static` reads as "device"
+/// because `device/information` is the field a reader watches there.
+pub fn tier_label(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Radio => "signal",
+        Tier::Clients => "clients",
+        Tier::Static => "device",
+    }
+}
+
+/// How often a tier is due. Only the radio tier follows the refresh knob: the
+/// slower tiers hold reads whose cost is the firmware's answer time, and polling
+/// them at the radio cadence is what made one cycle five seconds long.
+pub fn tier_cadence(tier: Tier, refresh_ms: u64) -> Duration {
+    match tier {
+        Tier::Radio => Duration::from_millis(refresh_ms.max(500)),
+        Tier::Clients => Duration::from_secs(15),
+        Tier::Static => Duration::from_secs(60),
+    }
+}
+
+/// The deadline after a read that started at `started`. It is counted from the
+/// start, so the read's own duration is not added to the cadence, which is the
+/// 3088 ms the measured cycle carried. A deadline already a full interval in the
+/// past is dropped instead of replayed: one run at the first opportunity, then a
+/// fresh deadline, so a slow answer cannot start a burst of reads.
+pub fn due_at(started: Instant, interval: Duration, now: Instant) -> Instant {
+    let next = started + interval;
+    if next <= now {
+        now + interval
+    } else {
+        next
+    }
+}
+
+/// The tier whose deadline has passed and is the earliest, or `None` when the
+/// loop may sleep.
+pub fn due_tier(due: &[Instant; 3], now: Instant) -> Option<Tier> {
+    Tier::ALL
+        .iter()
+        .copied()
+        .filter(|t| due[t.index()] <= now)
+        .min_by_key(|t| due[t.index()])
+}
+
 /// Run the transfer off both the UI thread and the router thread: a test can
 /// last a minute and must not delay a poll or a redraw. `id` comes back on
 /// every event, so a late answer can be recognised and dropped.
