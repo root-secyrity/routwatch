@@ -155,6 +155,10 @@ routwatch privacy --diff          # exits 1 and names each settled drift
 routwatch privacy --watch 60      # a line whenever a drift settles
 ```
 
+The clients tab also carries an inspector for the selected host: the fields the
+firmware sent, the age of the last client read, and the columns this firmware
+does not report, named rather than left blank.
+
 Two rules make a reported drift trustworthy: a refusal (`unknown`, `not exposed`)
 is never counted as a change, and a value needs two reads to agree before it is
 reported, because this firmware serves some documents in a flaky tail.

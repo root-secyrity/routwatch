@@ -4,6 +4,7 @@
 //! `App` from a fixture and assert on the produced frame.
 
 pub mod app;
+pub mod client_detail;
 pub mod completion;
 pub mod config;
 /// The design contracts in `docs/contracts.md`, checked against the source.

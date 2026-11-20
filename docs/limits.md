@@ -237,6 +237,15 @@ why each one is stated instead of hidden.
   `webserver/events`, `notification`, `sse`, `event-stream`) all answered
   `100003 ERROR_NO_RIGHT`, and `user/state-login` serves a document, not a
   stream. Polling is the ceiling: no screen can be fresher than one read.
+- **The client inspector is the 30 s client read, not a faster one**: the pane
+  under the client table shows the six fields `wlan/host-list` carries (name, IP,
+  MAC, band, SSID, time associated), the age of that read, and names the columns
+  this firmware does not send (per-client traffic, per-client signal, per-client
+  uptime) instead of printing a zero. No per-client detail endpoint exists on the
+  H122-373 (`PROBE` carries none and the WebUI's host list is one document), so an
+  inspector cannot be fresher than the tier: measured 2026-11-19, `wlan/host-list`
+  p50 1191 ms, p95 2297 ms, and the pane says how old its data is.
+
 - **Reads are grouped by how fast this firmware answers them**: signal, status
   and traffic on the refresh period, `wlan/host-list` every 30 s, and the ten
   static documents (device, net-mode, DHCP, SMS count, month counters) every
