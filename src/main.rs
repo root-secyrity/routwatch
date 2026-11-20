@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use routwatch::app::{App, InputKind, PresetSaved, Tab, View};
+use routwatch::capabilities;
 use routwatch::config;
 use routwatch::error::ApiError;
 use routwatch::headless;
@@ -126,6 +127,15 @@ enum Cmd {
         /// Keep reading every SECS and print a line when a drift settles
         #[arg(long, value_name = "SECS", conflicts_with_all = ["save", "diff"])]
         watch: Option<u64>,
+    },
+    /// Record what this firmware answers per endpoint, and read it back
+    Capabilities {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Read every probe endpoint now and update the matrix (read-only)
+        #[arg(long)]
+        probe: bool,
     },
     /// Incidents derived from the logs: evidence, never a cause
     Incidents {
@@ -621,6 +631,63 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 for (path, body) in &bodies {
                     eprintln!("\n##### {path} #####\n{}", body.trim());
                 }
+            }
+            Ok(())
+        }
+        Some(Cmd::Capabilities { json, probe }) => {
+            let path = capabilities::capabilities_path()
+                .ok_or_else(|| ApiError::Config("no data directory: set XDG_DATA_HOME".into()))?;
+            let store = if probe {
+                let mut client = connect(&cfg, cli.password_stdin)?;
+                // The key is the firmware build, so an answer from another build
+                // is never read as a fact about this one.
+                let firmware = parse::parse_device(&client.get("device/information")?)
+                    .software
+                    .unwrap_or_else(|| "unknown".into());
+                let results = routwatch::router::endpoints::probe_all(&mut client);
+                client.logout();
+                let store = capabilities::CapabilityStore::from_probe(
+                    &firmware,
+                    record::now_unix(),
+                    &results,
+                );
+                capabilities::save(&path, &store)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
+                store
+            } else {
+                match capabilities::load(&path).map_err(ApiError::Config)? {
+                    Some(store) => store,
+                    None => {
+                        if json {
+                            println!("{{\"measured\": false}}");
+                        } else {
+                            println!(
+                                "no matrix yet: run `routwatch capabilities --probe` to read one"
+                            );
+                        }
+                        return Ok(());
+                    }
+                }
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&store).unwrap());
+            } else {
+                for (path, entry) in &store.entries {
+                    let mark = match (entry.code, entry.status) {
+                        (Some(code), _) => format!("code {code}"),
+                        (_, Some(status)) => format!("http {status}"),
+                        _ => String::new(),
+                    };
+                    println!("{:<36} {:<11} {}", path, entry.state.as_str(), mark);
+                }
+                let [answered, refused, not_served, untested] = store.counts();
+                println!(
+                    "\n{answered} answered, {refused} refused, {not_served} not served, {untested} untested"
+                );
+                println!(
+                    "firmware {}, measured at {} (unix)",
+                    store.firmware, store.measured_at
+                );
             }
             Ok(())
         }
