@@ -8,12 +8,15 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+mod common;
+
+use common::{isolate_data_home, TempDir};
 use routwatch::headless::{self, Phase, PhaseState};
 use routwatch::model::Snapshot;
 use routwatch::router::endpoints::PROBE;
@@ -22,40 +25,6 @@ use routwatch::signal_history;
 use routwatch::write::{VerifyLimits, VERIFY_REREAD, VERIFY_WINDOW_DEFAULT};
 
 // ---------------------------------------------------------------- temp dirs
-
-/// A directory that removes itself, so a failing assertion does not leave a
-/// signal log behind in the scratch space.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> TempDir {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "rw-live-guard-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&p).expect("temp dir");
-        TempDir(p)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn log(&self) -> PathBuf {
-        self.0.join("signal-history.jsonl")
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 // ------------------------------------------------------------ fake firmware
 
@@ -224,7 +193,7 @@ fn the_signal_log_writes_one_row_a_minute() {
         "a row every poll would be thirty rows a minute describing the same cell"
     );
     let dir = TempDir::new("one-row");
-    let log = dir.log();
+    let log = dir.signal_log();
     let snap = snapshot_with_signal();
 
     assert!(
@@ -250,7 +219,7 @@ fn the_signal_log_writes_one_row_a_minute() {
 fn the_signal_log_cap_is_still_1440() {
     assert_eq!(signal_history::CAP, 1440, "about a day at one row a minute");
     let dir = TempDir::new("cap");
-    let log = dir.log();
+    let log = dir.signal_log();
     let mut body = String::new();
     for i in 0..(signal_history::CAP + 60) as u64 {
         let row = signal_history::Row {
@@ -316,13 +285,12 @@ fn the_verify_defaults_are_five_and_twenty() {
 
 #[test]
 fn a_test_run_never_touches_the_real_signal_log() {
-    let dir = TempDir::new("xdg");
     // `dirs::data_dir()` honours XDG_DATA_HOME on Linux, which is what lets a
     // test own the log path without touching the user's data directory.
-    std::env::set_var("XDG_DATA_HOME", dir.path());
+    let home = isolate_data_home("signal-xdg");
     let resolved = signal_history::path().expect("a data dir resolves");
     assert!(
-        resolved.starts_with(dir.path()),
+        resolved.starts_with(home.path()),
         "the log path follows XDG_DATA_HOME, got {resolved:?}"
     );
     assert!(
@@ -378,6 +346,9 @@ fn the_wan_helper_reads_both_documents() {
 /// built on what the code does, not on what the constant suggests.
 #[test]
 fn collect_reads_its_own_endpoint_list_not_probe() {
+    // `collect_traced` stamps the signal log, so the shared data home would take
+    // the row and the gate that watches it would fail on this test alone.
+    let _home = isolate_data_home("collect-probe-list");
     let stub = login_stub();
     let mut client = stub.client();
     client.login("stub-user", "stub-pass").expect("login");
@@ -427,7 +398,7 @@ fn collect_reads_its_own_endpoint_list_not_probe() {
 #[test]
 fn the_signal_log_call_cost_is_measured() {
     let dir = TempDir::new("cost");
-    let log = dir.log();
+    let log = dir.signal_log();
     let snap = snapshot_with_signal();
     signal_history::record_if_due(&snap, 1_000, &log).expect("seed");
 

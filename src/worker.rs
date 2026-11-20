@@ -894,6 +894,7 @@ mod tests {
 
     #[test]
     fn stopping_the_worker_logs_out_before_acknowledging() {
+        let _home = crate::test_env::isolate_data_home("worker-stop");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
         let (tx, _rx) = spawn_at(cfg_for(&mock), "pw".into(), None);
 
@@ -919,6 +920,7 @@ mod tests {
 
     #[test]
     fn changing_the_interval_takes_effect_without_a_respawn() {
+        let _home = crate::test_env::isolate_data_home("worker-interval");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
         let (tx, _rx) = spawn_at(cfg_for(&mock), "pw".into(), None);
 

@@ -173,12 +173,13 @@ why each one is stated instead of hidden.
   logs always give the same list. Confidence is the count of rows that agree
   (1 low, 2 to 3 medium, 4 or more high), not a probability.
 
-- **The ordering limit is measured, not assumed**: the radio tier is read on its
-  own cadence, and the gap between two radio samples was measured at p95 1748 ms
-  and worst 2860 ms (H122-373, WEBUI 11.0.2.21, 2026-11-20). Two events closer
-  together than 2860 ms cannot be ordered from their stamps, so an incident
-  states the smear and names no cause. A wider gap seen in the signal log itself
-  widens the refusal; it never narrows it.
+- **The ordering limit is derived from the samples around the incident**: two
+  events can be ordered only if the signal log brackets both of them, and only if
+  the widest gap between those samples is narrower than the distance between the
+  events. The incident prints that gap as the smear it used, so the number moves
+  when the cadence moves: at the radio tier's measured cadence it lands near a
+  second, and at the one-row-a-minute fallback it runs to a minute. When the log
+  does not bracket both moments, the order is `unknown` and no cause is named.
 
 - **An incident reads the logs as they are**: a missing log is an empty log, not
   an error, and a recovered fault is a row but never an incident. `report

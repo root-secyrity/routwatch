@@ -1094,6 +1094,7 @@ mod doctor_tests {
     /// doctor: a 404 is "not served", not "broken router".
     #[test]
     fn a_live_doctor_on_a_healthy_mock_has_no_core_failure() {
+        let _home = crate::test_env::isolate_data_home("doctor-core");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
         let mut cfg = Config::default();
         cfg.router.ip = mock.addr().to_string();
@@ -1117,6 +1118,7 @@ mod doctor_tests {
     /// server the firmware reports, in one row of the doctor table.
     #[test]
     fn doctor_text_names_the_privacy_line() {
+        let _home = crate::test_env::isolate_data_home("doctor-text");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
         let mut cfg = Config::default();
         cfg.router.ip = mock.addr().to_string();
@@ -1140,6 +1142,7 @@ mod doctor_tests {
     /// snapshot, because the panels and the confirm modal both read it from there.
     #[test]
     fn a_firmware_without_the_dns_row_reaches_the_snapshot() {
+        let _home = crate::test_env::isolate_data_home("collect-dns-off");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpNoDns);
         let mut c = HuaweiClient::new(mock.addr(), 2000);
         c.login("admin", "demo").expect("mock login");
@@ -1155,6 +1158,7 @@ mod doctor_tests {
     /// refusal that fires on every device would be the same bug facing the other way.
     #[test]
     fn a_firmware_with_the_dns_row_is_not_marked_uneditable() {
+        let _home = crate::test_env::isolate_data_home("collect-dns-on");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::DhcpWithDns);
         let mut c = HuaweiClient::new(mock.addr(), 2000);
         c.login("admin", "demo").expect("mock login");

@@ -5,38 +5,11 @@
 //! from this read says nothing about the setting. Each test pins one of those
 //! sentences, so a later refactor that "simplifies" the comparison fails here.
 
+mod common;
+
+use common::{isolate_data_home, TempDir};
 use routwatch::privacy::{Audit, Check, State};
 use routwatch::privacy_drift::{Agree, Baseline, Drift};
-use std::path::{Path, PathBuf};
-
-/// A scratch directory that removes itself: the suite leaves the tree as it
-/// found it, and a leaked dir is a side effect the next run inherits.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "rw-drift-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&base).expect("scratch dir");
-        TempDir(base)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 fn audit(pairs: &[(&'static str, State)]) -> Audit {
     Audit {
@@ -206,13 +179,9 @@ fn a_check_absent_from_the_baseline_cannot_drift() {
 
 #[test]
 fn the_baseline_file_name_follows_the_data_home() {
-    let dir = TempDir::new("xdg");
     // `dirs::data_dir()` honours XDG_DATA_HOME on Linux; the CLI and this
     // assertion must agree on one path or `--diff` would look in the wrong place.
-    std::env::set_var("XDG_DATA_HOME", dir.path());
+    let home = isolate_data_home("privacy-xdg");
     let path = routwatch::privacy_drift::path().expect("a data dir");
-    assert_eq!(
-        path,
-        dir.path().join("routwatch").join("privacy-baseline.json")
-    );
+    assert_eq!(path, home.data_dir().join("privacy-baseline.json"));
 }

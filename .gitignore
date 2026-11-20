@@ -21,6 +21,8 @@ config.toml
 # same reason: it stays and the device capture does not.
 /tests/*
 !/tests/cli.rs
+!/tests/common/
+!/tests/common/mod.rs
 !/tests/fixtures/
 /tests/fixtures/*
 !/tests/fixtures/snapshot_fixed.json

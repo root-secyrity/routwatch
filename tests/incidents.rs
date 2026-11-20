@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use routwatch::incidents::{detect, smear_ms, Confidence, Kind, SMEAR_MS, WINDOW_SECS};
+use routwatch::incidents::{detect, smear_between, smear_ms, Confidence, Kind, WINDOW_SECS};
 
 struct TempDir(PathBuf);
 
@@ -134,7 +134,13 @@ fn a_wider_gap_in_the_signal_log_widens_the_refusal() {
     write(&signal, &[signal_line(500), signal_line(505)]);
     let src = routwatch::incidents::Source::load_from(&events, &signal, &dir.path("none"));
     assert_eq!(smear_ms(&src), 5000);
-    assert!(smear_ms(&src) >= SMEAR_MS, "the floor is the measured gap");
+    // The smear that matters is the one bracketing the pair, and here the log does
+    // not reach the event at 1000 s at all.
+    assert_eq!(
+        smear_between(&[500_000, 505_000], 500_000, 505_000),
+        Some(5000)
+    );
+    assert_eq!(smear_between(&[500_000, 505_000], 500_000, 1_000_000), None);
 }
 
 #[test]
