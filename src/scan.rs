@@ -5,9 +5,9 @@
 //! or never attempted. A set that was not measured is not ranked at the bottom
 //! as if it were slow: it carries no number.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
     Measured {
         down_bps: f64,
@@ -54,7 +54,7 @@ impl Outcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetResult {
     pub bands: Vec<u8>,
     pub outcome: Outcome,

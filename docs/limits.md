@@ -301,6 +301,34 @@ why each one is stated instead of hidden.
   running, a run against the real directory. The sentinel check alone can miss a
   leak, because the signal log writes at most one row a minute.
 
+- **The capability matrix records what this firmware answered**: one state per
+  endpoint, `answered`, `refused` with the firmware's code, `not served` (a 404) or
+  `untested`, keyed by the firmware string and the moment it was measured. A refusal
+  is recorded, never folded into "this firmware lacks the feature", and an `untested`
+  endpoint never hides a feature: the matrix is a record, not a permission system.
+- **A config snapshot keeps field names and salted fingerprints, never a value**:
+  `wlan/basic-settings#WifiKey` is recorded by name and its presence, and the digest
+  needs both the salt file (`$XDG_DATA_HOME/routwatch/config-salt`, 0600) and the
+  value to be useful, which is what makes the fingerprint change detection and not
+  storage. A changed secret reads as presence only. There is no restore command.
+- **A config change needs two reads that agree, and a firmware difference mutes the
+  rest**: `config diff` reads every endpoint twice, and a field the two reads disagree
+  on is printed as `unsettled` rather than reported. An endpoint that answered before
+  and refuses now is one `visibility-changed` row, not a removal. When the two
+  snapshots were taken on different firmware versions the field rows are suppressed
+  and the version difference is the finding.
+- **Band advice is per served band, except what came from a scan**: the signal log
+  records the band that was served, not the set that was configured, so the served
+  ranking says so and set advice comes only from `scan --json` results passed with
+  `--scans`. The two rankings are never mixed, a reading inside the derived smear is
+  not attributed to either band, and a figure beside a band is associated with it,
+  never caused by it.
+- **Band advice has four confidence levels and no write path**: `insufficient`, `low`,
+  `medium`, `high`, from the rows and the measured scans, and the weakest link sets the
+  whole advice. `bands advise` prints the command that would add evidence, switches
+  nothing, writes no log and needs no router (an unreachable router narrows the advice
+  instead of stopping it).
+
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
 README's Safety list, and the guard that enforces them is in

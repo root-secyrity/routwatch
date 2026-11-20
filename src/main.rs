@@ -167,6 +167,9 @@ enum Cmd {
     },
     /// Bands: read them, or apply a selection
     Bands {
+        /// A subcommand: `advise` reads the logs and changes nothing
+        #[command(subcommand)]
+        op: Option<BandsCmd>,
         #[arg(long)]
         list: bool,
         #[arg(long)]
@@ -444,6 +447,24 @@ enum SmsCmd {
         /// Print the plan and send nothing
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum BandsCmd {
+    /// Advice from the logs: what the evidence supports, and what it cannot
+    Advise {
+        #[arg(long)]
+        json: bool,
+        /// Window into the signal log, in seconds
+        #[arg(long, value_name = "SECS")]
+        window: Option<u64>,
+        /// Rows in the window needed before any advice is offered
+        #[arg(long, value_name = "N")]
+        min_rows: Option<usize>,
+        /// A file holding `scan --json` output: the only source of set advice
+        #[arg(long, value_name = "FILE")]
+        scans: Option<PathBuf>,
     },
 }
 
@@ -1105,6 +1126,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             Ok(())
         }
         Some(Cmd::Bands {
+            op,
             list,
             json,
             set,
@@ -1115,6 +1137,15 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             force,
             watch,
         }) => {
+            if let Some(BandsCmd::Advise {
+                json,
+                window,
+                min_rows,
+                scans,
+            }) = op
+            {
+                return bands_advise(&cfg, cli.password_stdin, json, window, min_rows, scans);
+            }
             if watch.is_some() && set.is_none() {
                 return Err(ApiError::Usage(
                     "--watch needs --set: there is no write to watch".into(),
@@ -2607,6 +2638,167 @@ fn sms_delete_cmd(
     if !report.settled() {
         // A delete that was not read back is a failure, whatever the POST said.
         return Err(ApiError::Quiet(1));
+    }
+    Ok(())
+}
+
+/// Band advice from the logs. Reads only: the one request it makes is the
+/// advertised list, and a router that does not answer narrows the advice
+/// instead of stopping it.
+fn bands_advise(
+    cfg: &config::Config,
+    password_stdin: bool,
+    json: bool,
+    window: Option<u64>,
+    min_rows: Option<usize>,
+    scans_path: Option<PathBuf>,
+) -> Result<(), ApiError> {
+    let source = routwatch::incidents::Source::load();
+    let smear = routwatch::incidents::smear_ms(&source);
+
+    let scans = match scans_path.as_deref() {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
+            serde_json::from_str::<Vec<routwatch::scan::SetResult>>(&raw).map_err(|e| {
+                ApiError::Config(format!(
+                    "{}: not the output of `scan --json` ({e})",
+                    path.display()
+                ))
+            })?
+        }
+        None => Vec::new(),
+    };
+
+    let mut extra: Vec<String> = Vec::new();
+    let advertised = match connect(cfg, password_stdin) {
+        Ok(mut client) => {
+            let list = match client.get("net/net-mode-list") {
+                Ok(node) => routwatch::router::bands::from_net_mode_list(&node)
+                    .defs
+                    .iter()
+                    .filter_map(|d| d.band)
+                    .collect::<Vec<u8>>(),
+                Err(e) => {
+                    extra.push(format!("the router did not answer net/net-mode-list: {e}"));
+                    Vec::new()
+                }
+            };
+            client.logout();
+            list
+        }
+        Err(e) => {
+            extra.push(format!("the router was not read: {e}"));
+            Vec::new()
+        }
+    };
+    if advertised.is_empty() {
+        extra.push(
+            "the advertised band list is unknown: a set is not checked against the firmware".into(),
+        );
+    }
+    if scans.is_empty() {
+        extra.push("no scan results were given: set advice needs `scan --json` output".into());
+    }
+
+    let presets: Vec<(String, Vec<u8>)> = cfg
+        .app
+        .presets
+        .clone()
+        .unwrap_or_else(config::default_presets)
+        .into_iter()
+        .map(|p| (p.name, p.bands))
+        .collect();
+
+    let advice = routwatch::advisor::advise(&routwatch::advisor::Input {
+        signal: &source.signal,
+        speed: &source.speed,
+        scans: &scans,
+        advertised: &advertised,
+        presets: &presets,
+        now_unix: routwatch::record::now_unix(),
+        window_secs: window.unwrap_or(routwatch::advisor::WINDOW_SECS),
+        min_rows: min_rows.unwrap_or(routwatch::advisor::MIN_ROWS),
+        smear_ms: smear,
+    });
+
+    if json {
+        let mut out = advice.clone();
+        out.notes.extend(extra);
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        return Ok(());
+    }
+
+    let mhz = |band: &str| -> String { band.to_string() };
+    println!(
+        "window: last {} s, {} rows used, smear {} ms",
+        advice.window_secs, advice.rows_used, advice.smear_ms
+    );
+    println!(
+        "confidence: {} (served {}, sets {})",
+        advice.confidence.as_str(),
+        advice.served_confidence.as_str(),
+        advice.set_confidence.as_str()
+    );
+    if advice.dropped_in_smear > 0 {
+        println!(
+            "dropped: {} read(s) inside a band change stay unattributed",
+            advice.dropped_in_smear
+        );
+    }
+    println!();
+    println!("served bands: the log records what was served, not the set configured");
+    if advice.served.is_empty() {
+        println!("  none in the window");
+    }
+    for row in &advice.served {
+        let mbps = row
+            .download_median_mbps
+            .map(|m| format!("{m:.1} Mbps"))
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "  {:<6} {:>5} rows {:>4.0}%  rsrp {}  sinr {}  {} ({} measured)",
+            mhz(&row.band),
+            row.rows,
+            row.share * 100.0,
+            row.rsrp_median
+                .map(|v| format!("{v:.0}"))
+                .unwrap_or_else(|| "-".into()),
+            row.sinr_median
+                .map(|v| format!("{v:.1}"))
+                .unwrap_or_else(|| "-".into()),
+            mbps,
+            row.measurements
+        );
+    }
+    println!();
+    println!("sets: only from scan results");
+    if advice.sets.is_empty() {
+        println!("  none measured");
+    }
+    for set in &advice.sets {
+        let names: Vec<String> = set.bands.iter().map(|b| format!("B{b}")).collect();
+        println!(
+            "  {:<20} {:>3} measured  median {}",
+            names.join("+"),
+            set.measurements,
+            set.download_median_mbps
+                .map(|m| format!("{m:.1} Mbps"))
+                .unwrap_or_else(|| "-".into())
+        );
+    }
+    println!();
+    println!("notes:");
+    for note in advice.notes.iter().chain(extra.iter()) {
+        println!("  - {note}");
+    }
+    if advice.missing.is_empty() {
+        println!("missing: nothing");
+    } else {
+        println!("missing:");
+        for item in &advice.missing {
+            println!("  - {item}");
+        }
     }
     Ok(())
 }

@@ -34,6 +34,7 @@ config.toml
 !/tests/privacy_drift.rs
 !/tests/live_probe.rs
 !/tests/tier_*.rs
+!/tests/advisor.rs
 
 # static binaries from packaging/musl-build.sh
 /dist/

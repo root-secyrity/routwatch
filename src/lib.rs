@@ -3,6 +3,7 @@
 //! Keeping this as a library (not only a binary) lets the render tests build an
 //! `App` from a fixture and assert on the produced frame.
 
+pub mod advisor;
 pub mod app;
 pub mod capabilities;
 pub mod client_detail;
