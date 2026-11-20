@@ -56,7 +56,7 @@ build that must stay under 10 MiB, plus the same source in five containers
 (debian 12, ubuntu 22.04, ubuntu 24.04, fedora 41, alpine 3.20) to catch a libc
 or toolchain surprise early.
 
-`make test` currently runs 534 unit + 21 binary + 30 CLI tests (the CLI files are
+`make test` currently runs 539 unit + 21 binary + 40 CLI tests (the CLI files are
 local, not published; the unit tests read `fixtures/`). That number is a promise:
 change it here, in the same PR that changes the count.
 

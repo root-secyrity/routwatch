@@ -14,7 +14,14 @@ config.toml
 
 # internal, not published
 /DOCK/
-/tests/
+# The two live test files are the exception, and they are published: a guard
+# that lives on one machine guards nothing. This firmware has no push channel
+# and no second session to measure against, so a reader without the device can
+# still compile and run the guards.
+/tests/*
+!/tests/live_guards.rs
+!/tests/live_probe.rs
+!/tests/tier_*.rs
 
 # static binaries from packaging/musl-build.sh
 /dist/

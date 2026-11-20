@@ -207,6 +207,37 @@ why each one is stated instead of hidden.
   "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
   log off for scripts that read every second.
 
+- **The screen is polled, never pushed**: measured 2026-11-19 on the H122-373
+  (WEBUI 11.0.2.21), seven stream candidates (`websocket`, `ws`, `events`,
+  `webserver/events`, `notification`, `sse`, `event-stream`) all answered
+  `100003 ERROR_NO_RIGHT`, and `user/state-login` serves a document, not a
+  stream. Polling is the ceiling: no screen can be fresher than one read.
+- **Reads are grouped by how fast this firmware answers them**: signal, status
+  and traffic on the refresh period, `wlan/host-list` every 15 s, and the ten
+  static documents (device, net-mode, DHCP, SMS count, month counters) every
+  60 s. Measured 2026-11-19: `wlan/host-list` p95 2297 ms against signal p95
+  1575 ms, so reading the client list at the screen's cadence would starve it.
+- **The signal read is bimodal on this firmware**: 60 reads measured p50 457 ms
+  and p95 1575 ms, with nine over 800 ms, clustered near 450 ms or near
+  1500 ms. A single screen cannot promise better than that tail, whatever the
+  timer says.
+- **A slow read delays the next poll and never stacks**: there is one collection
+  thread, and a tick that overruns its deadline is not replayed, so a 1.6 s read
+  at a 600 ms period means one sample per 1.6 s, not a burst of catching up.
+  The default period is 600 ms for that reason: a 30 s soak at 500 ms carried
+  132 reads with no busy code and no re-login.
+- **The frame is redrawn on a change, not on a timer alone**: a snapshot event or
+  a key press asks for a frame, and a one second pulse keeps the age text moving
+  when nothing else arrives. Repainting identical cells at the poll rate was pure
+  terminal work.
+- **The age is shown per group**: `signal 0.6s · clients 12s · device 41s` in the
+  header, because one age for the whole screen could not say which read was late.
+  Narrow terminals fall back to the single age of the last full snapshot.
+- **The signal log row is stamped at the radio read**: the row written to
+  `$XDG_DATA_HOME/routwatch/signal-history.jsonl` carries the moment the signal
+  endpoint answered, not the moment the whole snapshot was assembled, so a slow
+  client list never shifts the logged sample by seconds.
+
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
 README's Safety list, and the guard that enforces them is in

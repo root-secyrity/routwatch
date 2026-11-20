@@ -446,8 +446,7 @@ fn the_observed_cadence_is_measured_end_to_end() {
     let deadline = Instant::now() + Duration::from_secs(120);
     while arrivals.len() < SAMPLES && Instant::now() < deadline {
         match rx.recv_timeout(Duration::from_secs(30)) {
-            Ok(Ev::Snapshot { snap, poll_ms }) => {
-                let _ = snap;
+            Ok(Ev::Snapshot { poll_ms, .. }) => {
                 arrivals.push((Instant::now(), poll_ms));
             }
             Ok(_) => {}
@@ -480,4 +479,157 @@ fn the_observed_cadence_is_measured_end_to_end() {
     write_report("cadence.txt", &body);
     eprintln!("{body}");
     assert!(med > 0, "a zero gap means the samples were not spaced");
+}
+
+/// T8 of the tiered round: ten minutes at the shipped cadence, driven by the
+/// real worker, so the three tiers run at their own periods.
+///
+/// Budget, declared before the first request: reads are counted by the worker,
+/// not decided here; at 600 ms the radio tier issues 3 reads per period, the
+/// client tier 1 read per 15 s and the static tier 10 reads per 60 s, about 3000
+/// reads in ten minutes on one session. Read only: the worker posts nothing but
+/// its login and its logout. Phase events and errors are counted, never guessed.
+#[test]
+#[ignore = "reads the real device; run with ROUTWATCH_LIVE=1"]
+fn a_ten_minute_quota_at_the_new_cadence_is_clean() {
+    let Some((mut cfg, pass)) = gate("a_ten_minute_quota_at_the_new_cadence_is_clean") else {
+        return;
+    };
+    let _only_one = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let secs: u64 = std::env::var("ROUTWATCH_QUOTA_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+    cfg.app.refresh_ms = 600;
+    eprintln!(
+        "budget: {secs} s at the shipped 600 ms cadence, about {} radio reads, one session, read only",
+        secs / 3 * FAST_TIER.len() as u64
+    );
+
+    let (tx, rx) = worker::spawn(cfg.clone(), pass);
+    let deadline = Instant::now() + Duration::from_secs(secs + 30);
+    let mut snapshots = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    let mut lives = 0usize;
+    let mut recovering = 0usize;
+    let mut per_tier: [Vec<Instant>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(Ev::Snapshot { stamps, .. }) => {
+                snapshots += 1;
+                for (slot, tier) in per_tier.iter_mut().zip(routwatch::worker::Tier::ALL) {
+                    if let Some(at) = stamps.get(tier) {
+                        if slot.last() != Some(&at) {
+                            slot.push(at);
+                        }
+                    }
+                }
+            }
+            Ok(Ev::Session(routwatch::app::SessionState::Live)) => lives += 1,
+            Ok(Ev::Session(routwatch::app::SessionState::Recovering { .. })) => recovering += 1,
+            Ok(Ev::Error(e)) => errors.push(e),
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+    let _ = tx.send(Cmd::Stop(ack_tx));
+    let _ = ack_rx.recv_timeout(Duration::from_secs(5));
+
+    let gaps = |at: &Vec<Instant>| -> Vec<u128> {
+        let mut g: Vec<u128> = at
+            .windows(2)
+            .map(|w| w[1].duration_since(w[0]).as_millis())
+            .collect();
+        g.sort_unstable();
+        g
+    };
+    let stats = |g: &Vec<u128>| -> (u128, u128, u128) {
+        if g.is_empty() {
+            (0, 0, 0)
+        } else {
+            (g[g.len() / 2], g[(g.len() * 95) / 100], g[g.len() - 1])
+        }
+    };
+    let (r_med, r_p95, r_max) = stats(&gaps(&per_tier[0]));
+    let (c_med, c_p95, c_max) = stats(&gaps(&per_tier[1]));
+    let (s_med, s_p95, s_max) = stats(&gaps(&per_tier[2]));
+    let busy = errors
+        .iter()
+        .filter(|e| {
+            e.contains("100002")
+                || e.contains("100003")
+                || e.contains("100004")
+                || e.contains("429")
+        })
+        .count();
+    let body = format!(
+        "quota {secs}s at 600 ms, one session, read only\n\
+         snapshots {snapshots}, live events {lives}, recovering {recovering}\n\
+         errors {} ({busy} busy/refused codes)\n\
+         gaps ms (median / p95 / max)\n\
+         signal {} / {} / {}\nclients {} / {} / {}\ndevice {} / {} / {}\n",
+        errors.len(),
+        r_med,
+        r_p95,
+        r_max,
+        c_med,
+        c_p95,
+        c_max,
+        s_med,
+        s_p95,
+        s_max
+    );
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("DOCK/tiered");
+    std::fs::create_dir_all(&dir).expect("DOCK/tiered");
+    std::fs::write(dir.join("quota.txt"), &body).expect("quota report");
+    eprintln!("{body}");
+
+    assert!(snapshots > 0, "the worker produced no snapshot");
+    assert_eq!(lives, 1, "the session was signed in again during the quota");
+    assert_eq!(recovering, 0, "the worker went into recovery: {errors:?}");
+    assert_eq!(busy, 0, "a busy or refused code came back: {errors:?}");
+    assert!(r_max < 6_000, "the radio tier was blocked for {r_max} ms");
+}
+
+/// L0 of the tiered round: `collect_traced` reads `dhcp/feature-switch` through
+/// `HuaweiClient::dhcp_dns_editable`, and that path is not in `PROBE`, so the
+/// feasibility round never measured it. A tier cannot hold an unmeasured
+/// endpoint, so this measures it before any tier is written.
+///
+/// Budget, declared before the first request: 30 reads of one endpoint, one
+/// session, serial, read only.
+#[test]
+#[ignore = "reads the real device; run with ROUTWATCH_LIVE=1"]
+fn the_dhcp_feature_switch_read_is_measured() {
+    let Some((cfg, pass)) = gate("the_dhcp_feature_switch_read_is_measured") else {
+        return;
+    };
+    let _only_one = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    const SAMPLES: usize = 30;
+    const PATH: &str = "dhcp/feature-switch";
+    eprintln!("budget: {SAMPLES} reads of {PATH}, one session");
+
+    let mut client = connect(&cfg, &pass);
+    let mut ms: Vec<f64> = Vec::with_capacity(SAMPLES);
+    for i in 0..SAMPLES {
+        let t0 = Instant::now();
+        let ok = client.get(PATH).is_ok();
+        let took = t0.elapsed().as_secs_f64() * 1_000.0;
+        assert!(ok, "sample {i} of {PATH} failed, aborting the run");
+        ms.push(took);
+    }
+    ms.sort_by(|a, b| a.partial_cmp(b).expect("finite timings"));
+    let p50 = ms[ms.len() / 2];
+    let p95 = ms[(ms.len() * 95).div_ceil(100) - 1];
+    let max = ms[ms.len() - 1];
+    let body = format!(
+        "group,endpoint,n,p50_ms,p95_ms,max_ms,status\nnetwork,{PATH},{SAMPLES},{p50:.1},{p95:.1},{max:.1},ok\n"
+    );
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("DOCK/tiered");
+    std::fs::create_dir_all(&dir).expect("DOCK/tiered");
+    std::fs::write(dir.join("latency-extra.csv"), &body).expect("latency-extra.csv");
+    eprintln!("{body}");
+    assert_eq!(ms.len(), SAMPLES, "every declared sample was taken");
 }
