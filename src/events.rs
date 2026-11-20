@@ -26,8 +26,9 @@ pub const KEEP: usize = 2000;
 /// Compact once the file passes this size, checked after an append.
 const MAX_BYTES: u64 = 512 * 1024;
 
-/// The five families of state change. `ReadFail` is a state change too: a tier
-/// that stopped answering is why a panel froze.
+/// The six families of state change. `ReadFail` is a state change too: a tier
+/// that stopped answering is why a panel froze. `Config` carries field names
+/// only, never a value and never a fingerprint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
     Write,
@@ -35,6 +36,7 @@ pub enum EventKind {
     Wan,
     ReadFail,
     Signal,
+    Config,
 }
 
 impl EventKind {
@@ -45,6 +47,7 @@ impl EventKind {
             EventKind::Wan => "wan",
             EventKind::ReadFail => "read",
             EventKind::Signal => "signal",
+            EventKind::Config => "config",
         }
     }
 
@@ -55,6 +58,7 @@ impl EventKind {
             "wan" => Some(EventKind::Wan),
             "read" => Some(EventKind::ReadFail),
             "signal" => Some(EventKind::Signal),
+            "config" => Some(EventKind::Config),
             _ => None,
         }
     }

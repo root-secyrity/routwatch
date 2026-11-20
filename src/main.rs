@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use routwatch::app::{App, InputKind, PresetSaved, Tab, View};
 use routwatch::capabilities;
 use routwatch::config;
+use routwatch::config_snapshot;
 use routwatch::error::ApiError;
 use routwatch::headless;
 use routwatch::model::{DnsInfo, Snapshot};
@@ -136,6 +137,11 @@ enum Cmd {
         /// Read every probe endpoint now and update the matrix (read-only)
         #[arg(long)]
         probe: bool,
+    },
+    /// Fingerprint the settings, and diff them without storing a value
+    Config {
+        #[command(subcommand)]
+        op: ConfigCmd,
     },
     /// Incidents derived from the logs: evidence, never a cause
     Incidents {
@@ -442,6 +448,28 @@ enum SmsCmd {
 }
 
 #[derive(Subcommand)]
+enum ConfigCmd {
+    /// Read the settings now and store fingerprints of them
+    Snapshot {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read twice, then report the settings that moved since a snapshot
+    Diff {
+        /// A snapshot path, or `latest` for the newest one on disk
+        #[arg(long, value_name = "FILE", default_value = "latest")]
+        against: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Every snapshot on disk, oldest first
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum IncidentsCmd {
     /// Every incident the logs support, newest last
     List {
@@ -690,6 +718,153 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 );
             }
             Ok(())
+        }
+        Some(Cmd::Config { op }) => {
+            let dir = config_snapshot::dir().ok_or_else(|| {
+                ApiError::Config("no data directory: set XDG_DATA_HOME".to_string())
+            })?;
+            match op {
+                ConfigCmd::Snapshot { json } => {
+                    let mut client = connect(&cfg, cli.password_stdin)?;
+                    let snap = config_snapshot::collect(&mut client, record::now_unix())?;
+                    client.logout();
+                    let before =
+                        config_snapshot::latest(&dir).and_then(|p| config_snapshot::load(&p).ok());
+                    let path = config_snapshot::save(&dir, &snap)
+                        .map_err(|e| ApiError::Config(format!("{}: {e}", dir.display())))?;
+                    if let Some(before) = before {
+                        log_config_change(&before, &snap);
+                    }
+                    if json {
+                        let out = serde_json::json!({
+                            "path": path.display().to_string(),
+                            "at_unix": snap.at_unix,
+                            "firmware": snap.firmware,
+                            "fields": snap.fields.len(),
+                            "presence_only": snap.secrets.len(),
+                            "refused": snap.refused.keys().cloned().collect::<Vec<_>>(),
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    } else {
+                        println!(
+                            "snapshot saved: {} ({} fields, {} presence-only, {} refused) firmware {}",
+                            path.display(),
+                            snap.fields.len(),
+                            snap.secrets.len(),
+                            snap.refused.len(),
+                            snap.firmware
+                        );
+                    }
+                    Ok(())
+                }
+                ConfigCmd::Diff { against, json } => {
+                    let base_path = if against == "latest" {
+                        config_snapshot::latest(&dir)
+                    } else {
+                        Some(PathBuf::from(&against))
+                    }
+                    .ok_or_else(|| {
+                        ApiError::Usage(format!(
+                            "no snapshot in {}: run `routwatch config snapshot` first",
+                            dir.display()
+                        ))
+                    })?;
+                    let before = config_snapshot::load(&base_path)
+                        .map_err(|e| ApiError::Config(format!("{}: {e}", base_path.display())))?;
+                    let mut client = connect(&cfg, cli.password_stdin)?;
+                    let first = config_snapshot::collect(&mut client, record::now_unix())?;
+                    std::thread::sleep(Duration::from_secs(SETTLE_SECS));
+                    let second = config_snapshot::collect(&mut client, record::now_unix())?;
+                    client.logout();
+                    let (settled, unsettled) = config_snapshot::settle(&first, &second);
+                    let mut report = config_snapshot::diff_skipping(&before, &settled, &unsettled);
+                    report.unsettled = unsettled.len();
+                    if json {
+                        let rows: Vec<_> = report
+                            .rows
+                            .iter()
+                            .map(|r| serde_json::json!({"class": r.class.as_str(), "field": r.key}))
+                            .collect();
+                        let out = serde_json::json!({
+                            "baseline": base_path.display().to_string(),
+                            "baseline_at_unix": before.at_unix,
+                            "firmware_before": before.firmware,
+                            "firmware_now": settled.firmware,
+                            "firmware_changed": report.firmware_changed,
+                            "unsettled": report.unsettled,
+                            "drift": rows,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    } else if report.firmware_changed {
+                        println!(
+                            "firmware changed since the baseline ({} -> {}): field changes are not compared across builds",
+                            before.firmware, settled.firmware
+                        );
+                    } else if report.rows.is_empty() {
+                        println!(
+                            "no drift: {} fields still read as the snapshot taken at {} (unix) recorded{}",
+                            settled.fields.len(),
+                            before.at_unix,
+                            if report.unsettled > 0 {
+                                format!("; {} unsettled readings left out", report.unsettled)
+                            } else {
+                                String::new()
+                            }
+                        );
+                    } else {
+                        for row in &report.rows {
+                            println!("{:<19} {}", row.class.as_str(), row.key);
+                        }
+                        println!(
+                            "{} change(s) against the snapshot taken at {} (unix)",
+                            report.rows.len(),
+                            before.at_unix
+                        );
+                    }
+                    if report.drifted() {
+                        Err(ApiError::Quiet(1))
+                    } else {
+                        Ok(())
+                    }
+                }
+                ConfigCmd::List { json } => {
+                    let paths = config_snapshot::list(&dir);
+                    if json {
+                        let rows: Vec<_> = paths
+                            .iter()
+                            .filter_map(|p| config_snapshot::load(p).ok())
+                            .map(|s| {
+                                serde_json::json!({
+                                    "at_unix": s.at_unix,
+                                    "firmware": s.firmware,
+                                    "fields": s.fields.len(),
+                                    "presence_only": s.secrets.len(),
+                                    "refused": s.refused.len(),
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+                    } else if paths.is_empty() {
+                        println!(
+                            "no snapshots in {}: run `routwatch config snapshot`",
+                            dir.display()
+                        );
+                    } else {
+                        for path in paths {
+                            match config_snapshot::load(&path) {
+                                Ok(s) => println!(
+                                    "{:<12} firmware {:<16} {} fields",
+                                    s.at_unix,
+                                    s.firmware,
+                                    s.fields.len()
+                                ),
+                                Err(e) => println!("{} unreadable: {e}", path.display()),
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+            }
         }
         Some(Cmd::Incidents { op }) => {
             let list = incidents_now();
@@ -2449,6 +2624,43 @@ const SETTLE_SECS: u64 = 2;
 /// The shortest interval `privacy --watch` accepts. A privacy answer is not a
 /// signal metric: reading it more often costs the router and buys nothing.
 const MIN_WATCH_SECS: u64 = 10;
+
+/// One event row when a snapshot found field names that moved. Names only: a
+/// value here would put a setting into a file the diff deliberately keeps clean,
+/// and a fingerprint would be one more thing to steal without saying what moved.
+fn log_config_change(before: &config_snapshot::Snapshot, now: &config_snapshot::Snapshot) {
+    let Some(path) = routwatch::events::path() else {
+        return;
+    };
+    let report = config_snapshot::diff(before, now);
+    let (outcome, detail) = if report.firmware_changed {
+        ("firmware-changed", None)
+    } else if report.rows.is_empty() {
+        return;
+    } else {
+        let mut names: Vec<String> = report
+            .rows
+            .iter()
+            .map(|r| {
+                r.key
+                    .split(" (presence only)")
+                    .next()
+                    .unwrap_or(&r.key)
+                    .to_string()
+            })
+            .collect();
+        names.truncate(12);
+        ("changed", Some(names.join(", ")))
+    };
+    let row = routwatch::events::ObsEvent::new(
+        routwatch::events::EventKind::Config,
+        "device",
+        now.at_unix,
+        outcome,
+        detail,
+    );
+    let _ = routwatch::events::append(&path, &row);
+}
 
 /// The incident list as the logs stand right now. Derived, never stored.
 fn incidents_now() -> Vec<routwatch::incidents::Incident> {

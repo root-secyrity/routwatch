@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod client_detail;
 pub mod completion;
 pub mod config;
+pub mod config_snapshot;
 /// The design contracts in `docs/contracts.md`, checked against the source.
 #[cfg(test)]
 mod contracts;
