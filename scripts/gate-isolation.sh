@@ -8,7 +8,12 @@
 #      holding four marker logs. If any test reaches a write path without its own
 #      scratch directory, the marker moves and the gate fails. This part is safe
 #      while the app is running, because the app never writes the sentinel.
-#   B. real: with no `routwatch` process live, the same run repeats against the
+#   B. empty: the suite runs against an EMPTY data directory and must leave it
+#      empty. Part A alone can miss a leak, because the signal log writes at most
+#      one row a minute: a leaking test that finds a recent marker row writes
+#      nothing, and the marker looks untouched. Against an empty directory any
+#      write shows up as a new file.
+#   C. real: with no `routwatch` process live, the same run repeats against the
 #      user's real directory and must leave it byte-identical. It is skipped, with
 #      the reason printed, while the app is live: the TUI appends one signal row
 #      a minute, which would move the file under the comparison.
@@ -57,10 +62,22 @@ if ! cmp -s "$tmp/sentinel-before" "$tmp/sentinel-after"; then
 fi
 echo "isolation: sentinel unchanged, no test uses the shared data home"
 
-# ---- B. real
+# ---- B. empty
+mkdir -p "$tmp/empty/data" "$tmp/empty/config"
+echo "→ cargo test --locked $* (empty data home)"
+XDG_DATA_HOME="$tmp/empty/data" XDG_CONFIG_HOME="$tmp/empty/config" run_suite "$tmp/empty.log" "$@"
+left="$(find "$tmp/empty/data" "$tmp/empty/config" -mindepth 1 | sort)"
+if [ -n "$left" ]; then
+  echo "$left"
+  echo "isolation: the suite created files in an empty data home"
+  exit 1
+fi
+echo "isolation: an empty data home stayed empty"
+
+# ---- C. real
 data="${XDG_DATA_HOME:-$HOME/.local/share}/routwatch"
 if pgrep -x routwatch >/dev/null 2>&1; then
-  echo "isolation: part B skipped: routwatch is running (pid $(pgrep -x routwatch | tr '\n' ' '))"
+  echo "isolation: part C skipped: routwatch is running (pid $(pgrep -x routwatch | tr '\n' ' '))"
   echo "isolation:   it appends one signal row a minute, so the comparison cannot be trusted."
   echo "isolation:   Close it and run this gate again for the real-directory check."
   exit 0

@@ -29,10 +29,12 @@ Newest first. Each section lists what changed, in the words the release uses.
   distance between the events; the incident prints the gap it used. When the log does
   not bracket both moments the order is `unknown` and no cause is named.
 - **Test isolation.** Every test that can reach a persistent log now writes inside its
-  own temporary data home, and `scripts/gate-isolation.sh` proves it: the suite runs
-  with `XDG_DATA_HOME` pointed at a sentinel directory of marker logs, which must come
-  back byte-identical. Before this, a plain `cargo test` appended to the real
-  `signal-history.jsonl`.
+  own temporary data home, and `scripts/gate-isolation.sh` proves it three ways: the
+  suite runs against a sentinel directory of marker logs, which must come back
+  byte-identical; against an empty directory, which must stay empty; and against the
+  user's real directory, which must not move. The sentinel check alone can miss a leak,
+  because the signal log writes at most one row a minute and a leaking test that finds a
+  recent marker writes nothing.
 - **`tests/cli.rs` and its fixture are published.** The CLI tests were tracked before,
   so a clean clone runs the same suite the counter reports; `tests/fixtures/
   snapshot_fixed.json` was rebuilt from synthetic values, because the published file

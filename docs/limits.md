@@ -292,6 +292,14 @@ why each one is stated instead of hidden.
   `$XDG_DATA_HOME/routwatch/signal-history.jsonl` carries the moment the signal
   endpoint answered, not the moment the whole snapshot was assembled, so a slow
   client list never shifts the logged sample by seconds.
+- **The tests never write your data directory.** Every test that can reach a
+  persistent log points `XDG_DATA_HOME` at its own scratch directory and removes it
+  on drop, so a plain `cargo test --locked` leaves `$XDG_DATA_HOME/routwatch/`
+  byte-identical and creates nothing there. `scripts/gate-isolation.sh` proves it:
+  a run against a sentinel directory of marker logs (which must not move), a run
+  against an empty directory (which must stay empty), and, when the TUI is not
+  running, a run against the real directory. The sentinel check alone can miss a
+  leak, because the signal log writes at most one row a minute.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
