@@ -481,3 +481,44 @@ fn the_observed_cadence_is_measured_end_to_end() {
     eprintln!("{body}");
     assert!(med > 0, "a zero gap means the samples were not spaced");
 }
+
+/// L0 of the tiered round: `collect_traced` reads `dhcp/feature-switch` through
+/// `HuaweiClient::dhcp_dns_editable`, and that path is not in `PROBE`, so the
+/// feasibility round never measured it. A tier cannot hold an unmeasured
+/// endpoint, so this measures it before any tier is written.
+///
+/// Budget, declared before the first request: 30 reads of one endpoint, one
+/// session, serial, read only.
+#[test]
+#[ignore = "reads the real device; run with ROUTWATCH_LIVE=1"]
+fn the_dhcp_feature_switch_read_is_measured() {
+    let Some((cfg, pass)) = gate("the_dhcp_feature_switch_read_is_measured") else {
+        return;
+    };
+    let _only_one = LIVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    const SAMPLES: usize = 30;
+    const PATH: &str = "dhcp/feature-switch";
+    eprintln!("budget: {SAMPLES} reads of {PATH}, one session");
+
+    let mut client = connect(&cfg, &pass);
+    let mut ms: Vec<f64> = Vec::with_capacity(SAMPLES);
+    for i in 0..SAMPLES {
+        let t0 = Instant::now();
+        let ok = client.get(PATH).is_ok();
+        let took = t0.elapsed().as_secs_f64() * 1_000.0;
+        assert!(ok, "sample {i} of {PATH} failed, aborting the run");
+        ms.push(took);
+    }
+    ms.sort_by(|a, b| a.partial_cmp(b).expect("finite timings"));
+    let p50 = ms[ms.len() / 2];
+    let p95 = ms[(ms.len() * 95).div_ceil(100) - 1];
+    let max = ms[ms.len() - 1];
+    let body = format!(
+        "group,endpoint,n,p50_ms,p95_ms,max_ms,status\nnetwork,{PATH},{SAMPLES},{p50:.1},{p95:.1},{max:.1},ok\n"
+    );
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("DOCK/tiered");
+    std::fs::create_dir_all(&dir).expect("DOCK/tiered");
+    std::fs::write(dir.join("latency-extra.csv"), &body).expect("latency-extra.csv");
+    eprintln!("{body}");
+    assert_eq!(ms.len(), SAMPLES, "every declared sample was taken");
+}
