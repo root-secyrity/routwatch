@@ -22,10 +22,19 @@ use routwatch::worker::Tier;
 /// first, so a sibling cannot move the row away from the directory under test.
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
-fn isolate_log(tag: &str) -> (std::sync::MutexGuard<'static, ()>, PathBuf) {
+/// Removes its directory on drop: a test run leaves the scratch tree as it found it.
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn isolate_log(tag: &str) -> (std::sync::MutexGuard<'static, ()>, TempDir) {
     let guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = temp_dir(tag);
-    std::env::set_var("XDG_DATA_HOME", &dir);
+    let dir = TempDir(temp_dir(tag));
+    std::env::set_var("XDG_DATA_HOME", &dir.0);
     (guard, dir)
 }
 
@@ -297,7 +306,7 @@ fn the_fourteen_reads_are_split_across_the_three_tiers_without_overlap() {
 #[test]
 fn the_signal_row_is_stamped_at_the_radio_read() {
     let (_log, _dir) = isolate_log("the_signal_row_is_stamped_at_the_radio_read");
-    let path: PathBuf = _dir.join("routwatch/signal-history.jsonl");
+    let path: PathBuf = _dir.0.join("routwatch/signal-history.jsonl");
 
     let stub = Stub::start();
     let mut c = stub.client();
@@ -309,7 +318,6 @@ fn the_signal_row_is_stamped_at_the_radio_read() {
         body.contains("\"at_unix\":1234") || body.contains("\"at_unix\": 1234"),
         "the row must carry the radio read's stamp, got: {body}"
     );
-    let _ = std::fs::remove_dir_all(&_dir);
 }
 
 /// A tier writes its own group and no other: a clients tick must not blank the
