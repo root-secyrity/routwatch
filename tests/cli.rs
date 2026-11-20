@@ -68,19 +68,9 @@ budget_gb = 100
 }
 
 /// One data home for every `run()` in this file, so no test writes into the
-/// developer's real signal log.
-fn test_data_home() -> PathBuf {
-    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let d = std::env::temp_dir().join(format!("rw-xdg-runs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).expect("temp data home");
-        d
-    })
-    .clone()
-}
-
+/// developer's real signal log. Created per run and removed when the run ends.
 fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let home = temp_data_home("runs");
     let mut cmd = bin();
     cmd.args(args);
     // A placeholder, never a real credential: the ladder only needs *a* value
@@ -88,7 +78,7 @@ fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
     cmd.env("ROUTWATCH_PASSWORD", "test-placeholder");
     // Every CLI run that collects now writes a signal row. A test must not touch
     // the developer's real log, so it gets its own data dir.
-    cmd.env("XDG_DATA_HOME", &*test_data_home());
+    cmd.env("XDG_DATA_HOME", &*home);
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -475,7 +465,10 @@ impl Drop for TempDataHome {
 }
 
 fn temp_data_home(name: &str) -> TempDataHome {
-    let d = std::env::temp_dir().join(format!("rw-xdg-{name}-{}", std::process::id()));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("rw-xdg-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("temp data home");
     TempDataHome(d)
@@ -827,7 +820,23 @@ fn bands_watch_without_set_is_refused_before_any_connection() {
 
 /// A data dir of its own: incidents read files, so the test writes them. The
 /// config home is redirected too, so no run reads the developer's real config.
-fn log_home(name: &str) -> std::path::PathBuf {
+/// Removed when the test ends, so a run leaves no `rw-*` behind.
+struct LogHome(std::path::PathBuf);
+
+impl std::ops::Deref for LogHome {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for LogHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn log_home(name: &str) -> LogHome {
     let d = std::env::temp_dir().join(format!("rw-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("routwatch")).expect("temp data home");
@@ -841,7 +850,7 @@ fn log_home(name: &str) -> std::path::PathBuf {
     )
     .expect("config");
     std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-    d
+    LogHome(d)
 }
 
 fn write_events(home: &std::path::Path) {
