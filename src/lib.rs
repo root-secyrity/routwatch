@@ -31,6 +31,10 @@ pub mod scrub;
 pub mod share;
 pub mod signal_history;
 pub mod speedtest;
+/// Test-only isolation: a unit test that runs a worker must not write the real
+/// signal log.
+#[cfg(test)]
+mod test_env;
 pub mod theme;
 pub mod ui;
 pub mod usage;

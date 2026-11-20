@@ -5,38 +5,11 @@
 //! The `Watch` tests are the point of the log: a row is earned by a crossing, so
 //! a link that stays poor for an hour writes one row, not one per read.
 
+mod common;
+
+use common::{isolate_data_home, TempDir};
 use routwatch::events::{self, EventKind, ObsEvent, Watch};
 use routwatch::model::Snapshot;
-use std::path::{Path, PathBuf};
-
-/// A scratch directory that removes itself. The suite must leave the tree as it
-/// found it: a leaked temp dir is a side effect the next run inherits.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "rw-events-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&base).expect("scratch dir");
-        TempDir(base)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 fn row(at_unix: u64, outcome: &str) -> ObsEvent {
     ObsEvent::new(EventKind::Wan, "signal", at_unix, outcome, None)
@@ -184,11 +157,10 @@ fn a_write_row_names_what_was_written_not_what_answered() {
 
 #[test]
 fn the_log_path_follows_the_data_home() {
-    let dir = TempDir::new("xdg");
-    std::env::set_var("XDG_DATA_HOME", dir.path());
+    let home = isolate_data_home("events-xdg");
     let resolved = events::path().expect("a data dir resolves");
     assert!(
-        resolved.starts_with(dir.path()),
+        resolved.starts_with(home.path()),
         "the log follows XDG_DATA_HOME, got {resolved:?}"
     );
     assert!(resolved.ends_with("routwatch/events.jsonl"));
