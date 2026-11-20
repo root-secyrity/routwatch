@@ -2369,6 +2369,10 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
                 // is what keeps a plot from looking cut after a zoom.
                 Ok(Event::Resize(_, _)) => {
                     terminal.clear().ok();
+                    // The loop draws on change only, and a cleared terminal is a
+                    // change nothing else announces: without this the screen stays
+                    // blank until the next snapshot or the one second pulse.
+                    app.needs_draw = true;
                 }
                 Ok(_) => {}
                 Err(_) => break,

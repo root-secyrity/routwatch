@@ -494,6 +494,9 @@ pub struct App {
     /// Set by anything that changes what a frame would draw, cleared when the
     /// frame is drawn. The loop repaints on this instead of on every iteration.
     pub needs_draw: bool,
+    /// The radio stamp of the sample already in the history rings, so a clients
+    /// or device tick does not push a second copy of the same signal.
+    pub last_sample_at: Option<std::time::Instant>,
     pub session: SessionState,
     pub paused: bool,
     pub quit: bool,
@@ -684,6 +687,7 @@ impl App {
             last_poll_ms: 0,
             stamps: crate::worker::TierStamp::default(),
             needs_draw: true,
+            last_sample_at: None,
             session: SessionState::Connecting,
             paused: false,
             quit: false,
@@ -778,13 +782,21 @@ impl App {
             snap.quota.as_ref(),
             start_day,
         );
-        self.history_dl.push_back(snap.traffic.dl_rate_bytes as f64);
-        self.history_ul.push_back(snap.traffic.ul_rate_bytes as f64);
-        while self.history_dl.len() > HISTORY {
-            self.history_dl.pop_front();
-        }
-        while self.history_ul.len() > HISTORY {
-            self.history_ul.pop_front();
+        // One sample per radio read, not one per snapshot: with tiers the client
+        // and device ticks carry the same signal value again, and pushing them
+        // would both duplicate the sample and break the spacing the plots assume.
+        let radio_at = self.stamps.get(crate::worker::Tier::Radio);
+        let new_sample = radio_at.is_none() || self.last_sample_at != radio_at;
+        if new_sample {
+            self.last_sample_at = radio_at;
+            self.history_dl.push_back(snap.traffic.dl_rate_bytes as f64);
+            self.history_ul.push_back(snap.traffic.ul_rate_bytes as f64);
+            while self.history_dl.len() > HISTORY {
+                self.history_dl.pop_front();
+            }
+            while self.history_ul.len() > HISTORY {
+                self.history_ul.pop_front();
+            }
         }
         // What the device itself reported while a test ran: a consistency check
         // on the number the test measured, not proof of it.
@@ -800,9 +812,11 @@ impl App {
                 }
             }
         };
-        push(&mut self.history_rsrp, snap.signal.rsrp_dbm);
-        push(&mut self.history_rsrq, snap.signal.rsrq_db);
-        push(&mut self.history_sinr, snap.signal.sinr_db);
+        if new_sample {
+            push(&mut self.history_rsrp, snap.signal.rsrp_dbm);
+            push(&mut self.history_rsrq, snap.signal.rsrq_db);
+            push(&mut self.history_sinr, snap.signal.sinr_db);
+        }
 
         if let Some(c) = snap.clients.len().checked_sub(1) {
             if self.client_sel > c {
@@ -1680,8 +1694,13 @@ impl App {
     }
 
     pub fn stale(&self) -> bool {
+        // Three periods, but never less than three seconds: the signal read is
+        // bimodal on this firmware (measured 2026-11-19: p95 1575 ms, max
+        // 1640 ms), so a 600 ms period with a bare 1.8 s rule would flag the
+        // firmware's own tail as a dead session.
+        let floor = self.refresh_ms.max(2_000);
         self.age()
-            .map(|a| a.as_millis() as u64 > self.refresh_ms.saturating_mul(3))
+            .map(|a| a.as_millis() as u64 > floor.saturating_mul(3))
             .unwrap_or(false)
     }
 
@@ -2698,7 +2717,61 @@ mod tests {
         );
         assert!(!app.stale());
         app.last_ok = Some(Instant::now() - Duration::from_millis(5));
-        assert!(app.stale(), "refresh_ms=0 makes any age stale");
+        assert!(!app.stale(), "five ms is not three periods at any period");
+        app.last_ok = Some(Instant::now() - Duration::from_secs(7));
+        assert!(
+            app.stale(),
+            "seven seconds is past three periods and the floor"
+        );
+    }
+
+    /// A 600 ms period would put the stale line at 1.8 s, under the firmware's
+    /// own tail, so the header would blink "stale" on a healthy link.
+    #[test]
+    fn a_fast_period_does_not_call_the_firmware_tail_stale() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            600,
+        );
+        app.last_ok = Some(Instant::now() - Duration::from_millis(1_900));
+        assert!(!app.stale(), "1.9 s is not stale at a 600 ms period");
+        app.last_ok = Some(Instant::now() - Duration::from_secs(7));
+        assert!(app.stale(), "seven seconds is past three periods");
+    }
+
+    /// The history rings are the signal series: a clients tick carries the same
+    /// radio reading again and must not push a second point.
+    #[test]
+    fn a_clients_tick_adds_no_signal_sample() {
+        use crate::worker::Tier;
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            600,
+        );
+        let radio = Instant::now() - Duration::from_millis(900);
+        app.stamps.set(Tier::Radio, radio);
+        app.on_snapshot(fixture_snap(), 0);
+        let points = app.history_rsrp.len();
+        app.stamps.set(Tier::Clients, Instant::now());
+        app.on_snapshot(fixture_snap(), 0);
+        assert_eq!(
+            app.history_rsrp.len(),
+            points,
+            "a clients tick pushed a second signal sample"
+        );
+        app.stamps.set(Tier::Radio, Instant::now());
+        app.on_snapshot(fixture_snap(), 0);
+        assert_eq!(
+            app.history_rsrp.len(),
+            points + 1,
+            "a radio read must sample"
+        );
     }
 
     #[test]
