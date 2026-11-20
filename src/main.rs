@@ -2642,6 +2642,25 @@ fn sms_delete_cmd(
     Ok(())
 }
 
+/// The smear the advice uses: the 95th percentile gap between the samples
+/// inside the window, not the widest gap in the whole log. An overnight pause
+/// is absence of observation, and letting it mute a whole day of readings would
+/// hide every real change instead of protecting them.
+fn window_smear(rows: &[routwatch::signal_history::Row], now: u64, window_secs: u64) -> u64 {
+    let since = now.saturating_sub(window_secs);
+    let mut gaps: Vec<u64> = rows
+        .windows(2)
+        .filter(|w| w[1].at_unix >= since && w[1].at_unix <= now)
+        .map(|w| w[1].at_unix.saturating_sub(w[0].at_unix) * 1000)
+        .filter(|ms| *ms > 0)
+        .collect();
+    if gaps.is_empty() {
+        return 0;
+    }
+    gaps.sort_unstable();
+    gaps[(gaps.len() * 95) / 100]
+}
+
 /// Band advice from the logs. Reads only: the one request it makes is the
 /// advertised list, and a router that does not answer narrows the advice
 /// instead of stopping it.
@@ -2654,7 +2673,8 @@ fn bands_advise(
     scans_path: Option<PathBuf>,
 ) -> Result<(), ApiError> {
     let source = routwatch::incidents::Source::load();
-    let smear = routwatch::incidents::smear_ms(&source);
+    let window_secs = window.unwrap_or(routwatch::advisor::WINDOW_SECS);
+    let smear = window_smear(&source.signal, routwatch::record::now_unix(), window_secs);
 
     let scans = match scans_path.as_deref() {
         Some(path) => {
@@ -2717,7 +2737,7 @@ fn bands_advise(
         advertised: &advertised,
         presets: &presets,
         now_unix: routwatch::record::now_unix(),
-        window_secs: window.unwrap_or(routwatch::advisor::WINDOW_SECS),
+        window_secs,
         min_rows: min_rows.unwrap_or(routwatch::advisor::MIN_ROWS),
         smear_ms: smear,
     });

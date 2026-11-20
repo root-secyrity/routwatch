@@ -515,3 +515,48 @@ fn a_scan_file_is_the_only_way_set_advice_gets_a_number() {
     assert_eq!(sets[0]["measurements"], 2);
     assert_eq!(sets[0]["download_median_mbps"], 60.0);
 }
+
+#[test]
+fn an_idle_gap_does_not_mute_the_whole_window() {
+    // A log can pause for hours (the TUI was closed). That pause is absence of
+    // observation, not smear: if it set the smear, every real change would be
+    // read as unattributable and the advice would say nothing.
+    let home = scratch("smear");
+    let cfg = config(&home, "127.0.0.1:1");
+    let now = routwatch::record::now_unix();
+    let mut rows = Vec::new();
+    for i in 0..MIN_ROWS as u64 {
+        rows.push(row(now - 7_260 + i, "3", -95.0));
+    }
+    for i in 0..MIN_ROWS as u64 {
+        rows.push(row(now - 300 + i, "20", -108.0));
+    }
+    write_rows(&home, &rows);
+    let out = run(
+        &home,
+        &[
+            "--config",
+            cfg.to_str().unwrap(),
+            "bands",
+            "advise",
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("the advisor prints json");
+    let smear = parsed["smear_ms"].as_u64().expect("smear is a number");
+    assert!(
+        smear <= 5_000,
+        "a two hour idle gap set the smear to {smear} ms: {parsed}"
+    );
+    assert_eq!(
+        parsed["rows_used"].as_u64(),
+        Some(2 * MIN_ROWS as u64),
+        "both dense runs are inside the window"
+    );
+}

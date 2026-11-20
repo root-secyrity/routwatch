@@ -322,7 +322,9 @@ why each one is stated instead of hidden.
   ranking says so and set advice comes only from `scan --json` results passed with
   `--scans`. The two rankings are never mixed, a reading inside the derived smear is
   not attributed to either band, and a figure beside a band is associated with it,
-  never caused by it.
+  never caused by it. The derived smear is the 95th percentile gap between the samples
+  inside the window, not the widest gap in the log: a pause of hours is absence of
+  observation, and letting it mute the day would hide every real change.
 - **Band advice has four confidence levels and no write path**: `insufficient`, `low`,
   `medium`, `high`, from the rows and the measured scans, and the weakest link sets the
   whole advice. `bands advise` prints the command that would add evidence, switches
