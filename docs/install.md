@@ -47,7 +47,7 @@ username = "admin"
 password = ""
 
 [app]
-refresh_ms = 2000
+refresh_ms = 600
 timeout_ms = 3000
 theme = "terminal"      # follows your terminal / desktop theme
 view = "full"           # full · gauges · lite · dense

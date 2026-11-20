@@ -46,6 +46,13 @@ routwatch
 Then `?` for the keys and `,` for the settings overlay. Reads are free; writes
 need `a` then `y` (see [Safety](#safety)).
 
+It polls the router: this firmware has no push channel (seven stream candidates
+answer `100003`), so the screen can never be fresher than one read. Reads are
+grouped by how fast they answer - signal, status and traffic on the refresh
+period, the client list every 15 s, the ten static documents every 60 s - and the
+header shows an age for each group. The measured tail behind those numbers is in
+[`docs/limits.md`](docs/limits.md).
+
 ## Does it work with my router?
 
 | Router | WebUI / firmware | What was verified |

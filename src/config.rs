@@ -145,7 +145,7 @@ fn default_verify_secs() -> u64 {
 impl Default for App {
     fn default() -> Self {
         App {
-            refresh_ms: 2000,
+            refresh_ms: 600,
             timeout_ms: 3000,
             theme: "terminal".into(),
             view: "full".into(),
@@ -388,6 +388,14 @@ mod credential_tests {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// 600 ms is the cadence a 30 s soak carried with 132 reads and no busy
+    /// code; the read tail, not the timer, is what the screen waits for.
+    #[test]
+    fn the_default_cadence_is_the_measured_one() {
+        let cfg = Config::default();
+        assert_eq!(cfg.app.refresh_ms, 600);
+    }
 
     const MINIMAL: &str = r#"
 [router]

@@ -2330,6 +2330,7 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
         Terminal::new(backend).map_err(|e| ApiError::Config(format!("terminal: {e}")))?;
     terminal.clear().ok();
 
+    let mut painted = std::time::Instant::now();
     while !app.quit {
         drain(&mut app, &rx);
         // Once every 30 s, not on every poll: the ledger is a file, and the
@@ -2349,7 +2350,15 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
                 }
             }
         }
-        terminal.draw(|f| ui::draw(f, &app)).ok();
+        // A frame is drawn because something changed, or because the age text
+        // has to tick. Drawing on every pass repainted identical cells at the
+        // poll rate for no reason.
+        let pulse = painted.elapsed() >= Duration::from_secs(1);
+        if app.needs_draw || pulse {
+            terminal.draw(|f| ui::draw(f, &app)).ok();
+            app.mark_drawn();
+            painted = std::time::Instant::now();
+        }
 
         if event::poll(Duration::from_millis(200)).unwrap_or(false) {
             match event::read() {
@@ -2461,7 +2470,14 @@ fn run_replay(
 fn drain(app: &mut App, rx: &Receiver<Ev>) {
     while let Ok(ev) = rx.try_recv() {
         match ev {
-            Ev::Snapshot { snap, poll_ms } => app.on_snapshot(*snap, poll_ms),
+            Ev::Snapshot {
+                snap,
+                poll_ms,
+                stamps,
+            } => {
+                app.stamps = stamps;
+                app.on_snapshot(*snap, poll_ms);
+            }
             Ev::Session(s) => app.session = s,
             Ev::Error(e) => app.on_error(e),
             Ev::Write(state) => app.settle_write(state),

@@ -446,8 +446,7 @@ fn the_observed_cadence_is_measured_end_to_end() {
     let deadline = Instant::now() + Duration::from_secs(120);
     while arrivals.len() < SAMPLES && Instant::now() < deadline {
         match rx.recv_timeout(Duration::from_secs(30)) {
-            Ok(Ev::Snapshot { snap, poll_ms }) => {
-                let _ = snap;
+            Ok(Ev::Snapshot { poll_ms, .. }) => {
                 arrivals.push((Instant::now(), poll_ms));
             }
             Ok(_) => {}

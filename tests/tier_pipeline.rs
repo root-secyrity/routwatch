@@ -16,6 +16,19 @@ use routwatch::model::Snapshot;
 use routwatch::router::HuaweiClient;
 use routwatch::worker::Tier;
 
+/// `XDG_DATA_HOME` decides where the signal log lives and it is one variable for
+/// the whole process, while tests run in parallel threads. Every test that can
+/// write a row takes this lock and points the variable at its own directory
+/// first, so a sibling cannot move the row away from the directory under test.
+static LOG_LOCK: Mutex<()> = Mutex::new(());
+
+fn isolate_log(tag: &str) -> (std::sync::MutexGuard<'static, ()>, PathBuf) {
+    let guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = temp_dir(tag);
+    std::env::set_var("XDG_DATA_HOME", &dir);
+    (guard, dir)
+}
+
 const SES_DOC: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><response><SesInfo>SessionID=stub-session</SesInfo><TokInfo>stub-token</TokInfo></response>";
 const OK_DOC: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><response>OK</response>";
 const SIGNAL_DOC: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><response><rsrp>-95dBm</rsrp><rsrq>-11dB</rsrq><sinr>12dB</sinr><band>3</band></response>";
@@ -180,6 +193,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 
 #[test]
 fn the_radio_tier_reads_only_the_fast_endpoints() {
+    let (_log, _dir) = isolate_log("the_radio_tier_reads_only_the_fast_endpoints");
     let stub = Stub::start();
     let mut c = stub.client();
     stub.clear();
@@ -202,6 +216,7 @@ fn the_radio_tier_reads_only_the_fast_endpoints() {
 
 #[test]
 fn the_clients_tier_reads_only_the_host_list() {
+    let (_log, _dir) = isolate_log("the_clients_tier_reads_only_the_host_list");
     let stub = Stub::start();
     let mut c = stub.client();
     stub.clear();
@@ -218,6 +233,7 @@ fn the_clients_tier_reads_only_the_host_list() {
 
 #[test]
 fn the_static_tier_reads_the_remaining_ten() {
+    let (_log, _dir) = isolate_log("the_static_tier_reads_the_remaining_ten");
     let stub = Stub::start();
     let mut c = stub.client();
     stub.clear();
@@ -250,6 +266,8 @@ fn the_static_tier_reads_the_remaining_ten() {
 /// once each: a read left out of every tier would silently freeze a field.
 #[test]
 fn the_fourteen_reads_are_split_across_the_three_tiers_without_overlap() {
+    let (_log, _dir) =
+        isolate_log("the_fourteen_reads_are_split_across_the_three_tiers_without_overlap");
     let stub = Stub::start();
     let mut c = stub.client();
     let mut snap = Snapshot::default();
@@ -278,9 +296,8 @@ fn the_fourteen_reads_are_split_across_the_three_tiers_without_overlap() {
 /// row that carried the assembly time or a second clock call would not match.
 #[test]
 fn the_signal_row_is_stamped_at_the_radio_read() {
-    let dir = temp_dir("stamp");
-    std::env::set_var("XDG_DATA_HOME", &dir);
-    let path: PathBuf = dir.join("routwatch/signal-history.jsonl");
+    let (_log, _dir) = isolate_log("the_signal_row_is_stamped_at_the_radio_read");
+    let path: PathBuf = _dir.join("routwatch/signal-history.jsonl");
 
     let stub = Stub::start();
     let mut c = stub.client();
@@ -292,13 +309,14 @@ fn the_signal_row_is_stamped_at_the_radio_read() {
         body.contains("\"at_unix\":1234") || body.contains("\"at_unix\": 1234"),
         "the row must carry the radio read's stamp, got: {body}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&_dir);
 }
 
 /// A tier writes its own group and no other: a clients tick must not blank the
 /// signal the header is showing.
 #[test]
 fn a_tier_leaves_the_other_groups_untouched() {
+    let (_log, _dir) = isolate_log("a_tier_leaves_the_other_groups_untouched");
     let stub = Stub::start();
     let mut c = stub.client();
 

@@ -488,6 +488,12 @@ pub struct App {
     pub history_sinr: VecDeque<f64>,
     pub last_ok: Option<Instant>,
     pub last_poll_ms: u128,
+    /// When each tier last answered, from the worker's event. Empty on a
+    /// replayed frame, which has no live read behind it.
+    pub stamps: crate::worker::TierStamp,
+    /// Set by anything that changes what a frame would draw, cleared when the
+    /// frame is drawn. The loop repaints on this instead of on every iteration.
+    pub needs_draw: bool,
     pub session: SessionState,
     pub paused: bool,
     pub quit: bool,
@@ -676,6 +682,8 @@ impl App {
             history_sinr: VecDeque::with_capacity(HISTORY),
             last_ok: None,
             last_poll_ms: 0,
+            stamps: crate::worker::TierStamp::default(),
+            needs_draw: true,
             session: SessionState::Connecting,
             paused: false,
             quit: false,
@@ -749,6 +757,7 @@ impl App {
     }
 
     pub fn on_snapshot(&mut self, snap: Snapshot, poll_ms: u128) {
+        self.needs_draw = true;
         // A different router means different counters, not a different user:
         // keep the daily table, restart the baseline, and record the change as
         // a gap. Resetting the whole ledger here lost a month of history.
@@ -1657,6 +1666,17 @@ impl App {
     /// How old the displayed data is - the header turns this into `live`/`stale`.
     pub fn age(&self) -> Option<Duration> {
         self.last_ok.map(|t| t.elapsed())
+    }
+
+    /// How old the data of one tier is. `None` until that tier has answered, so
+    /// the header can say nothing instead of saying zero.
+    pub fn age_for(&self, tier: crate::worker::Tier) -> Option<Duration> {
+        self.stamps.get(tier).map(|t| t.elapsed())
+    }
+
+    /// The frame that was just drawn is the frame the terminal holds.
+    pub fn mark_drawn(&mut self) {
+        self.needs_draw = false;
     }
 
     pub fn stale(&self) -> bool {
@@ -2629,6 +2649,24 @@ mod tests {
         // deleting with no cursor is a no-op, not a panic
         app.preset_cursor = None;
         assert!(app.band_preset_delete().is_none());
+    }
+
+    #[test]
+    fn a_redraw_happens_only_when_something_changed() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        );
+        app.mark_drawn();
+        assert!(
+            !app.needs_draw,
+            "marking a frame drawn left the request open, so the loop repaints at the poll rate"
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        assert!(app.needs_draw, "a new snapshot must ask for a frame");
     }
 
     #[test]
