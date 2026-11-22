@@ -692,10 +692,11 @@ pub(crate) fn band_radio(band: u8) -> Option<(&'static str, &'static str)> {
 }
 
 /// Fixed domains: the bar means the same thing on every frame, so a moving
-/// sample does not move the scale with it.
-const RSRP_RANGE: (f32, f32) = (-140.0, -44.0);
-const RSRQ_RANGE: (f32, f32) = (-20.0, -3.0);
-const SINR_RANGE: (f32, f32) = (-10.0, 30.0);
+/// sample does not move the scale with it. One declaration, read by the gauges
+/// and by the antenna judgement, so a bar and a verdict never disagree.
+pub const RSRP_RANGE: (f32, f32) = (-140.0, -44.0);
+pub const RSRQ_RANGE: (f32, f32) = (-20.0, -3.0);
+pub const SINR_RANGE: (f32, f32) = (-10.0, 30.0);
 
 fn meter(value: Option<f32>, range: (f32, f32), cells: usize) -> String {
     let Some(v) = value else {
@@ -2918,8 +2919,8 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
             Metric {
                 label: "RSRP",
                 value: nr.rsrp_dbm,
-                min: -140.0,
-                max: -44.0,
+                min: RSRP_RANGE.0,
+                max: RSRP_RANGE.1,
                 poor_until: -100.0,
                 fair_until: -80.0,
                 unit: "dBm",
@@ -2927,8 +2928,8 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
             Metric {
                 label: "RSRQ",
                 value: nr.rsrq_db,
-                min: -20.0,
-                max: -3.0,
+                min: RSRQ_RANGE.0,
+                max: RSRQ_RANGE.1,
                 poor_until: -15.0,
                 fair_until: -10.0,
                 unit: "dB",
@@ -2936,8 +2937,8 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
             Metric {
                 label: "SINR",
                 value: nr.sinr_db,
-                min: -10.0,
-                max: 30.0,
+                min: SINR_RANGE.0,
+                max: SINR_RANGE.1,
                 poor_until: 10.0,
                 fair_until: 20.0,
                 unit: "dB",
@@ -2948,8 +2949,8 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
             Metric {
                 label: "RSRP",
                 value: s.signal.rsrp_dbm,
-                min: -140.0,
-                max: -44.0,
+                min: RSRP_RANGE.0,
+                max: RSRP_RANGE.1,
                 poor_until: -100.0,
                 fair_until: -80.0,
                 unit: "dBm",
@@ -2957,8 +2958,8 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
             Metric {
                 label: "RSRQ",
                 value: s.signal.rsrq_db,
-                min: -20.0,
-                max: -3.0,
+                min: RSRQ_RANGE.0,
+                max: RSRQ_RANGE.1,
                 poor_until: -15.0,
                 fair_until: -10.0,
                 unit: "dB",
@@ -2966,8 +2967,8 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
             Metric {
                 label: "SINR",
                 value: s.signal.sinr_db,
-                min: -10.0,
-                max: 30.0,
+                min: SINR_RANGE.0,
+                max: SINR_RANGE.1,
                 poor_until: 10.0,
                 fair_until: 20.0,
                 unit: "dB",
