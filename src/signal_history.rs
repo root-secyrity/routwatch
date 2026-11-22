@@ -369,10 +369,10 @@ pub fn compact_if_needed(path: &Path, keep: usize) -> std::io::Result<usize> {
     let drop = rows.len() - keep;
     rows.drain(..drop);
     let mut body = String::new();
-    for r in &mut rows {
-        // A rewrite states the contract this build writes. A legacy row keeps
-        // its nulls: absence is what was measured, not something the trim lost.
-        r.v = VERSION;
+    for r in &rows {
+        // A trim drops rows, it never relabels the ones it keeps: a legacy row
+        // stays v1 with its nulls, so the version keeps saying what was asked
+        // for when the row was written.
         body.push_str(
             &serde_json::to_string(r)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
@@ -700,21 +700,22 @@ mod tests {
     }
 
     #[test]
-    fn a_rewrite_states_the_current_version_and_keeps_the_legacy_nulls() {
+    fn a_rewrite_keeps_each_row_s_own_version_and_the_legacy_nulls() {
         let d = TempDir::new("rewrite");
         let mut oldest = serde_json::to_string(&row_at(1000)).unwrap();
         oldest.push('\n');
         let mut newest = serde_json::to_string(&row_at(1120)).unwrap();
         newest.push('\n');
         // A v2 row, then a legacy row, then a v2 row. Trimmed to the newest two,
-        // the legacy row survives the rewrite and so do its nulls.
+        // the legacy row survives the rewrite and so do its nulls and its version.
         std::fs::write(d.log(), format!("{oldest}{}\n{newest}", legacy_at(1060))).unwrap();
         assert_eq!(compact_if_needed(&d.log(), 2).unwrap(), 2);
         let l = load(&d.log());
         assert_eq!(l.total, 2, "{:?}", l);
         assert_eq!(l.rows[0].at_unix, 1060);
-        assert_eq!(l.rows[0].v, VERSION, "the rewrite states what it writes");
+        assert_eq!(l.rows[0].v, 1, "a trim does not relabel what is asked for");
         assert_eq!(l.rows[0].earfcn_dl, None, "absence is not lost by a trim");
         assert_eq!(l.rows[1].at_unix, 1120);
+        assert_eq!(l.rows[1].v, VERSION);
     }
 }

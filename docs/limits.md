@@ -245,7 +245,8 @@ why each one is stated instead of hidden.
   rows, one row a minute, because the drift guard compares today against two complete
   previous days. A trim rewrites the file through a 0600 temp file and a rename;
   measured 2026-11-22 on this machine, trimming 4380 rows to 4320 took 131 ms and
-  turned 813 KB into 802 KB, once a minute at most while the log is over its cap.
+  turned 813 KB into 802 KB, once a minute at most while the log is over its cap. A
+  trim keeps each row's own version: a v1 row stays v1 and keeps its `None` fields.
 
 - **A row states the contract it was written with**: rows are v2 and carry the
   downlink and uplink earfcn as numbers plus the transmission mode. A v1 row still

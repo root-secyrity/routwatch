@@ -12,7 +12,8 @@ Newest first. Each section lists what changed, in the words the release uses.
   empty, and a row from a newer version is refused with one warning.
 - The log keeps three days instead of one (4320 rows, one a minute), because the
   guard needs two complete previous days to have a baseline. Measured 2026-11-22:
-  trimming 4380 rows took 131 ms and turned 813 KB into 802 KB.
+  trimming 4380 rows took 131 ms and turned 813 KB into 802 KB. A trim keeps each
+  row's own version, so a v1 row stays v1 instead of being relabelled v2.
 - **The drift guard**: the signal tab draws one line when today's best SINR on the
   serving cell is 4 dB or more below the median of the previous days' best, and one
   line while it is still collecting. It draws nothing otherwise, and writes one
