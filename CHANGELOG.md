@@ -19,6 +19,26 @@ Newest first. Each section lists what changed, in the words the release uses.
   input, a tab switch does not clear the terminal, and browsing a list sends
   nothing to the worker.
 
+**Instant boot and a lighter frame**
+
+- The first frame is drawn before the process reads the usage ledger, the
+  history ring or the incident list, so the screen answers at once; those reads
+  are 2.8 ms in total and now happen behind a painted frame. A panel with no
+  data yet says "collecting the first sample…" and every field stays `-` until a
+  value arrives, so nothing is guessed.
+- The redundant clear-all at startup is gone. `Terminal::clear` asks for the
+  cursor position first, and a terminal that never answers that query costs
+  crossterm's 2 s timeout before the first frame (measured over a PTY, 2026-11-22);
+  on the alternate screen the first draw paints every cell anyway.
+- The client tab caches the display order and rebuilds it only when the client
+  list or the sort changes. The row loop used to re-sort the list once per row.
+  With 40 clients a 120x34 frame dropped from p50 608 us to 228 us and a 240x60
+  frame from p50 1018 us to 469 us, flat in the number of clients.
+- Five permanent tests hold this: the cached order is reused between draws and
+  rebuilt when the client list or the sort changes, the boot frame is drawn
+  before the first disk read, a panel with no data says it is collecting, and an
+  empty field is a dash and never a number.
+
 ## 0.9.1
 
 **Polling in tiers**

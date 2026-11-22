@@ -61,6 +61,11 @@ Input is separate from that polling: a key is drawn in the pass that reads it
 of keys. The 30 s client read is a data delay, not a keyboard delay: browsing a
 list moves a cursor over rows already in memory.
 
+The first frame is drawn before the process reads anything from disk, so the
+screen answers at once and the panels say they are collecting until data lands.
+The client order behind a redraw is derived once per change rather than once per
+frame, which keeps a 40 client frame under half a millisecond of drawing work.
+
 ## Does it work with my router?
 
 | Router | WebUI / firmware | What was verified |

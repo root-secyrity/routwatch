@@ -299,10 +299,41 @@ why each one is stated instead of hidden.
   already in the snapshot. No request and no file read happens in a key handler;
   the two disk touches on the UI thread (incidents every 60 s, the usage ledger
   every 30 s) are timers, not keys.
-- **The first key of a session can wait for the opening collect**: measured
-  2026-11-22, the first key after launch took 951 ms on both sizes while the
-  session was still assembling its first data frame, and 0.4 ms once the screen
-  was up (3 s settle). The wait is the opening read, not the input loop.
+- **The first frame goes out before the startup reads**: the frame is drawn as
+  soon as the terminal is set up, then the usage ledger, the history ring and the
+  incident list are read (measured 2026-11-22 on a full ledger: 32 us, 123 us and
+  2.65 ms, 2.8 ms in all), and only then does the loop start. A panel with no
+  snapshot yet says "collecting the first sample…" and keeps every field as `-`
+  until data arrives, so nothing on screen is invented. Measured over a PTY at
+  120x34: the first key after launch went from 951 ms to 0.3 ms with a 0.4 s
+  settle, because the key no longer queues behind the boot path.
+- **There is no clear-all at startup**: `Terminal::clear` asks the terminal for
+  its cursor position before it clears, and a bare PTY never answers that query,
+  so the call costs crossterm's 2 s read timeout before the first frame.
+  Measured 2026-11-22: a raw clear-all escape 0.0 ms, `Terminal::clear` 2000 ms,
+  and the whole boot 0.9 ms once it was dropped. The call was redundant anyway,
+  because the first draw on a fresh alternate screen paints every cell. A real
+  terminal answers the query at once, so the 2 s is an artefact of a terminal
+  with no responder; a resize still clears, where the buffers really are stale.
+- **The client order is derived once per change, not per frame**: the tab keeps
+  a cached order of client indices keyed by a fingerprint of the client list and
+  the active sort, so `j`/`k` and a redraw reuse it. The row loop used to call
+  `selected_client()` per row, which re-sorted the whole list per row. Measured
+  2026-11-22 with 40 clients on a release build: a 120x34 frame fell from p50
+  608 us to 228 us and a 240x60 frame from p50 1018 us to 469 us, and the cost
+  no longer grows with the number of clients.
+- **The periodic UI work is two small timers and nothing else**: the incident
+  list is re-read and re-derived every 60 s (measured 2.4 ms, twice, at 60.1 s
+  and 120.1 s) and the usage ledger is written every 30 s when it is dirty
+  (measured p50 0.5 ms, p95 0.7 ms, max 1.9 ms on 31 day buckets). A 156 s window
+  at 120x34 and a 600 ms refresh carried 240 key samples with p99 1.0 ms and max
+  1.05 ms after the first key, so no spike lands on a key press. There is no
+  disk thread: a second thread would buy 2.4 ms every 60 s and cost a thread.
+- **Every timing number here was measured inside a PTY**: the probe owns the
+  pty, sets its size, and reads the bytes the app writes. It cannot see a
+  compositor or a transparent terminal, so nothing here describes the owner's
+  own desktop; whether the screen feels immediate there is his call after he
+  installs the build.
 - **A wide terminal costs bytes, not milliseconds**: a full repaint measured
   6.5 KB at 120x34 and 12.2 KB at 240x60, and key to first byte was the same at
   both sizes, so the write itself is not what a slow terminal makes you feel.
