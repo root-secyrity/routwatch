@@ -336,6 +336,11 @@ enum Cmd {
         #[command(subcommand)]
         action: IpAction,
     },
+    /// The radio side of an antenna decision, from the saved logs (no network)
+    Antenna {
+        #[command(subcommand)]
+        action: AntennaAction,
+    },
     /// Saved long-term history
     History {
         /// Signal rows (no network)
@@ -507,6 +512,19 @@ enum IncidentsCmd {
 }
 
 #[derive(Subcommand)]
+enum AntennaAction {
+    /// Whether another antenna would change what this cell gives, from the saved
+    /// logs (no network, no write)
+    Worth {
+        /// Window to judge, in seconds
+        #[arg(long, default_value_t = routwatch::antenna::WINDOW_SECS)]
+        window: u64,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum IpAction {
     /// Drop the data connection, bring it back, and watch for the address
     Renew {
@@ -614,6 +632,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Replay { .. })
             | Some(Cmd::Speedtest { .. })
             | Some(Cmd::History { .. })
+            | Some(Cmd::Antenna { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
     );
     let cfg = if offline {
@@ -2030,6 +2049,35 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 0 => Ok(()),
                 code => Err(ApiError::Quiet(code)),
             }
+        }
+        Some(Cmd::Antenna {
+            action: AntennaAction::Worth { window, json },
+        }) => {
+            let now = routwatch::app::unix_now();
+            let rows = match routwatch::signal_history::path() {
+                Some(p) => {
+                    let l = routwatch::signal_history::load(&p);
+                    if l.damaged > 0 {
+                        eprintln!(
+                            "antenna: {} of {} signal rows could not be read and are skipped",
+                            l.damaged, l.total
+                        );
+                    }
+                    l.rows
+                }
+                None => Vec::new(),
+            };
+            let speed = match routwatch::history::path() {
+                Some(p) => routwatch::history::load(&p).rows,
+                None => Vec::new(),
+            };
+            let report = routwatch::antenna::antenna_worth(&rows, &speed, now, window);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                print!("{}", routwatch::antenna::table(&report));
+            }
+            Ok(())
         }
         Some(Cmd::History {
             signal,

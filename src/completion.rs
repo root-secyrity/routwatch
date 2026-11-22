@@ -23,6 +23,7 @@ pub const SUBCOMMANDS: &[&str] = &[
     "ping",
     "speedtest",
     "history",
+    "antenna",
     "ip",
     "dump",
     "share",

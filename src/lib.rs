@@ -4,6 +4,7 @@
 //! `App` from a fixture and assert on the produced frame.
 
 pub mod advisor;
+pub mod antenna;
 pub mod app;
 pub mod capabilities;
 pub mod client_detail;
