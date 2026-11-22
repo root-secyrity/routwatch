@@ -485,7 +485,7 @@ fn speed_lines(app: &App) -> Vec<Line<'static>> {
                 bytes(tr.session_ul_bytes),
                 dur(tr.session_secs)
             ),
-            Style::default().fg(t.fg),
+            Style::default().fg(t.value),
             t.dim,
         ),
         kv(
@@ -496,7 +496,7 @@ fn speed_lines(app: &App) -> Vec<Line<'static>> {
                 bytes(tr.total_ul_bytes),
                 dur(tr.total_secs)
             ),
-            Style::default().fg(t.fg),
+            Style::default().fg(t.value),
             t.dim,
         ),
     ];
@@ -1525,7 +1525,7 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
                 bytes(tr.session_ul_bytes),
                 dur(tr.session_secs)
             ),
-            Style::default().fg(t.fg),
+            Style::default().fg(t.value),
             t.dim,
         ),
         kv(
@@ -1536,7 +1536,7 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
                 bytes(tr.total_ul_bytes),
                 dur(tr.total_secs)
             ),
-            Style::default().fg(t.fg),
+            Style::default().fg(t.value),
             t.dim,
         ),
         Line::from(""),
@@ -2302,25 +2302,25 @@ pub fn sms_tab(f: &mut Frame, area: Rect, app: &App) {
                 lines.push(kv(
                     "inbox",
                     format!("{} ({} unread)", c.inbox, c.unread),
-                    Style::default().fg(t.fg),
+                    Style::default().fg(t.value),
                     t.dim,
                 ));
                 lines.push(kv(
                     "outbox",
                     c.outbox.to_string(),
-                    Style::default().fg(t.fg),
+                    Style::default().fg(t.value),
                     t.dim,
                 ));
                 lines.push(kv(
                     "draft",
                     c.draft.to_string(),
-                    Style::default().fg(t.fg),
+                    Style::default().fg(t.value),
                     t.dim,
                 ));
                 lines.push(kv(
                     "capacity",
                     c.max.to_string(),
-                    Style::default().fg(t.fg),
+                    Style::default().fg(t.value),
                     t.dim,
                 ));
             }
@@ -2686,7 +2686,7 @@ pub fn device_tab(f: &mut Frame, area: Rect, app: &App) {
         kv(
             "uptime",
             d.uptime_secs.map(dur).unwrap_or_else(|| "-".into()),
-            Style::default().fg(t.fg),
+            Style::default().fg(t.value),
             t.dim,
         ),
     ];

@@ -89,6 +89,10 @@ pub struct Theme {
     pub bg: Color,
     pub fg: Color,
     pub dim: Color,
+    /// Neutral measurement value: bytes, rates, durations, counters. Never a
+    /// state and never an identifier, so colour is never the only carrier of
+    /// meaning; docs/limits.md states the rule.
+    pub value: Color,
     pub accent: Color,
     pub ok: Color,
     pub warn: Color,
@@ -346,6 +350,7 @@ pub fn terminal() -> Theme {
         bg: Color::Reset,
         fg: Color::Reset,
         dim: Color::DarkGray,
+        value: Color::LightCyan,
         accent: Color::Cyan,
         ok: Color::Green,
         warn: Color::Yellow,
@@ -365,6 +370,7 @@ pub fn dark() -> Theme {
         bg: Color::Reset,
         fg: Color::White,
         dim: Color::DarkGray,
+        value: rgb(0x7C, 0xC7, 0xF0),
         accent: Color::Cyan,
         ok: Color::Green,
         warn: Color::Yellow,
@@ -386,6 +392,7 @@ pub fn ocean() -> Theme {
         bg: Color::Reset,
         fg: bright_white,
         dim: muted,
+        value: rgb(0x9C, 0xD9, 0xFF),
         accent: rgb(0x14, 0xF0, 0xF0),
         ok: rgb(0x31, 0xE7, 0x22),
         warn: rgb(0xEA, 0xEC, 0x23),
@@ -406,6 +413,8 @@ pub fn solarized() -> Theme {
         bg: Color::Reset,
         fg: rgb(131, 148, 150),
         dim: muted,
+        // Solarized blue: readable on base03 and not the teal accent.
+        value: rgb(38, 139, 210),
         accent: rgb(42, 161, 152),
         ok: rgb(133, 153, 0),
         warn: rgb(181, 137, 0),
@@ -425,6 +434,7 @@ pub fn dracula() -> Theme {
         fg: rgb(248, 248, 242),
         // Dracula's #6272A4 comment is 3.0:1; lightened to 4.5:1 for body text.
         dim: rgb(0x8b, 0x98, 0xbd),
+        value: rgb(139, 233, 253),
         accent: rgb(189, 147, 249),
         ok: rgb(80, 250, 123),
         warn: rgb(241, 250, 140),
@@ -443,6 +453,8 @@ pub fn nord() -> Theme {
         fg: rgb(216, 222, 233),
         // nord3 is a background shade (1.7:1 as text); sit between nord3/nord4.
         dim: rgb(0x98, 0xa3, 0xb8),
+        // nord9, one step cooler than the nord8 accent.
+        value: rgb(0x81, 0xA1, 0xC1),
         accent: rgb(136, 192, 208),
         ok: rgb(163, 190, 140),
         warn: rgb(235, 203, 139),
@@ -464,6 +476,7 @@ pub fn sky() -> Theme {
         bg: rgb(0x22, 0x4F, 0xBC),
         fg: rgb(0xFF, 0xFF, 0xFF),
         dim: muted,
+        value: rgb(0xBF, 0xE9, 0xFF),
         accent: rgb(0x14, 0xF0, 0xF0),
         ok: rgb(0x31, 0xE7, 0x22),
         warn: rgb(0xEA, 0xEC, 0x23),
@@ -483,6 +496,7 @@ pub fn paper() -> Theme {
         bg: rgb(0xF5, 0xF5, 0xF2),
         fg: rgb(0x0d, 0x0d, 0x0d),
         dim: rgb(0x4a, 0x4a, 0x4a),
+        value: rgb(0x0B, 0x5A, 0x66),
         accent: rgb(0, 100, 160),
         ok: rgb(0x00, 0x64, 0x28),
         warn: rgb(0x78, 0x50, 0x00),
@@ -586,6 +600,7 @@ fn theme_from_flat(map: &HashMap<String, String>) -> Option<Theme> {
         bg,
         fg,
         dim: pick(&["dark_foreground", "dark_fg", "color8"]).unwrap_or(fg),
+        value: pick(&["value", "cyan", "color6"]).unwrap_or(fg),
         accent: pick(&["accent", "blue", "color4"]).unwrap_or(fg),
         ok: pick(&["green", "color2"]).unwrap_or(fg),
         warn: pick(&["yellow", "color3"]).unwrap_or(fg),
@@ -632,6 +647,7 @@ pub fn from_ryoku(_name: &str, scheme: &serde_json::Value) -> Theme {
         bg: pick("mSurface").unwrap_or(fallback.bg),
         fg: pick("mOnSurface").unwrap_or(fallback.fg),
         dim: pick("mOutline").unwrap_or(fallback.dim),
+        value: terminal_slot("cyan").unwrap_or(fallback.value),
         accent: pick("mPrimary").unwrap_or(fallback.accent),
         ok: terminal_slot("green").unwrap_or(fallback.ok),
         warn: pick("mTertiary").unwrap_or(fallback.warn),
@@ -785,6 +801,14 @@ mod tests {
                     "{name}: muted text contrast {:.1}:1 below 3:1",
                     contrast(t.dim, bg)
                 );
+                // A measurement is body text that happens to carry a colour.
+                if matches!(t.value, Color::Rgb(..)) {
+                    assert!(
+                        contrast(t.value, bg) >= 4.5,
+                        "{name}: value colour contrast {:.1}:1 below AA",
+                        contrast(t.value, bg)
+                    );
+                }
                 // The client list draws the selected row as fg on `selected`.
                 if matches!(t.selected, Color::Rgb(..)) {
                     assert!(
