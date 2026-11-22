@@ -2,9 +2,9 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
-## Unreleased
+## 0.9.2
 
-**Sessions are closed on every exit path**
+**Sessions are closed on every exit path** (#69)
 
 - Every command now closes its router session on the way out, including the error
   paths. The client logs in on a flag and `Drop` posts the logout while the flag is
@@ -20,14 +20,14 @@ Newest first. Each section lists what changed, in the words the release uses.
   client logs out on the error path, and no `process::exit` or `panic = "abort"` can
   bypass the guard.
 
-**The tab bar names the view only**
+**The tab bar names the view only** (#69)
 
 - The `full/braille` indicator is gone. The view (`full`, `gauges`, `lite`,
   `dense`) is a real axis toggled by `v` and stays; the renderer name beside it was
   half of a choice that no longer exists, left over from retiring the second
   renderer. A test fails if the bar names a renderer again.
 
-**Measured values have a colour of their own**
+**Measured values have a colour of their own** (#70)
 
 - Neutral measurements (durations, byte totals, message counters) are drawn in one
   `value` colour per palette, as a whole value and never digit by digit. State
@@ -37,7 +37,7 @@ Newest first. Each section lists what changed, in the words the release uses.
   keeps its state colour, an identifier is one colour, a tab number keeps the tab bar
   colour, and the frame reads the same without the value colour.
 
-**Input responsiveness**
+**Input responsiveness** (#67)
 
 - A key press is drawn in the pass that reads it instead of waiting for the one
   second pulse that keeps the age text moving. Measured over a PTY, key to first
@@ -52,7 +52,7 @@ Newest first. Each section lists what changed, in the words the release uses.
   input, a tab switch does not clear the terminal, and browsing a list sends
   nothing to the worker.
 
-**Instant boot and a lighter frame**
+**Instant boot and a lighter frame** (#68)
 
 - The first frame is drawn before the process reads the usage ledger, the
   history ring or the incident list, so the screen answers at once; those reads
