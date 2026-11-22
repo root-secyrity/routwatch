@@ -3344,11 +3344,23 @@ fn graphs_panel(f: &mut Frame, area: Rect, app: &App, wide: bool) {
             "RSRP",
             &app.history_rsrp,
             t.rsrp_color(-90.0),
-            -140.0,
-            -44.0,
+            f64::from(RSRP_RANGE.0),
+            f64::from(RSRP_RANGE.1),
         ),
-        ("RSRQ", &app.history_rsrq, t.rsrq_color(-9.0), -20.0, -3.0),
-        ("SINR", &app.history_sinr, t.sinr_color(12.0), -10.0, 30.0),
+        (
+            "RSRQ",
+            &app.history_rsrq,
+            t.rsrq_color(-9.0),
+            f64::from(RSRQ_RANGE.0),
+            f64::from(RSRQ_RANGE.1),
+        ),
+        (
+            "SINR",
+            &app.history_sinr,
+            t.sinr_color(12.0),
+            f64::from(SINR_RANGE.0),
+            f64::from(SINR_RANGE.1),
+        ),
     ];
 
     // Every series gets the rows that are actually left. When there is not even

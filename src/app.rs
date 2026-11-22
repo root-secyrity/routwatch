@@ -3729,4 +3729,83 @@ mod tests {
         let note = app.speed.as_ref().unwrap().note.clone().unwrap_or_default();
         assert!(note.contains("did not see"), "{note}");
     }
+
+    /// The last minute of the local day `back` days ago (1 = yesterday), found
+    /// by watching the stamp change so the test does not assume a timezone.
+    fn day_end_before(now: u64, back: u32) -> u64 {
+        let mut t = now;
+        let mut seen = 0;
+        let mut day = crate::signal_history::local_stamp(now)[..10].to_string();
+        loop {
+            t -= 60;
+            let d = crate::signal_history::local_stamp(t)[..10].to_string();
+            if d != day {
+                seen += 1;
+                if seen == back {
+                    return t;
+                }
+                day = d;
+            }
+            assert!(now - t < 6 * 86_400, "no day boundary found");
+        }
+    }
+
+    fn keyed_line(at: u64, sinr: f32) -> String {
+        let r = crate::signal_history::Row {
+            v: crate::signal_history::VERSION,
+            at_unix: at,
+            net_type: Some("LTE".into()),
+            band: Some("B1".into()),
+            nr_band: None,
+            rsrp_dbm: Some(-96.0),
+            rsrq_db: Some(-10.0),
+            sinr_db: Some(sinr),
+            pci: Some(481),
+            endc: Some(false),
+            earfcn_dl: Some(1650),
+            earfcn_ul: Some(18100),
+            tm: Some("TM[4]".into()),
+        };
+        let mut s = serde_json::to_string(&r).unwrap();
+        s.push('\n');
+        s
+    }
+
+    #[test]
+    fn one_alert_is_one_event_and_a_second_check_writes_nothing() {
+        let _home = crate::test_env::isolate_data_home("guard-event");
+        let log = crate::signal_history::path().expect("a data dir is set");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let now = unix_now();
+        let mut body = String::new();
+        // Two complete previous days at 9.2 dB, then today at 4.5 dB: a 4.7 dB drop.
+        for back in 1..=2 {
+            let end = day_end_before(now, back);
+            for k in (0..60u64).rev() {
+                body.push_str(&keyed_line(end - k * 60, 9.2));
+            }
+        }
+        // Oldest first: the guard reads coverage from the ends of the file.
+        for i in (0..360u64).rev() {
+            body.push_str(&keyed_line(now - i * 60, 4.5));
+        }
+        std::fs::write(&log, body).unwrap();
+
+        let mut app = fixture_app();
+        app.load_guard();
+        assert!(app.guard.cell.alert, "{:?}", app.guard);
+        let events = crate::events::path().unwrap();
+        let first = std::fs::read_to_string(&events).unwrap();
+        assert_eq!(
+            first.lines().filter(|l| l.contains("\"guard\"")).count(),
+            1,
+            "{first}"
+        );
+        app.load_guard();
+        let second = std::fs::read_to_string(&events).unwrap();
+        assert_eq!(
+            second, first,
+            "a second check on the same day appends nothing"
+        );
+    }
 }
