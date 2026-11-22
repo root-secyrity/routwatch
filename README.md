@@ -56,6 +56,11 @@ the WAN going down and coming back, a tier read that failed, and the signal
 crossing into poor. The measured tail behind those numbers is in
 [`docs/limits.md`](docs/limits.md).
 
+Input is separate from that polling: a key is drawn in the pass that reads it
+(p95 1.5 ms over a PTY, measured 2026-11-22), and the loop draws once per burst
+of keys. The 30 s client read is a data delay, not a keyboard delay: browsing a
+list moves a cursor over rows already in memory.
+
 ## Does it work with my router?
 
 | Router | WebUI / firmware | What was verified |

@@ -3148,30 +3148,38 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
         // A frame is drawn because something changed, or because the age text
         // has to tick. Drawing on every pass repainted identical cells at the
         // poll rate for no reason.
-        let pulse = painted.elapsed() >= Duration::from_secs(1);
-        if app.needs_draw || pulse {
+        if frame_due(&app, painted.elapsed()) {
             terminal.draw(|f| ui::draw(f, &app)).ok();
             app.mark_drawn();
             painted = std::time::Instant::now();
         }
 
-        if event::poll(Duration::from_millis(200)).unwrap_or(false) {
-            match event::read() {
-                Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => handle_key(&mut app, k, &tx),
-                // A resize must repaint from scratch: the terminal has already
-                // discarded the old cells, and anything the diff thinks it
-                // already drew is now a hole. Clearing costs one full frame and
-                // is what keeps a plot from looking cut after a zoom.
-                Ok(Event::Resize(_, _)) => {
-                    terminal.clear().ok();
-                    // The loop draws on change only, and a cleared terminal is a
-                    // change nothing else announces: without this the screen stays
-                    // blank until the next snapshot or the one second pulse.
-                    app.needs_draw = true;
-                }
-                Ok(_) => {}
-                Err(_) => break,
+        let pass = drain_events(&mut app, &tx, || {
+            if event::poll(Duration::ZERO).unwrap_or(false) {
+                Some(event::read())
+            } else {
+                None
             }
+        });
+        // A resize must repaint from scratch: the terminal has already
+        // discarded the old cells, and anything the diff thinks it already drew
+        // is now a hole. Clearing costs one full frame and is what keeps a plot
+        // from looking cut after a zoom.
+        if pass.resized {
+            terminal.clear().ok();
+            // The loop draws on change only, and a cleared terminal is a change
+            // nothing else announces: without this the screen stays blank until
+            // the next snapshot or the one second pulse.
+            app.needs_draw = true;
+        }
+        if pass.closed {
+            break;
+        }
+        if !pass.handled {
+            // Nothing was waiting: sleep here rather than spin. A key wakes
+            // this at once, so the timeout only bounds how late the age text
+            // notices its next second.
+            let _ = event::poll(Duration::from_millis(200));
         }
     }
 
@@ -3264,6 +3272,54 @@ fn run_replay(
         frames.len().min(idx)
     );
     Ok(())
+}
+
+/// What one pass over the input queue actually saw. The loop draws once per
+/// pass, so a burst of keys must arrive as one pass rather than one per key.
+#[derive(Default)]
+struct InputPass {
+    /// A key or a resize was handled: the screen may be different now.
+    handled: bool,
+    /// The terminal threw its cells away, so the next frame must repaint all of
+    /// them: the diff would otherwise leave holes.
+    resized: bool,
+    /// The event source errored; the loop stops instead of spinning on it.
+    closed: bool,
+}
+
+/// Handle every event already waiting, then report what happened. `next`
+/// returns `None` once the queue is empty, which is what lets the loop tell
+/// "nothing arrived" (sleep) from "keys arrived" (draw now).
+fn drain_events(
+    app: &mut App,
+    tx: &Sender<WorkerCmd>,
+    mut next: impl FnMut() -> Option<std::io::Result<Event>>,
+) -> InputPass {
+    let mut pass = InputPass::default();
+    while let Some(res) = next() {
+        match res {
+            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
+                handle_key(app, k, tx);
+                pass.handled = true;
+            }
+            Ok(Event::Resize(_, _)) => pass.resized = true,
+            Ok(_) => {}
+            Err(_) => {
+                pass.closed = true;
+                break;
+            }
+        }
+    }
+    if pass.handled {
+        app.mark_dirty();
+    }
+    pass
+}
+
+/// Whether this pass of the loop owes the terminal a frame. The one second
+/// pulse is there for the age text; it must not be what releases a key.
+fn frame_due(app: &App, since_paint: Duration) -> bool {
+    app.needs_draw || since_paint >= Duration::from_secs(1)
 }
 
 fn drain(app: &mut App, rx: &Receiver<Ev>) {
@@ -4354,6 +4410,121 @@ mod key_tests {
             100,
             2000,
         )
+    }
+
+    use super::drain_events;
+    use super::frame_due;
+    use ratatui::crossterm::event::Event;
+    use routwatch::app::LogLevel;
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
+    /// The terminal queue the loop would have found waiting. `next` stands in
+    /// for `event::poll` plus `event::read`; `None` is an empty queue.
+    struct Keys {
+        items: VecDeque<Event>,
+        reads: usize,
+    }
+
+    impl Keys {
+        fn new(items: Vec<Event>) -> Self {
+            Self {
+                items: items.into(),
+                reads: 0,
+            }
+        }
+
+        fn next(&mut self) -> Option<std::io::Result<Event>> {
+            let ev = self.items.pop_front()?;
+            self.reads += 1;
+            Some(Ok(ev))
+        }
+    }
+
+    #[test]
+    fn a_batch_of_keys_is_drained_before_one_draw() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        for i in 0..12 {
+            app.log(LogLevel::Info, format!("line {i}"));
+        }
+        // `i` opens the feed and follows it; `j` moves inside the feed.
+        handle_key(&mut app, key(KeyCode::Char('i')), &tx);
+        app.mark_drawn();
+
+        let mut keys = Keys::new(vec![Event::Key(key(KeyCode::Char('j'))); 10]);
+        let pass = drain_events(&mut app, &tx, || keys.next());
+        assert!(pass.handled, "keys were waiting");
+        assert_eq!(keys.reads, 10, "every queued key is read in one pass");
+        assert_eq!(app.event_cursor(), Some(10), "ten j moved ten rows");
+
+        let mut draws = 0;
+        if frame_due(&app, Duration::ZERO) {
+            draws += 1;
+            app.mark_drawn();
+        }
+        assert_eq!(draws, 1, "a burst of ten keys costs one frame");
+        assert!(
+            !frame_due(&app, Duration::ZERO),
+            "the frame clears the flag"
+        );
+    }
+
+    #[test]
+    fn a_key_that_changes_state_draws_before_the_next_pulse() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        app.mark_drawn();
+        assert!(!frame_due(&app, Duration::ZERO), "nothing changed yet");
+
+        let mut keys = Keys::new(vec![Event::Key(key(KeyCode::Char('3')))]);
+        let pass = drain_events(&mut app, &tx, || keys.next());
+        assert!(pass.handled);
+        assert_eq!(app.tab, Tab::Traffic, "the key landed");
+        assert!(
+            frame_due(&app, Duration::ZERO),
+            "the key owes a frame without waiting for the one second pulse"
+        );
+    }
+
+    #[test]
+    fn input_is_not_blocked_by_a_silent_worker() {
+        let (tx, rx) = channel();
+        let mut app = bare_app();
+        // Nothing ever arrives on the worker channel, and the key still lands.
+        assert!(rx.try_recv().is_err(), "the worker is silent");
+        let mut keys = Keys::new(vec![Event::Key(key(KeyCode::Char('2')))]);
+        let pass = drain_events(&mut app, &tx, || keys.next());
+        assert!(pass.handled, "the key was handled");
+        assert!(!pass.closed, "a silent worker is not a closed input");
+        assert_eq!(app.tab, Tab::Bands);
+    }
+
+    #[test]
+    fn tab_switch_does_not_clear_the_terminal() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        let mut keys = Keys::new(vec![Event::Key(key(KeyCode::Char('5')))]);
+        let pass = drain_events(&mut app, &tx, || keys.next());
+        assert_eq!(app.tab, Tab::Clients);
+        assert!(
+            !pass.resized,
+            "a tab switch repaints the diff; it must not clear the terminal"
+        );
+    }
+
+    #[test]
+    fn browsing_a_list_never_posts_or_reads_disk_in_the_ui_handler() {
+        let (tx, rx) = channel();
+        let mut app = bare_app();
+        app.tab = Tab::Clients;
+        let mut keys = Keys::new(vec![Event::Key(key(KeyCode::Char('j'))); 10]);
+        drain_events(&mut app, &tx, || keys.next());
+        assert_eq!(keys.reads, 10);
+        assert!(
+            rx.try_recv().is_err(),
+            "browsing a list sent nothing to the worker"
+        );
     }
 
     #[test]

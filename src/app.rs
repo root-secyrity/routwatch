@@ -1697,6 +1697,13 @@ impl App {
         self.needs_draw = false;
     }
 
+    /// A key changed what the screen shows. The loop draws once per pass of the
+    /// input queue, so a burst of keys still costs one frame, and no frame
+    /// waits for the one second pulse that exists for the age text.
+    pub fn mark_dirty(&mut self) {
+        self.needs_draw = true;
+    }
+
     pub fn stale(&self) -> bool {
         // Three periods, but never less than three seconds: the signal read is
         // bimodal on this firmware (measured 2026-11-19: p95 1575 ms, max

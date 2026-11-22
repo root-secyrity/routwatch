@@ -285,6 +285,27 @@ why each one is stated instead of hidden.
   a key press asks for a frame, and a one second pulse keeps the age text moving
   when nothing else arrives. Repainting identical cells at the poll rate was pure
   terminal work.
+- **A key press draws in the pass that reads it, and a burst costs one frame**:
+  the loop drains every event already waiting, marks the app dirty once, and
+  draws before it sleeps again. Measured 2026-11-22 over a PTY on 120x34 and
+  240x60: key to first byte p50 0.3-0.5 ms, p95 1.5 ms, against p50 400 ms and
+  p95 601 ms at 120x34 with a 600 ms refresh before the drain landed (p50
+  802 ms, p95 1002 ms at a 2000 ms refresh). The one second pulse is for the
+  age text and never releases a key.
+- **Keys do not wait for the snapshot**: the collection channel is read with
+  `try_recv`, so a silent or slow worker never holds input, and the 30 s client
+  read is a data delay, not a keyboard delay.
+- **Browsing a list is memory only**: `j`/`k` move a cursor over rows that are
+  already in the snapshot. No request and no file read happens in a key handler;
+  the two disk touches on the UI thread (incidents every 60 s, the usage ledger
+  every 30 s) are timers, not keys.
+- **The first key of a session can wait for the opening collect**: measured
+  2026-11-22, the first key after launch took 951 ms on both sizes while the
+  session was still assembling its first data frame, and 0.4 ms once the screen
+  was up (3 s settle). The wait is the opening read, not the input loop.
+- **A wide terminal costs bytes, not milliseconds**: a full repaint measured
+  6.5 KB at 120x34 and 12.2 KB at 240x60, and key to first byte was the same at
+  both sizes, so the write itself is not what a slow terminal makes you feel.
 - **The age is shown per group**: `signal 0.6s · clients 12s · device 41s` in the
   header, because one age for the whole screen could not say which read was late.
   Narrow terminals fall back to the single age of the last full snapshot.
