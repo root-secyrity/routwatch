@@ -38,6 +38,26 @@ pub(crate) fn panel(title: String, theme: &Theme) -> Block<'static> {
         .border_style(Style::default().fg(theme.border))
 }
 
+/// The boot frame: no sample has arrived yet, so the panel says what it is
+/// doing. Every field stays `-` until one lands; a zero here would be a value
+/// the router never sent.
+pub(crate) fn collecting(f: &mut Frame, area: Rect, title: &str, theme: &Theme) {
+    let text = vec![
+        Line::from(Span::styled(
+            "collecting the first sample…",
+            Style::default().fg(theme.accent),
+        )),
+        Line::from(Span::styled(
+            "-  every field stays - until it arrives",
+            Style::default().fg(theme.dim),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(text).block(panel(title.to_string(), theme)),
+        area,
+    );
+}
+
 pub fn body(f: &mut Frame, area: Rect, app: &App) {
     // Every view owns the body, including on tab 9: the Signal tab's Full layout
     // IS the gauge dashboard, but Lite/Dense must still be able to take over  -
@@ -1307,10 +1327,7 @@ fn draw_region(
 pub fn bands_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     if app.snap.is_none() {
-        f.render_widget(
-            Paragraph::new("waiting…").block(panel("BANDS".into(), t)),
-            area,
-        );
+        collecting(f, area, "BANDS", t);
         return;
     }
     // The breakpoints are terminal sizes; `area` is the body, so the two rows
@@ -1461,10 +1478,7 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
         (a, None, c)
     };
     let Some(s) = &app.snap else {
-        f.render_widget(
-            Paragraph::new("waiting…").block(panel("TRAFFIC".into(), t)),
-            top,
-        );
+        collecting(f, top, "TRAFFIC", t);
         return;
     };
     let tr = &s.traffic;
@@ -1760,10 +1774,7 @@ pub fn network_tab(f: &mut Frame, area: Rect, app: &App) {
 /// CELL and LINK, one block of radio facts and one of the link facts.
 fn draw_cell_link(f: &mut Frame, top: Rect, app: &App, t: &crate::theme::Theme) {
     let Some(s) = &app.snap else {
-        f.render_widget(
-            Paragraph::new("waiting…").block(panel("NETWORK".into(), t)),
-            top,
-        );
+        collecting(f, top, "NETWORK", t);
         return;
     };
     let sig = &s.signal;
@@ -2104,10 +2115,7 @@ fn speed_history_panel(f: &mut Frame, area: Rect, app: &App) {
 pub fn clients_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let Some(snap) = &app.snap else {
-        f.render_widget(
-            Paragraph::new("waiting…").block(panel("CLIENTS".into(), t)),
-            area,
-        );
+        collecting(f, area, "CLIENTS", t);
         return;
     };
     // A firmware without `wlan/host-list` is not a network with no devices. Say
@@ -2124,6 +2132,8 @@ pub fn clients_tab(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let clients = app.sorted_clients();
+    // Once for the frame: asking per row made the pane cost a sort per client.
+    let selected_row = app.selected_client();
     let mut lines = vec![Line::from(Span::styled(
         format!(
             "{} {} {} {} {}",
@@ -2136,7 +2146,7 @@ pub fn clients_tab(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(t.dim),
     ))];
     for (i, c) in clients.iter().enumerate() {
-        let selected = Some(i) == app.selected_client();
+        let selected = Some(i) == selected_row;
         let style = if selected {
             Style::default()
                 .bg(t.selected)
@@ -2170,7 +2180,7 @@ pub fn clients_tab(f: &mut Frame, area: Rect, app: &App) {
     // drawn only when the pane has the rows to show all of it: a clipped pane
     // would hide the "not reported" line, which is the reason it exists.
     let mut inspector: Vec<Line> = Vec::new();
-    if let Some(c) = app.selected_client().and_then(|i| clients.get(i)) {
+    if let Some(c) = selected_row.and_then(|i| clients.get(i)) {
         // Built in its own buffer so a short pane can drop it whole.
         let lines = &mut inspector;
         lines.push(Line::from(""));
@@ -2271,10 +2281,7 @@ fn push_word(out: &mut Vec<String>, line: &mut String, width: usize, word: &str)
 pub fn sms_tab(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let Some(s) = &app.snap else {
-        f.render_widget(
-            Paragraph::new("waiting…").block(panel("SMS".into(), t)),
-            area,
-        );
+        collecting(f, area, "SMS", t);
         return;
     };
     if area.height < 3 || area.width < 6 {
