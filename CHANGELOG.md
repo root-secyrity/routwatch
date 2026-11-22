@@ -4,6 +4,39 @@ Newest first. Each section lists what changed, in the words the release uses.
 
 ## Unreleased
 
+**Sessions are closed on every exit path**
+
+- Every command now closes its router session on the way out, including the error
+  paths. The client logs in on a flag and `Drop` posts the logout while the flag is
+  still set, so a read that fails with `?` no longer leaves a session behind. The
+  firmware keeps ten sessions at once and refuses the eleventh with `108003`
+  (measured 2026-11-22: the eleventh consecutive `status --json` failed, the
+  sessions freed themselves 259 s later); twenty consecutive runs after the fix all
+  succeeded, where the eleventh used to fail for minutes. Automation such as cron and
+  monitoring is the part that felt this.
+- Seven permanent tests hold it: a failed read still logs out, an early return logs
+  out, a manual logout is not doubled by `Drop`, a client that never logged in never
+  logs out, twenty sequential binary runs never exhaust the sessions, a dropped
+  client logs out on the error path, and no `process::exit` or `panic = "abort"` can
+  bypass the guard.
+
+**The tab bar names the view only**
+
+- The `full/braille` indicator is gone. The view (`full`, `gauges`, `lite`,
+  `dense`) is a real axis toggled by `v` and stays; the renderer name beside it was
+  half of a choice that no longer exists, left over from retiring the second
+  renderer. A test fails if the bar names a renderer again.
+
+**Measured values have a colour of their own**
+
+- Neutral measurements (durations, byte totals, message counters) are drawn in one
+  `value` colour per palette, as a whole value and never digit by digit. State
+  colours outrank it, identifiers are never split, and the words stay the same, so a
+  terminal without colour loses nothing.
+- Five permanent tests hold it: a measurement uses the value colour, a semantic cell
+  keeps its state colour, an identifier is one colour, a tab number keeps the tab bar
+  colour, and the frame reads the same without the value colour.
+
 **Input responsiveness**
 
 - A key press is drawn in the pass that reads it instead of waiting for the one

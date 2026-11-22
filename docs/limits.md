@@ -383,6 +383,27 @@ why each one is stated instead of hidden.
   nothing, writes no log and needs no router (an unreachable router narrows the advice
   instead of stopping it).
 
+- **A run closes its router session on every exit path**: the client carries a
+  login flag, `Drop` posts the logout while the flag is still set, and the manual
+  `logout` clears the flag so nothing is sent twice. A `?`, an early return and an
+  error path therefore all close the session. Drop is best effort: it sends one
+  request with a 2 s deadline and ignores the answer, so on a dead network it is a
+  silent no-op, which is the only failure mode it has. Measured on H122-373, WEBUI
+  11.0.2.21, 2026-11-22: the firmware holds ten sessions at once, from an idle start
+  the eleventh consecutive `status --json` answered `108003`, the sessions freed
+  themselves 259 s after the last read, and twenty consecutive runs after the fix
+  all succeeded. Drop is skipped by `std::process::exit` and by `panic = "abort"`:
+  no exit site sits inside a live client's scope and no profile sets `abort`, and a
+  test fails if either changes.
+- **A measured value has a colour, and colour never carries the meaning**: neutral
+  measurements (durations, byte totals, message counters) are drawn in the palette's
+  `value` slot as one whole value. A state keeps its state colour (good/fair/poor,
+  connection state, errors and warnings), an identifier (`B1`, `n78`, an IMEI, a tab
+  number) keeps the body colour in one piece, and every fact is stated in words, so a
+  reader without colour loses nothing. `terminal` defers the slot to the user's
+  palette and no setting exists for it yet; every shipped palette clears AA contrast
+  against the background it is drawn on.
+
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
 README's Safety list, and the guard that enforces them is in
