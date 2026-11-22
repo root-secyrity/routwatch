@@ -569,6 +569,106 @@ fn a_run_over_local_http_is_saved_and_no_save_keeps_the_file_absent() {
 }
 
 #[test]
+fn twenty_sequential_runs_never_exhaust_the_sessions() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// The firmware keeps one session per login: while one is open a second
+    /// login is refused with 108003 (H122-373, WEBUI 11.0.2.21, measured
+    /// 2026-11-22). This stand-in does the same, so a command that forgets to
+    /// log out fails the *next* run instead of quietly leaking.
+    fn session_fake_router() -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let open = Arc::new(AtomicBool::new(false));
+        let logins = Arc::new(AtomicUsize::new(0));
+        let logouts = Arc::new(AtomicUsize::new(0));
+        let (o, li, lo) = (Arc::clone(&open), Arc::clone(&logins), Arc::clone(&logouts));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { return };
+                let mut buf = [0u8; 8192];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("/")
+                    .split('?')
+                    .next()
+                    .unwrap_or("/")
+                    .to_string();
+                let body = match path.as_str() {
+                    "/" => "<html><input name=\"csrf_token\" value=\"t\" /></html>".to_string(),
+                    "/api/user/state-login" => "<response><State>0</State></response>".to_string(),
+                    "/api/webserver/SesTokInfo" => {
+                        "<response><SesInfo>SessionID=s</SesInfo><TokInfo>t</TokInfo></response>"
+                            .to_string()
+                    }
+                    "/api/user/login" => {
+                        if o.swap(true, Ordering::SeqCst) {
+                            "<error><code>108003</code></error>".to_string()
+                        } else {
+                            li.fetch_add(1, Ordering::SeqCst);
+                            "<response>OK</response>".to_string()
+                        }
+                    }
+                    "/api/user/logout" => {
+                        o.store(false, Ordering::SeqCst);
+                        lo.fetch_add(1, Ordering::SeqCst);
+                        "<response>OK</response>".to_string()
+                    }
+                    "/api/device/signal" => concat!(
+                        "<response><band>3</band><pci>481</pci><rsrp>-95dBm</rsrp>",
+                        "<rsrq>-7dB</rsrq><sinr>5dB</sinr></response>"
+                    )
+                    .to_string(),
+                    "/api/monitoring/status" => concat!(
+                        "<response><ConnectionStatus>901</ConnectionStatus>",
+                        "<CurrentNetworkType>19</CurrentNetworkType>",
+                        "<SignalIcon>5</SignalIcon></response>"
+                    )
+                    .to_string(),
+                    _ => "<response></response>".to_string(),
+                };
+                let head = format!(
+                    "HTTP/1.1 200 Ok\r\nContent-Type: text/xml\r\nSet-Cookie: ***\r\n__Response_Code: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(head.as_bytes());
+                let _ = s.write_all(body.as_bytes());
+            }
+        });
+        (format!("127.0.0.1:{port}"), logins, logouts)
+    }
+
+    let (ip, logins, logouts) = session_fake_router();
+    let cfg = config_for(&ip);
+    for n in 1..=20 {
+        let mut cmd = bin();
+        cmd.env("ROUTWATCH_PASSWORD", "test-placeholder")
+            .env("XDG_DATA_HOME", temp_data_home("sessions").to_path_buf())
+            .args(["--config", cfg.to_str().unwrap(), "status", "--json"]);
+        let out = cmd.output().expect("run status");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "run {n} failed, a session from an earlier run was still open: {}",
+            stderr(&out)
+        );
+    }
+    assert_eq!(logins.load(Ordering::SeqCst), 20, "every run logs in once");
+    assert_eq!(
+        logouts.load(Ordering::SeqCst),
+        20,
+        "every run must close its session, not only the first"
+    );
+}
+
+#[test]
 fn scan_without_allow_write_names_the_flag() {
     let out = run(&["scan", "--set", "1,3", "--allow-data"], &[]);
     assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));

@@ -17,6 +17,11 @@ use ureq::{Agent, Error as UreqError};
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
 
+/// The whole budget Drop may spend closing a session: one connect and one
+/// request. The firmware frees a session by itself after 90 to 150 s idle
+/// (measured 2026-11-22), so a missed logout costs delay, never correctness.
+const BEST_EFFORT_LOGOUT_MS: u64 = 2_000;
+
 pub struct HuaweiClient {
     agent: Agent,
     base: String,
@@ -304,6 +309,20 @@ impl HuaweiClient {
         self.authed = false;
     }
 
+    /// Drop's logout: a fresh short-deadline agent, one POST, no retry, no output.
+    ///
+    /// `logout` keeps the configured budget because a caller that asked for it can
+    /// report the failure. An exit has nobody to report to, and a `--json` run
+    /// must not gain a stderr line on the way out.
+    fn best_effort_logout(&mut self) {
+        self.agent = build_agent(BEST_EFFORT_LOGOUT_MS);
+        let _ = self.raw_post(
+            "/api/user/logout",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><Logout>1</Logout></request>",
+        );
+        self.authed = false;
+    }
+
     /// GET an `api/...` endpoint, mapping `<error><code>` to a typed error.
     pub fn get(&mut self, endpoint: &str) -> Result<Node, ApiError> {
         let raw = self.raw_get(&format!("/api/{endpoint}"))?;
@@ -418,6 +437,23 @@ impl HuaweiClient {
     /// Raw text, for fixtures and `snapshot --raw`.
     pub fn raw(&mut self, endpoint: &str) -> Result<String, ApiError> {
         self.raw_get(&Self::api_path(endpoint))
+    }
+}
+
+impl Drop for HuaweiClient {
+    /// Closes the firmware session on the exit paths no caller wrote by hand.
+    ///
+    /// The firmware keeps one session per login and refuses the next login with
+    /// `108003` while it is open: on H122-373, WEBUI 11.0.2.21, measured
+    /// 2026-11-22, the tenth consecutive `status --json` run was refused. Every
+    /// `?` and every early return used to skip the handwritten `logout()`, so a
+    /// one-shot command leaked a session per run. Drop cannot report, print or
+    /// wait long, so it sends one request with a short deadline and ignores the
+    /// answer; docs/limits.md states that a dead network makes it a silent no-op.
+    fn drop(&mut self) {
+        if self.authed {
+            self.best_effort_logout();
+        }
     }
 }
 
@@ -563,5 +599,151 @@ mod tests {
         assert!(login_hint(108003).contains("already open"));
         assert_eq!(login_hint(108006), "wrong username or password");
         assert!(login_hint(108007).contains("too many"));
+    }
+
+    // -- session exit ------------------------------------------------------
+    //
+    // A leaked session costs the next command: the firmware refuses a second
+    // login with 108003 while one is open (H122-373, WEBUI 11.0.2.21, measured
+    // 2026-11-22). These tests hold every way a client can leave.
+
+    use crate::mock_cpe::{MockCpe, Profile};
+
+    fn authed(profile: Profile) -> (MockCpe, HuaweiClient) {
+        let mock = MockCpe::start(profile);
+        let mut c = HuaweiClient::new(mock.addr(), 3_000);
+        c.login("admin", "demo").expect("mock login");
+        (mock, c)
+    }
+
+    #[test]
+    fn a_failed_read_still_logs_out() {
+        let (mock, mut c) = authed(Profile::CodesRefused);
+        assert!(
+            c.get("monitoring/status").is_err(),
+            "the profile refuses that read with 100003"
+        );
+        drop(c);
+        assert_eq!(mock.logouts(), 1, "a refused read left the session open");
+    }
+
+    #[test]
+    fn an_early_return_logs_out() {
+        fn probe(c: &mut HuaweiClient) -> Result<(), ApiError> {
+            c.get("monitoring/status")?;
+            Ok(())
+        }
+        let (mock, mut c) = authed(Profile::CodesRefused);
+        assert!(probe(&mut c).is_err(), "the `?` must leave early");
+        drop(c);
+        assert_eq!(mock.logouts(), 1, "the `?` skipped the logout");
+    }
+
+    #[test]
+    fn a_manual_logout_is_not_doubled_by_drop() {
+        let (mock, mut c) = authed(Profile::H122373);
+        c.logout();
+        drop(c);
+        assert_eq!(mock.logouts(), 1, "Drop repeated a logout already done");
+    }
+
+    #[test]
+    fn a_client_that_never_logged_in_never_logs_out() {
+        let mock = MockCpe::start(Profile::H122373);
+        let c = HuaweiClient::new(mock.addr(), 1_000);
+        assert!(!c.is_authed());
+        drop(c);
+        assert_eq!(mock.logouts(), 0, "an anonymous client sent a logout");
+    }
+
+    #[test]
+    fn a_dropped_client_logs_out_even_on_the_error_path() {
+        let mock = MockCpe::start(Profile::H122373);
+        let addr = mock.addr().to_string();
+        let mut c = HuaweiClient::new(&addr, 1_000);
+        c.login("admin", "demo").expect("mock login");
+        drop(mock); // the router vanishes mid-life
+        assert!(c.get("device/signal").is_err(), "a dead router must error");
+        let started = std::time::Instant::now();
+        drop(c);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "the exit waited {:?} for a router that is gone",
+            started.elapsed()
+        );
+    }
+
+    /// Structural: the guard only works while nothing leaves the process without
+    /// unwinding. `process::exit` and `panic = "abort"` both skip Drop, so both
+    /// are pinned here: the two exits in main run before a client exists or
+    /// after run() already dropped it, and no profile aborts.
+    #[test]
+    fn no_process_exit_bypasses_the_guard() {
+        fn body_range(src: &str, opener: &str) -> (usize, usize) {
+            let lines: Vec<&str> = src.lines().collect();
+            let start = lines
+                .iter()
+                .position(|l| l.starts_with(opener))
+                .unwrap_or_else(|| panic!("no {opener}"));
+            let mut depth = 0i32;
+            let mut opened = false;
+            for (i, line) in lines.iter().enumerate().skip(start) {
+                for ch in line.chars() {
+                    match ch {
+                        '{' => {
+                            depth += 1;
+                            opened = true;
+                        }
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                if opened && depth == 0 {
+                    return (start + 1, i + 1);
+                }
+            }
+            (start + 1, lines.len())
+        }
+
+        let main_rs = include_str!("../main.rs");
+        let exits: Vec<usize> = main_rs
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains("std::process::exit("))
+            .map(|(i, _)| i + 1)
+            .collect();
+        assert_eq!(
+            exits.len(),
+            2,
+            "a new exit site has to be reasoned about: {exits:?}"
+        );
+        let (run_from, run_to) = body_range(main_rs, "fn run(");
+        for line in exits {
+            assert!(
+                !(run_from <= line && line <= run_to),
+                "the exit at main.rs:{line} sits inside run(), where a live client is dropped first"
+            );
+        }
+        // Built at runtime so this test's own source cannot match the needle.
+        let needle = concat!("std::process", "::exit(");
+        let router_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/router");
+        for entry in std::fs::read_dir(router_dir).expect("src/router") {
+            let path = entry.expect("entry").path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                let body = std::fs::read_to_string(&path).expect("read");
+                // Test code may name the call it forbids; only shipped code counts.
+                let shipped = body.split("#[cfg(test)]").next().unwrap_or("");
+                assert!(
+                    !shipped.contains(needle),
+                    "{} leaves the process without unwinding, so Drop is skipped",
+                    path.display()
+                );
+            }
+        }
+        let cargo = include_str!("../../Cargo.toml");
+        assert!(
+            !cargo.contains("panic = \"abort\""),
+            "panic = abort would skip Drop and leak every session"
+        );
     }
 }
