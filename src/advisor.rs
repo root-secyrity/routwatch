@@ -441,6 +441,9 @@ mod tests {
             sinr_db: Some(10.0),
             pci: None,
             endc: None,
+            earfcn_dl: None,
+            earfcn_ul: None,
+            tm: None,
         }
     }
 

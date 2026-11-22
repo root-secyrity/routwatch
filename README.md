@@ -243,7 +243,7 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
   that, so a killed run leaves its session until the firmware frees it, which
   took 259 s after the last read on this machine.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
-  (`0600`, last 1440 rows) gives a drop nobody watched a shape. `routwatch history
+  (`0600`, three days of rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`
   turns the log off.
 

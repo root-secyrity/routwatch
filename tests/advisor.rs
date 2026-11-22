@@ -32,6 +32,9 @@ fn row(at: u64, band: &str, rsrp: f32) -> Row {
         sinr_db: Some(10.0),
         pci: None,
         endc: None,
+        earfcn_dl: None,
+        earfcn_ul: None,
+        tm: None,
     }
 }
 

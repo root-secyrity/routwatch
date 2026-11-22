@@ -241,6 +241,18 @@ why each one is stated instead of hidden.
   "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
   log off for scripts that read every second.
 
+- **The signal log keeps three days and trims itself by rewriting**: the cap is 4320
+  rows, one row a minute, because the drift guard compares today against two complete
+  previous days. A trim rewrites the file through a 0600 temp file and a rename;
+  measured 2026-11-22 on this machine, trimming 4380 rows to 4320 took 131 ms and
+  turned 813 KB into 802 KB, once a minute at most while the log is over its cap.
+
+- **A row states the contract it was written with**: rows are v2 and carry the
+  downlink and uplink earfcn as numbers plus the transmission mode. A v1 row still
+  reads, with those fields `None`: a legacy row is dated, not damaged, and a reader
+  that needs the cell key skips it rather than inventing one. A row from a newer
+  version is refused with one warning.
+
 - **The observation log records changes, not attempts**: band and DNS writes,
   IP renewals, the WAN going down and coming back, a tier read that failed, and
   the signal crossing into poor or out of it are appended to
