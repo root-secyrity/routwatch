@@ -253,6 +253,27 @@ why each one is stated instead of hidden.
   that needs the cell key skips it rather than inventing one. A row from a newer
   version is refused with one warning.
 
+- **The drift guard cannot judge before two complete v2 days**: it compares
+  today's best SINR on one cell against the median of the previous days' best,
+  and it needs at least 60 rows a day, so a day the router was off is skipped with
+  a note. Below six hours of today's rows it is still collecting and says so, in
+  place of a verdict. The alert threshold is 4 dB: three days of this H122-373
+  measured a daily spread of 3 dB (2026-11-22, 80.55 h on one cell, SINR std
+  1.20 dB), and an alert that fires inside weather is an alert nobody reads. Rows
+  without an earfcn and a pci are v1 rows: they are counted and never judged. A
+  pci change inside one earfcn is another cell, so it is reported as a change and
+  kept out of the drift number.
+
+- **The antenna judgement reads the link, not the shopping list**: `routwatch
+  antenna worth` prints one class per cell from the saved log: signal-limited
+  (RSRP below -100 dBm, the gauges' poor cut), interference-limited (RSRP fair or
+  better and SINR below 10 dB, the gauges' fair cut), not-signal-limited (both
+  fair or better) or insufficient (under 30 rows). RSRQ is shown and kept out of
+  the class, because cell load moves it and no antenna does. Throughput is not
+  used to classify: three speed runs at one position and constant RSRP -96.0 dB
+  moved x1.69 on 2026-11-22, so one row cannot place a lever. The command writes
+  nothing and needs no router.
+
 - **The observation log records changes, not attempts**: band and DNS writes,
   IP renewals, the WAN going down and coming back, a tier read that failed, and
   the signal crossing into poor or out of it are appended to

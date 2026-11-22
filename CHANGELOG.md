@@ -2,6 +2,29 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
+## Unreleased
+
+**The signal log remembers the cell, and the guard reads it back**
+
+- A signal row is v2: it carries the downlink and uplink earfcn as numbers and the
+  transmission mode. `DL:100 UL:18100` is parsed once, on the way in; a malformed
+  half writes `null` rather than a guess. A v1 row still reads with those fields
+  empty, and a row from a newer version is refused with one warning.
+- The log keeps three days instead of one (4320 rows, one a minute), because the
+  guard needs two complete previous days to have a baseline. Measured 2026-11-22:
+  trimming 4380 rows took 131 ms and turned 813 KB into 802 KB.
+- **The drift guard**: the signal tab draws one line when today's best SINR on the
+  serving cell is 4 dB or more below the median of the previous days' best, and one
+  line while it is still collecting. It draws nothing otherwise, and writes one
+  observation event per alert, never one per check. A pci change inside one earfcn
+  is reported as another cell and kept out of the drift number.
+- **`routwatch antenna worth`**: one class per cell from the saved log,
+  signal-limited, interference-limited, not-signal-limited or insufficient, using
+  the same cuts as the gauges. RSRQ is shown and kept out of the class, and a saved
+  speed run is shown beside it, not inside it: three runs at one position and
+  constant RSRP moved x1.69 (measured 2026-11-22), so throughput cannot place the
+  lever. No purchase advice and no causal claim.
+
 ## 0.9.2
 
 **Sessions are closed on every exit path** (#69)
