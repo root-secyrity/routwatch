@@ -3177,13 +3177,13 @@ pub(crate) fn nr_aux_lines_head(nr: &crate::model::Nr, width: usize, head: &str)
     out
 }
 
-fn quality_label(metric: &str, value: Option<f32>) -> &'static str {
+pub(crate) fn quality_label(metric: &str, value: Option<f32>) -> &'static str {
     let Some(v) = value else { return "n/a" };
     match metric {
         "RSRP" => {
             if v >= -80.0 {
                 "good"
-            } else if v >= -100.0 {
+            } else if v >= crate::advisor::RSRP_FAIR_DBM {
                 "fair"
             } else {
                 "poor"
@@ -3201,7 +3201,7 @@ fn quality_label(metric: &str, value: Option<f32>) -> &'static str {
         "SINR" => {
             if v >= 20.0 {
                 "good"
-            } else if v >= 10.0 {
+            } else if v >= crate::advisor::SINR_FAIR_DB {
                 "fair"
             } else {
                 "poor"

@@ -402,6 +402,12 @@ pub fn advise(input: &Input) -> Advice {
 // no network, no time source of its own.
 // ---------------------------------------------------------------------------
 
+/// Where a gauge stops saying "fair": the cut the signal bars are labelled
+/// with, declared once so a bar that reads "poor" and a class that reads
+/// "limited" cannot disagree on the same number.
+pub const RSRP_FAIR_DBM: f32 = -100.0;
+pub const SINR_FAIR_DB: f32 = 10.0;
+
 /// How far today's best SINR must sit below the baseline to be called drift.
 /// The measured daily spread of one cell's best SINR over 80.55 h was 3 dB, so
 /// a 3 dB difference is the weather and not the mount.

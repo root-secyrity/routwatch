@@ -104,13 +104,12 @@ fn classify(rows: usize, rsrp: Option<f32>, sinr: Option<f32>) -> SignalClass {
     let (Some(rsrp), Some(sinr)) = (rsrp, sinr) else {
         return SignalClass::Insufficient;
     };
-    // The gauges' cut: -100 dBm is where RSRP starts reading poor.
-    if rsrp < -100.0 {
+    // The gauge's own cut, read from the one constant it is labelled with.
+    if rsrp < crate::advisor::RSRP_FAIR_DBM {
         return SignalClass::SignalLimited;
     }
-    // The gauges' cut: 10 dB is where SINR stops reading fair. RSRQ stays out of
-    // the verdict: cell load moves it, so an antenna cannot.
-    if sinr < 10.0 {
+    // RSRQ stays out of the verdict: cell load moves it, so an antenna cannot.
+    if sinr < crate::advisor::SINR_FAIR_DB {
         return SignalClass::InterferenceLimited;
     }
     SignalClass::NotSignalLimited
@@ -312,6 +311,24 @@ mod tests {
     fn a_strong_signal_with_poor_quality_is_the_pattern() {
         let r = antenna_worth(&rows_of(120, -92.0, -15.0, 3.0), &[], NOW, WINDOW_SECS);
         assert_eq!(r.leading().unwrap().class, SignalClass::InterferenceLimited);
+    }
+
+    #[test]
+    fn the_class_reads_the_same_cut_as_the_gauge_label() {
+        // One dB either side of a cut: the bar's word and the class move together,
+        // because both read the constant.
+        assert_eq!(
+            classify(100, Some(-100.5), Some(5.0)),
+            SignalClass::SignalLimited
+        );
+        assert_eq!(crate::ui::tabs::quality_label("RSRP", Some(-100.5)), "poor");
+        assert_eq!(crate::ui::tabs::quality_label("RSRP", Some(-99.5)), "fair");
+        assert_eq!(
+            classify(100, Some(-90.0), Some(9.5)),
+            SignalClass::InterferenceLimited
+        );
+        assert_eq!(crate::ui::tabs::quality_label("SINR", Some(9.5)), "poor");
+        assert_eq!(crate::ui::tabs::quality_label("SINR", Some(10.5)), "fair");
     }
 
     #[test]
