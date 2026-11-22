@@ -281,6 +281,60 @@ pub enum PresetSaved {
     Empty,
 }
 
+/// The client rows in display order, kept between frames. A frame reuses the
+/// order unless the snapshot or the sort key moved, so the same rows cost one
+/// cheap pass instead of a sort per row drawn.
+#[derive(Debug, Default)]
+pub struct DerivedCache {
+    key: Option<(u64, SortKey)>,
+    order: Vec<usize>,
+    /// Frames that found the order already computed. Read by the tests.
+    pub hits: usize,
+    /// Times the order had to be computed since boot. Read by the tests.
+    pub rebuilds: usize,
+}
+
+impl DerivedCache {
+    fn ensure(&mut self, clients: &[Client], sort: SortKey) -> &[usize] {
+        let fp = client_fp(clients);
+        if matches!(self.key, Some((k, s)) if k == fp && s == sort) {
+            self.hits += 1;
+            return &self.order;
+        }
+        let mut order: Vec<usize> = (0..clients.len()).collect();
+        match sort {
+            SortKey::Name => order.sort_by_key(|&i| {
+                let name = clients[i].name.clone().unwrap_or_default().to_lowercase();
+                // unnamed hosts sort last: they are the least useful rows
+                (name.is_empty(), name)
+            }),
+            SortKey::Ip => order.sort_by_key(|&i| ip_key(clients[i].ip.as_deref().unwrap_or(""))),
+            SortKey::Band => order.sort_by_key(|&i| clients[i].freq.clone().unwrap_or_default()),
+            SortKey::Time => order.sort_by_key(|&i| std::cmp::Reverse(clients[i].associated_secs)),
+        }
+        self.order = order;
+        self.key = Some((fp, sort));
+        self.rebuilds += 1;
+        &self.order
+    }
+}
+
+/// What the order depends on: the rows themselves, not just how many there are.
+/// Every field the sort reads is in here, so a changed row cannot hide behind a
+/// matching length.
+fn client_fp(clients: &[Client]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    clients.len().hash(&mut h);
+    for c in clients {
+        c.name.hash(&mut h);
+        c.ip.hash(&mut h);
+        c.freq.hash(&mut h);
+        c.associated_secs.hash(&mut h);
+    }
+    h.finish()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
     Name,
@@ -497,6 +551,10 @@ pub struct App {
     /// The radio stamp of the sample already in the history rings, so a clients
     /// or device tick does not push a second copy of the same signal.
     pub last_sample_at: Option<std::time::Instant>,
+    /// The client rows in display order, kept between frames. Drawing reads it
+    /// instead of sorting, so a frame costs the same for ten clients as for a
+    /// hundred.
+    pub derived: std::cell::RefCell<DerivedCache>,
     pub session: SessionState,
     pub paused: bool,
     pub quit: bool,
@@ -691,6 +749,7 @@ impl App {
             stamps: crate::worker::TierStamp::default(),
             needs_draw: true,
             last_sample_at: None,
+            derived: std::cell::RefCell::new(DerivedCache::default()),
             session: SessionState::Connecting,
             paused: false,
             quit: false,
@@ -1725,27 +1784,28 @@ impl App {
         }
     }
 
-    /// Clients in display order. Sorting never touches the snapshot itself.
+    /// Clients in display order. Sorting never touches the snapshot itself, and
+    /// the order is kept between frames: see `DerivedCache`.
     pub fn sorted_clients(&self) -> Vec<&Client> {
         let Some(s) = &self.snap else {
             return Vec::new();
         };
-        let mut list: Vec<&Client> = s.clients.iter().collect();
-        match self.client_sort {
-            SortKey::Name => list.sort_by_key(|c| {
-                let name = c.name.clone().unwrap_or_default().to_lowercase();
-                // unnamed hosts sort last: they are the least useful rows
-                (name.is_empty(), name)
-            }),
-            SortKey::Ip => list.sort_by_key(|c| ip_key(c.ip.as_deref().unwrap_or(""))),
-            SortKey::Band => list.sort_by_key(|c| c.freq.clone().unwrap_or_default()),
-            SortKey::Time => list.sort_by_key(|c| std::cmp::Reverse(c.associated_secs)),
-        }
-        list
+        let mut cache = self.derived.borrow_mut();
+        let order = cache.ensure(&s.clients, self.client_sort);
+        order.iter().filter_map(|&i| s.clients.get(i)).collect()
+    }
+
+    /// How many rows the display order holds, without building the list.
+    pub fn sorted_len(&self) -> usize {
+        let Some(s) = &self.snap else {
+            return 0;
+        };
+        let mut cache = self.derived.borrow_mut();
+        cache.ensure(&s.clients, self.client_sort).len()
     }
 
     pub fn selected_client(&self) -> Option<usize> {
-        let len = self.sorted_clients().len();
+        let len = self.sorted_len();
         if len == 0 {
             None
         } else {
@@ -1754,7 +1814,7 @@ impl App {
     }
 
     pub fn client_cursor(&mut self, delta: isize) {
-        let len = self.sorted_clients().len() as isize;
+        let len = self.sorted_len() as isize;
         if len == 0 {
             return;
         }
@@ -2226,6 +2286,63 @@ pub(crate) fn fixture_snap() -> crate::model::Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The order is built once and reused: a frame that draws the same rows must
+    /// not sort them again.
+    #[test]
+    fn derived_rows_are_cached_and_reused_between_draws() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        let rows = app.sorted_clients().len();
+        for _ in 0..5 {
+            assert_eq!(app.sorted_clients().len(), rows);
+        }
+        let cache = app.derived.borrow();
+        assert_eq!(
+            cache.rebuilds, 1,
+            "the order is built once, not once a frame"
+        );
+        assert!(
+            cache.hits >= 5,
+            "later frames reuse it: {} hits",
+            cache.hits
+        );
+    }
+
+    /// A new sort key, or a row whose content moved with the count unchanged,
+    /// must rebuild the order and draw the new one.
+    #[test]
+    fn a_cache_is_invalidated_when_its_inputs_change() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        );
+        app.on_snapshot(fixture_snap(), 0);
+        app.sorted_clients();
+        app.client_sort = SortKey::Time;
+        app.sorted_clients();
+        assert_eq!(app.derived.borrow().rebuilds, 2, "a new sort key rebuilds");
+        if let Some(s) = app.snap.as_mut() {
+            s.clients[0].name = Some("Aaa first".into());
+        }
+        app.client_sort = SortKey::Name;
+        let first = app.sorted_clients().first().and_then(|c| c.name.clone());
+        assert_eq!(first.as_deref(), Some("Aaa first"));
+        assert_eq!(
+            app.derived.borrow().rebuilds,
+            3,
+            "a changed row with an unchanged count rebuilds"
+        );
+    }
 
     #[test]
     fn a_successful_apply_remembers_the_mask_it_replaced() {

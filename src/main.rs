@@ -3093,6 +3093,31 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     // The ledger lives beside the recordings, under the user's data dir. One
     // writer at a time: a second window runs read-only rather than racing.
     let usage_path = routwatch::usage::path();
+    let (tx, rx) = worker::spawn(cfg, password);
+
+    install_restore_hook();
+    enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
+    let _restore = RestoreOnDrop(Some(restore_terminal));
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen)
+        .map_err(|e| ApiError::Config(format!("alt screen: {e}")))?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal =
+        Terminal::new(backend).map_err(|e| ApiError::Config(format!("terminal: {e}")))?;
+    // No clear here. The alternate screen is empty, and the first draw paints
+    // every cell anyway. `Terminal::clear` also asks the terminal for its cursor
+    // position, which on a bare PTY is never answered and costs crossterm's
+    // 2 s read timeout before the first frame (measured 2026-11-22: raw
+    // Clear(All) 0.0 ms, `Terminal::clear` 2000 ms, whole boot 0.9 ms without
+    // it). A resize still clears, because there the buffers really are stale.
+
+    // The first frame goes out before any startup read, so the screen answers at
+    // once and the panels say they are collecting while the remaining work
+    // (measured 2.8 ms on a full ledger) happens behind it.
+    terminal.draw(|f| ui::draw(f, &app)).ok();
+    app.mark_drawn();
+    let mut painted = std::time::Instant::now();
+
     app.usage = routwatch::usage::load(&usage_path);
     match routwatch::usage::claim(&usage_path) {
         Ok(Some(guard)) => {
@@ -3108,20 +3133,8 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     // timer rather than on every snapshot.
     app.load_incidents();
     let mut incidents_at = std::time::Instant::now();
-    let (tx, rx) = worker::spawn(cfg, password);
+    app.mark_dirty();
 
-    install_restore_hook();
-    enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
-    let _restore = RestoreOnDrop(Some(restore_terminal));
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)
-        .map_err(|e| ApiError::Config(format!("alt screen: {e}")))?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal =
-        Terminal::new(backend).map_err(|e| ApiError::Config(format!("terminal: {e}")))?;
-    terminal.clear().ok();
-
-    let mut painted = std::time::Instant::now();
     while !app.quit {
         drain(&mut app, &rx);
         if incidents_at.elapsed().as_secs() >= 60 {
@@ -3136,7 +3149,8 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
                 .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
         {
             if let Some(path) = app.usage_path.as_deref() {
-                match routwatch::usage::save(path, &app.usage) {
+                let saved = routwatch::usage::save(path, &app.usage);
+                match saved {
                     Ok(()) => {
                         app.usage_dirty = false;
                         app.usage_saved = Some(std::time::Instant::now());
@@ -4392,6 +4406,25 @@ mod key_tests {
         // Esc closes the feed, not the help panel.
         handle_key(&mut app, key(KeyCode::Esc), &tx);
         assert!(!app.events_open);
+    }
+
+    /// The first frame leaves before the startup reads: the boot draw sits above
+    /// the first `usage::load` in this file, so the screen answers at once and
+    /// the disk work happens behind it. A reorder puts the disk back in front of
+    /// the frame.
+    #[test]
+    fn the_first_frame_is_drawn_before_the_first_snapshot() {
+        let src = include_str!("main.rs");
+        let draw = src
+            .find("terminal.draw(|f| ui::draw(f, &app))")
+            .expect("the boot frame is drawn");
+        let load = src
+            .find("app.usage = routwatch::usage::load(&usage_path)")
+            .expect("the startup ledger read");
+        assert!(
+            draw < load,
+            "the first frame must be drawn before the startup reads"
+        );
     }
 
     fn key(code: KeyCode) -> KeyEvent {

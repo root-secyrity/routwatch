@@ -1269,6 +1269,57 @@ mod tests {
         app
     }
 
+    /// A frame drawn before the first sample names what it is doing instead of
+    /// drawing a zero. `snap == None` is the boot frame, and the router has not
+    /// said anything yet.
+    #[test]
+    fn the_boot_frame_shows_a_collecting_marker() {
+        let mut app = boot_app();
+        app.tab = crate::app::Tab::Clients;
+        let frame = render_to_string(&app, 120, 34);
+        assert!(
+            frame.contains("collecting the first sample"),
+            "the boot frame must say it is collecting: {frame}"
+        );
+    }
+
+    /// Nothing has arrived, so no field may carry a number: a lone dash is the
+    /// only honest value in the panel.
+    #[test]
+    fn an_empty_field_is_a_dash_not_a_fabricated_value() {
+        let mut app = boot_app();
+        app.tab = crate::app::Tab::Clients;
+        let frame = render_to_string(&app, 120, 34);
+        let rows: Vec<&str> = frame.lines().collect();
+        let top = rows
+            .iter()
+            .position(|r| r.contains("CLIENTS"))
+            .expect("the clients panel is named");
+        let body: Vec<&str> = rows[top + 1..]
+            .iter()
+            .take_while(|r| !r.trim_start().starts_with('└'))
+            .copied()
+            .collect();
+        assert!(
+            body.iter().any(|r| r.contains('-')),
+            "an unfilled field shows a dash: {frame}"
+        );
+        assert!(
+            body.iter().all(|r| !r.chars().any(|c| c.is_ascii_digit())),
+            "no field may carry a number before the first sample: {frame}"
+        );
+    }
+
+    fn boot_app() -> App {
+        App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        )
+    }
+
     #[test]
     fn the_signal_graphs_keep_their_vertical_range() {
         let ink = |app: &App| -> usize {
