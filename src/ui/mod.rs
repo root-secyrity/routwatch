@@ -641,8 +641,10 @@ fn draw_tabbar(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     if !narrow {
+        // The view is a real axis (v cycles it); the renderer name was a second
+        // half of a choice that no longer exists, so only the view is named.
         spans.push(Span::styled(
-            format!("   {}/{}", app.view.name(), app.graph.name()),
+            format!("   {}", app.view.name()),
             Style::default().fg(t.dim),
         ));
     }
@@ -3178,7 +3180,7 @@ mod tests {
     }
 
     #[test]
-    fn the_indicator_offers_no_choice_that_no_longer_exists() {
+    fn the_tab_bar_offers_no_choice_that_does_not_exist() {
         let mut app = fixture_app();
         let text = render_to_string(&app, 120, 34);
         let bar = text
@@ -3187,13 +3189,13 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         assert!(
-            bar.contains("full/braille"),
-            "the indicator names the one renderer: {bar}"
+            bar.contains(" full"),
+            "the bar still names the view, which is a real axis: {bar}"
         );
-        for gone in ["dots", "bars", "graph"] {
+        for gone in ["dots", "bars", "graph", "braille", "ascii", "full/"] {
             assert!(
                 !bar.contains(gone),
-                "the tab bar still offers {gone:?}: {bar}"
+                "the tab bar still names the retired renderer via {gone:?}: {bar}"
             );
         }
         // The settings overlay keeps a readings row, not a cycle.
