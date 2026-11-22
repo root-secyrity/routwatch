@@ -61,6 +61,18 @@ Input is separate from that polling: a key is drawn in the pass that reads it
 of keys. The 30 s client read is a data delay, not a keyboard delay: browsing a
 list moves a cursor over rows already in memory.
 
+Every command closes its router session on the way out, error paths included:
+the client logs in on a flag and `Drop` posts the logout while the flag is still
+set, so a cron line that runs `status --json` every minute does not pile up
+sessions. This firmware holds ten at once: from an idle start the eleventh
+consecutive run answered `108003`, and twenty consecutive runs after the fix all
+succeeded (measured 2026-11-22).
+
+Measured values are drawn in one colour that is never a state colour: good, fair
+and poor, the connection state and identifiers such as `B1` or a tab number keep
+their own, and every fact is spelled out in words, so nothing is read from colour
+alone.
+
 The first frame is drawn before the process reads anything from disk, so the
 screen answers at once and the panels say they are collecting until data lands.
 The client order behind a redraw is derived once per change rather than once per
@@ -225,6 +237,11 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
 - **SMS delete is verified, not assumed**: each index is posted on its own and the
   verdict comes from re-reading the inbox, so a refusal is listed with its code
   and a half-finished bulk delete says which rows failed.
+- **A run holds one router session while it works**: the firmware keeps ten
+  open at once and refuses the eleventh with `108003` (measured 2026-11-22). The
+  process closes its own session on every exit path, but a `SIGKILL` cannot run
+  that, so a killed run leaves its session until the firmware frees it, which
+  took 259 s after the last read on this machine.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
   (`0600`, last 1440 rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`
