@@ -3133,6 +3133,12 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     // timer rather than on every snapshot.
     app.load_incidents();
     let mut incidents_at = std::time::Instant::now();
+    // The guard is a reading of the signal log too, and that log gains at most
+    // one row a minute (SIGNAL_SAMPLE_SECS), so five minutes is enough to notice
+    // a change and cheap enough to re-parse (4320 rows: 131 ms in a debug build).
+    const GUARD_REFRESH_SECS: u64 = 300;
+    app.load_guard();
+    let mut guard_at = std::time::Instant::now();
     app.mark_dirty();
 
     while !app.quit {
@@ -3140,6 +3146,10 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
         if incidents_at.elapsed().as_secs() >= 60 {
             app.load_incidents();
             incidents_at = std::time::Instant::now();
+        }
+        if guard_at.elapsed().as_secs() >= GUARD_REFRESH_SECS {
+            app.load_guard();
+            guard_at = std::time::Instant::now();
         }
         // Once every 30 s, not on every poll: the ledger is a file, and the
         // counters move by kilobytes a second.

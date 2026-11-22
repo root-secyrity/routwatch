@@ -2784,12 +2784,16 @@ pub fn gauges(f: &mut Frame, area: Rect, app: &App) {
     }
     let wide = area.width >= 90;
     let top_h = if wide { 9 } else { 7 };
-    let [top, strip, graphs] = Layout::vertical([
-        Constraint::Length(top_h),
-        Constraint::Length(2),
-        Constraint::Min(5),
-    ])
-    .areas(area);
+    let guard = guard_line(app);
+    let mut rows = vec![Constraint::Length(top_h), Constraint::Length(2)];
+    if guard.is_some() {
+        rows.push(Constraint::Length(1));
+    }
+    rows.push(Constraint::Min(5));
+    let chunks = Layout::vertical(rows).split(area);
+    let top = chunks[0];
+    let strip = chunks[1];
+    let graphs_at = if guard.is_some() { 3 } else { 2 };
     let split = if wide { 64 } else { 58 };
     let [sig_area, spd_area] = Layout::horizontal([
         Constraint::Percentage(split),
@@ -2800,7 +2804,47 @@ pub fn gauges(f: &mut Frame, area: Rect, app: &App) {
     signal_panel(f, sig_area, app, s, wide);
     speed_panel(f, spd_area, app, wide);
     network_strip(f, strip, app, s);
-    graphs_panel(f, graphs, app, wide);
+    if let Some((text, style)) = guard {
+        let line = truncate(&text, area.width as usize);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(line, style))),
+            chunks[graphs_at - 1],
+        );
+    }
+    graphs_panel(f, chunks[graphs_at], app, wide);
+}
+
+/// The guard's one line, and only when it has something to say: an alert, or a
+/// cold start that is still collecting the baseline. Nothing renders on a
+/// preview, because a preview reads no signal log.
+fn guard_line(app: &App) -> Option<(String, Style)> {
+    let t = &app.theme;
+    let c = &app.guard.cell;
+    if c.alert {
+        return Some((
+            format!(
+                "aim drift: best SINR {:.1} dB, {:.1} dB under the {:.1} dB baseline of {} day(s) · earfcn {} pci {}",
+                c.today_best_db.unwrap_or(0.0),
+                c.drift_db.unwrap_or(0.0),
+                c.baseline_db.unwrap_or(0.0),
+                c.days,
+                c.earfcn_dl.unwrap_or(0),
+                c.pci.unwrap_or(0)
+            ),
+            Style::default().fg(t.warn),
+        ));
+    }
+    if app.guard.collecting && c.days < crate::advisor::GUARD_BASELINE_DAYS {
+        return Some((
+            format!(
+                "aim guard: collecting baseline, day {} of {}",
+                c.days + 1,
+                crate::advisor::GUARD_BASELINE_DAYS
+            ),
+            Style::default().fg(t.dim),
+        ));
+    }
+    None
 }
 
 /// One signal metric: value, physical domain and its two 3GPP thresholds.
@@ -3521,6 +3565,51 @@ mod tests {
         assert!(
             screen.matches("not reported").count() >= 2,
             "an absent mac or ssid must read as not reported"
+        );
+    }
+
+    // ------------------------------------------------------------------ guard
+
+    #[test]
+    fn a_preview_render_has_no_guard_line() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        let screen = crate::ui::render_to_string(&app, 120, 40);
+        assert!(!screen.contains("aim drift"), "no alert, no line");
+        assert!(!screen.contains("collecting baseline"), "no log, no line");
+    }
+
+    #[test]
+    fn an_alert_is_one_line_naming_the_cell_and_the_drop() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        app.guard.cell = crate::advisor::CellGuard {
+            earfcn_dl: Some(1650),
+            pci: Some(481),
+            today_best_db: Some(4.5),
+            baseline_db: Some(9.2),
+            drift_db: Some(4.7),
+            days: 3,
+            alert: true,
+            confidence: crate::advisor::Confidence::Medium,
+        };
+        let screen = crate::ui::render_to_string(&app, 120, 40);
+        let hits = screen.matches("aim drift").count();
+        assert_eq!(hits, 1, "the guard speaks once, never per sample");
+        assert!(screen.contains("4.7 dB under the 9.2 dB baseline"));
+        assert!(screen.contains("earfcn 1650 pci 481"));
+    }
+
+    #[test]
+    fn a_cold_start_says_which_day_it_is_on() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        app.guard.collecting = true;
+        app.guard.cell.days = 0;
+        let screen = crate::ui::render_to_string(&app, 120, 40);
+        assert!(
+            screen.contains("collecting baseline, day 1 of 2"),
+            "{screen}"
         );
     }
 

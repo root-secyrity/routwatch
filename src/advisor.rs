@@ -166,7 +166,7 @@ fn band_number(band: &str) -> Option<u8> {
     t.parse().ok()
 }
 
-fn median(mut values: Vec<f32>) -> Option<f32> {
+pub(crate) fn median(mut values: Vec<f32>) -> Option<f32> {
     if values.is_empty() {
         return None;
     }
@@ -179,7 +179,7 @@ fn median(mut values: Vec<f32>) -> Option<f32> {
     })
 }
 
-fn percentile(values: &[f32], p: f64) -> Option<f32> {
+pub(crate) fn percentile(values: &[f32], p: f64) -> Option<f32> {
     if values.is_empty() {
         return None;
     }
@@ -189,7 +189,7 @@ fn percentile(values: &[f32], p: f64) -> Option<f32> {
     Some(sorted[idx])
 }
 
-fn median_f64(values: &[f64]) -> Option<f64> {
+pub(crate) fn median_f64(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
@@ -408,7 +408,7 @@ pub fn advise(input: &Input) -> Advice {
 pub const GUARD_ALERT_DB: f32 = 4.0;
 
 /// Complete previous days a baseline needs.
-const GUARD_BASELINE_DAYS: usize = 2;
+pub const GUARD_BASELINE_DAYS: usize = 2;
 
 /// Days behind a medium and a high baseline.
 const GUARD_MEDIUM_DAYS: usize = 3;

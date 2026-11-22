@@ -564,6 +564,12 @@ pub struct App {
     /// Incidents derived from the logs on disk. Read at start and on a slow
     /// timer, never per snapshot: they are a reading of history, not live state.
     pub incidents: Vec<crate::incidents::Incident>,
+    /// The drift guard's reading of the signal log. Like incidents, a reading of
+    /// history: loaded at start and on a slow timer, never per snapshot.
+    pub guard: crate::advisor::GuardAdvice,
+    /// The cell-and-day an alert was already written to the observation log for,
+    /// so the same alert is one event and not one per check.
+    pub guard_alerted: Option<(u32, u32, String)>,
     pub budget_gb: f64,
     /// Local ledger plus the budget baseline. Filled by `on_snapshot` and
     /// flushed by the TUI loop; `preview` and `status` never write it.
@@ -757,6 +763,8 @@ impl App {
             client_sel: 0,
             error_log: VecDeque::new(),
             incidents: Vec::new(),
+            guard: crate::advisor::GuardAdvice::default(),
+            guard_alerted: None,
             budget_gb: budget_gb as f64,
             usage: crate::usage::Usage::default(),
             usage_path: None,
@@ -2045,6 +2053,52 @@ impl App {
     /// reads files and writes nothing, so calling it while the TUI runs is safe.
     pub fn load_incidents(&mut self) {
         self.incidents = crate::incidents::detect(&crate::incidents::Source::load());
+    }
+
+    /// Re-derive the drift guard from the signal log. A read of history: the one
+    /// file this writes is an alert event, and only when the alert is new for
+    /// this cell and this local day.
+    pub fn load_guard(&mut self) {
+        let Some(log) = crate::signal_history::path() else {
+            return;
+        };
+        let rows = crate::signal_history::load(&log).rows;
+        let now = unix_now();
+        self.guard = crate::advisor::drift_guard(&rows, now);
+        let c = &self.guard.cell;
+        let (Some(earfcn), Some(pci)) = (c.earfcn_dl, c.pci) else {
+            return;
+        };
+        if !c.alert {
+            self.guard_alerted = None;
+            return;
+        }
+        let day = crate::signal_history::local_stamp(now)
+            .get(0..10)
+            .unwrap_or_default()
+            .to_string();
+        let key = (earfcn, pci, day);
+        if self.guard_alerted.as_ref() == Some(&key) {
+            return;
+        }
+        self.guard_alerted = Some(key);
+        let detail = format!(
+            "cell {earfcn}/{pci}: today's best {:.1} dB is {:.1} dB under the {:.1} dB baseline of {} complete day(s)",
+            c.today_best_db.unwrap_or(0.0),
+            c.drift_db.unwrap_or(0.0),
+            c.baseline_db.unwrap_or(0.0),
+            c.days
+        );
+        if let Some(events) = crate::events::path() {
+            let e = crate::events::ObsEvent::new(
+                crate::events::EventKind::Signal,
+                "guard",
+                now,
+                "drift",
+                Some(detail),
+            );
+            let _ = crate::events::append(&events, &e);
+        }
     }
 
     /// Read the ledger and trim it. Called by the TUI only, never by `App::new`,
