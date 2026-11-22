@@ -3208,6 +3208,162 @@ mod tests {
         );
     }
 
+    /// The buffer itself, so a test can ask what colour a cell was drawn in.
+    fn buffer_of(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal.draw(|f| draw(f, app)).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    /// The first row whose text contains `needle`.
+    fn row_with(buf: &ratatui::buffer::Buffer, width: u16, height: u16, needle: &str) -> u16 {
+        (0..height)
+            .find(|y| {
+                let line: String = (0..width).map(|x| buf[(x, *y)].symbol()).collect();
+                line.contains(needle)
+            })
+            .unwrap_or_else(|| panic!("no row contains {needle:?}"))
+    }
+
+    /// Colours of the glyph cells on a row, label included, deduplicated.
+    fn row_colours(
+        buf: &ratatui::buffer::Buffer,
+        y: u16,
+        width: u16,
+    ) -> Vec<ratatui::style::Color> {
+        let mut seen = Vec::new();
+        for x in 0..width {
+            let cell = &buf[(x, y)];
+            if !cell.symbol().trim().is_empty() && !seen.contains(&cell.fg) {
+                seen.push(cell.fg);
+            }
+        }
+        seen
+    }
+
+    /// Colours of the value part only: everything that is not the dim label.
+    fn value_colours(
+        buf: &ratatui::buffer::Buffer,
+        y: u16,
+        width: u16,
+        label_colour: ratatui::style::Color,
+    ) -> Vec<ratatui::style::Color> {
+        let mut seen = Vec::new();
+        for x in 0..width {
+            let cell = &buf[(x, y)];
+            if !cell.symbol().trim().is_empty()
+                && cell.fg != label_colour
+                && !seen.contains(&cell.fg)
+            {
+                seen.push(cell.fg);
+            }
+        }
+        seen
+    }
+
+    /// A measurement is drawn in one colour, the palette's `value` slot, so a
+    /// reader can tell a reading from a label at a glance.
+    #[test]
+    fn a_neutral_measurement_uses_the_value_colour() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Device);
+        let buf = buffer_of(&app, 120, 34);
+        let y = row_with(&buf, 120, 34, "uptime");
+        let colours = value_colours(&buf, y, 120, app.theme.dim);
+        assert!(
+            !colours.is_empty(),
+            "the uptime row carries no value glyphs at all"
+        );
+        assert_eq!(
+            colours,
+            vec![app.theme.value],
+            "a duration is a measurement and must use the value colour"
+        );
+    }
+
+    /// A state keeps its own colour: the value slot must never repaint it.
+    #[test]
+    fn a_semantic_cell_keeps_its_state_colour() {
+        let mut app = fixture_app();
+        // The CONNECTION panel is drawn by the dense view, the one place a
+        // connection state shares a frame with the measurements.
+        app.view = View::Dense;
+        let buf = buffer_of(&app, 120, 34);
+        let y = row_with(&buf, 120, 34, "status");
+        let colours = value_colours(&buf, y, 120, app.theme.dim);
+        assert_eq!(
+            colours,
+            vec![app.theme.ok],
+            "connection state is semantic, so it keeps `ok`: {colours:?}"
+        );
+        assert_ne!(
+            app.theme.value, app.theme.ok,
+            "the palette would collapse the distinction this test relies on"
+        );
+    }
+
+    /// An identifier is one indivisible fact: `B1` or an IMEI must not arrive
+    /// in two colours, so it keeps the body colour and is never split.
+    #[test]
+    fn an_identifier_is_never_split_into_two_colours() {
+        let mut app = fixture_app();
+        app.select_tab(Tab::Device);
+        let buf = buffer_of(&app, 120, 34);
+        for label in ["imei", "serial"] {
+            let y = row_with(&buf, 120, 34, label);
+            let colours = value_colours(&buf, y, 120, app.theme.dim);
+            assert_eq!(
+                colours.len(),
+                1,
+                "{label} is one identifier and must be one colour: {colours:?}"
+            );
+            assert_eq!(
+                colours,
+                vec![app.theme.fg],
+                "{label} is an identifier, not a measurement"
+            );
+        }
+    }
+
+    /// The tab number is part of the navigation key, not a reading.
+    #[test]
+    fn a_tab_number_keeps_the_tab_bar_colour() {
+        let app = fixture_app();
+        let buf = buffer_of(&app, 120, 34);
+        let bar = row_with(&buf, 120, 34, "Dashboard");
+        let colours = row_colours(&buf, bar, 120);
+        assert!(
+            colours.contains(&active_text_colour(&app.theme)),
+            "the active tab keeps its own text colour: {colours:?}"
+        );
+        assert!(
+            !colours.contains(&app.theme.value),
+            "the value colour leaked into the tab bar: {colours:?}"
+        );
+    }
+
+    /// Colour is decoration on top of words that already say the fact: drop the
+    /// value colour and the frame reads the same.
+    #[test]
+    fn the_meaning_survives_without_colour() {
+        let mut app = fixture_app();
+        app.view = View::Dense;
+        let painted = render_to_string(&app, 120, 34);
+        let mut plain = fixture_app();
+        plain.view = View::Dense;
+        plain.theme.value = plain.theme.fg;
+        let unpainted = render_to_string(&plain, 120, 34);
+        assert_eq!(
+            painted, unpainted,
+            "removing the value colour changed what the frame says"
+        );
+        assert!(
+            painted.contains("status"),
+            "the state is named in words, not only in colour"
+        );
+    }
+
     #[test]
     fn the_mask_bitmap_and_the_radio_bars_keep_their_glyphs() {
         // Removing a renderer must not touch the panels that use block glyphs
