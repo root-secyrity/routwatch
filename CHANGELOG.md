@@ -2,6 +2,23 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
+## Unreleased
+
+**Input responsiveness**
+
+- A key press is drawn in the pass that reads it instead of waiting for the one
+  second pulse that keeps the age text moving. Measured over a PTY, key to first
+  byte fell from p50 400 ms at 120x34 and a 600 ms refresh (p95 601 ms; p50
+  802 ms and p95 1002 ms at a 2000 ms refresh) to p50 0.3-0.5 ms and p95 1.5 ms
+  at both 120x34 and 240x60.
+- The loop drains every key already waiting before it draws, so a burst of ten
+  keys costs one frame, and an idle loop still blocks on the poll instead of
+  spinning.
+- Five permanent tests hold it: a batch is drained before one draw, a state
+  changing key owes a frame without a pulse, a silent worker does not block
+  input, a tab switch does not clear the terminal, and browsing a list sends
+  nothing to the worker.
+
 ## 0.9.1
 
 **Polling in tiers**
