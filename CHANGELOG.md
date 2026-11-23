@@ -31,6 +31,18 @@ Newest first. Each section lists what changed, in the words the release uses.
 - A write to the signal log tries the sidecar lock three times, 5 ms apart, before
   it gives up on the sample: a holder that lasts milliseconds is not the same thing
   as another routwatch trimming the log, and the wait stays under 10 ms.
+- **`Shift+W` renews the WAN address from the Device section**: the same write the
+  CLI already had (`routwatch ip renew`), behind the same confirm, whose rows print
+  the address now and whose warning says the connection drops for a few seconds and
+  the ISP may keep the lease. With writing off, or with no sample yet, the key says
+  why instead of opening a confirm that cannot compare anything.
+- **The dashboard answers the four keys its own panels advertise**: its hint and the
+  clients panel footer promised `j`/`k`, `enter opens a client`, `s sort` and
+  `f filter`, and none of the four had an arm on that section (lowercase `s` opened
+  the settings overlay, `f` and `Enter` did nothing). `Enter` now opens the row in
+  the Clients section with that client still selected, `s` sorts and names the order
+  (this footer does not print the active key), `f` narrows the table to one band, and
+  `j`/`k` move the dashboard's own cursor. `Shift+S` and `,` still open settings.
 
 ## 0.9.2
 

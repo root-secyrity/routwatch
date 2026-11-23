@@ -231,8 +231,11 @@ why each one is stated instead of hidden.
 
 - **A renew that keeps the same address is not a failure**: `ip renew` reads the
   address, drops the data connection, brings it back and watches. The ISP may hand
-  the same lease back, and that is reported as unchanged with exit 0. The write
-  path is not measured on a live H122-373 yet: no live renew has been run.
+  the same lease back, and that is reported as unchanged with exit 0. The address
+  itself never enters the events log. Measured on the reference H122-373 (device
+  string `WL1H122M`, firmware 11.0.2.21(H329SP1C7002)), 2026-11-23: five runs with
+  `--allow-write`, the link down and back in 2 to 4 seconds each, the same address
+  back in all five. `LinkDown` and `NoAddress` are still covered by the mock only.
 
 - **The signal log can stop without a word**: every command that collects appends at
   most one row a minute to `$XDG_DATA_HOME/routwatch/signal-history.jsonl`, and a write

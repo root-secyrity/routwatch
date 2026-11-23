@@ -3,8 +3,12 @@
 //!
 //! The table is the only place a key is described. `short` must fit a 34 column
 //! panel and is what a narrow terminal sees; `full` is used only when the room
-//! exists. Every key `handle_key` answers to has a row here, and the test
-//! `help_covers_every_key_the_handler_answers_to` holds the two together.
+//! exists. Every key `handle_key` answers to should have a row here, but no one
+//! test holds the whole list together: `the_help_lists_the_speed_key` and
+//! `the_renew_row_is_in_the_help_and_the_device_hint` (both in `ui::tests`) each
+//! check a single row, and the retired-key test in `src/main.rs` only forbids the
+//! rows of a key the handler no longer answers to. A new key with no row here
+//! fails nothing today.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
