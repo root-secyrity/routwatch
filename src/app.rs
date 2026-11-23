@@ -102,7 +102,7 @@ impl Tab {
             Tab::Network => "p ping host · T speed test · e report",
             Tab::Clients => "j/k select · s sort · c copy mac · e report",
             Tab::Sms => "j/k · Enter open · space mark · a all · d delete · m read · n page · R inbox",
-            Tab::Device => "x dump json · b restart · R extras",
+            Tab::Device => "x dump json · b restart · W renew · R extras",
             Tab::Dns => "j/k choose · Enter apply · d type · D auto · e report",
             Tab::Signal => "v view · e report",
         }
@@ -2304,6 +2304,16 @@ impl App {
         }
         self.write = WriteState::Confirming(WriteIntent::ResetDns);
     }
+
+    /// The renew is a real write that drops the link, so it opens the same confirm
+    /// the band and DNS writes use: the key handler decides whether writing is
+    /// allowed at all, and this one only refuses a second write at once.
+    pub fn begin_renew_confirm(&mut self) {
+        if self.write.is_busy() {
+            return;
+        }
+        self.write = WriteState::Confirming(WriteIntent::RenewIp);
+    }
 }
 
 /// Typed-confirmation guard: only the exact word unlocks a restart.
@@ -3806,6 +3816,36 @@ mod tests {
         assert_eq!(
             second, first,
             "a second check on the same day appends nothing"
+        );
+    }
+
+    /// `W` on the Device tab opens the confirm; a write already in flight keeps
+    /// its own confirm rather than being replaced.
+    #[test]
+    fn a_renew_confirm_is_refused_while_a_write_is_in_flight() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        );
+        app.begin_renew_confirm();
+        assert!(
+            matches!(app.write, WriteState::Confirming(WriteIntent::RenewIp)),
+            "{:?}",
+            app.write
+        );
+
+        app.write = WriteState::Pending {
+            intent: WriteIntent::ResetDns,
+            since: Instant::now(),
+        };
+        app.begin_renew_confirm();
+        assert!(
+            matches!(&app.write, WriteState::Pending { intent, .. } if *intent == WriteIntent::ResetDns),
+            "a second write must not replace the one in flight: {:?}",
+            app.write
         );
     }
 }

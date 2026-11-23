@@ -351,6 +351,7 @@ fn draw_write_modal(f: &mut Frame, area: Rect, app: &App) {
                 WriteIntent::ApplyBands { .. } => " apply bands? ",
                 WriteIntent::SetDns { .. } => " set dns? ",
                 WriteIntent::ResetDns => " reset dns? ",
+                WriteIntent::RenewIp => " renew wan ip? ",
             };
             let mut body = vec![intent.label(), String::new()];
             for (key, value) in &p.rows {
@@ -3114,6 +3115,25 @@ mod tests {
             rows.iter().any(|r| r.keys == "T"),
             "the help must name the key T opens"
         );
+    }
+
+    /// The Device tab advertises `W renew` in the status bar and the help only
+    /// if the handler really answers to it.
+    #[test]
+    fn the_renew_row_is_in_the_help_and_the_device_hint() {
+        let rows = crate::ui::help::rows();
+        let row = rows
+            .iter()
+            .find(|r| r.keys == "W")
+            .expect("the help must name the key W opens");
+        assert!(row.short.contains("renew"), "{}", row.short);
+        assert!(
+            row.full.contains("Device"),
+            "the row must say which section its key belongs to: {}",
+            row.full
+        );
+        let hint = Tab::Device.hints();
+        assert!(hint.contains("W renew"), "{hint}");
     }
 
     #[test]

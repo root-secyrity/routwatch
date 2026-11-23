@@ -3761,6 +3761,17 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         KeyCode::Char('b') if app.tab == Tab::Device => {
             app.open_input(InputKind::RestartConfirm);
         }
+        // --- Device: renew the address. A capital W: lowercase w belongs to the
+        // settings overlay, and f is the dashboard filter. ---
+        KeyCode::Char('w') if shift && app.tab == Tab::Device => {
+            if !app.allow_write {
+                app.note("writes are off: start with --allow-write");
+            } else if app.snap.is_none() {
+                app.note("no snapshot yet: the confirm has nothing to compare");
+            } else {
+                app.begin_renew_confirm();
+            }
+        }
         // --- Bands tab: merge presets (load, save the tick, delete) ---
         KeyCode::Char('n') if on_bands => match app.band_preset_next() {
             Some(name) => {
@@ -4079,6 +4090,11 @@ fn send_apply(app: &mut App, tx: &Sender<WorkerCmd>) {
                 primary: String::new(),
                 secondary: String::new(),
                 reset: true,
+                intent: intent.clone(),
+            });
+        }
+        WriteIntent::RenewIp => {
+            let _ = tx.send(WorkerCmd::Renew {
                 intent: intent.clone(),
             });
         }
@@ -4501,6 +4517,7 @@ mod key_tests {
     use super::frame_due;
     use ratatui::crossterm::event::Event;
     use routwatch::app::LogLevel;
+    use routwatch::write::{WriteIntent, WriteState};
     use std::collections::VecDeque;
     use std::time::Duration;
 
@@ -4645,6 +4662,60 @@ mod key_tests {
                 tab.hints()
             );
         }
+    }
+
+    /// `W` renews from the Device tab alone: on another tab it stays inert, with
+    /// writing off it says why, and it sends nothing until the user confirms.
+    #[test]
+    fn the_renew_key_opens_a_confirmed_write_and_is_inert_elsewhere() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Device);
+
+        // Writing off: refused out loud, and nothing opens.
+        handle_key(&mut app, shift_key('w'), &tx);
+        assert_eq!(app.write, WriteState::Idle, "{:?}", app.write);
+        assert!(
+            app.live_notice().unwrap_or("").contains("--allow-write"),
+            "a refused key must say why: {:?}",
+            app.live_notice()
+        );
+
+        // Writing on but no sample yet: the confirm has nothing to compare.
+        app.allow_write = true;
+        handle_key(&mut app, shift_key('w'), &tx);
+        assert_eq!(app.write, WriteState::Idle, "{:?}", app.write);
+        assert!(
+            app.live_notice().unwrap_or("").contains("snapshot"),
+            "the second refusal must say why too: {:?}",
+            app.live_notice()
+        );
+
+        app.on_snapshot(
+            serde_json::from_str(include_str!("../fixtures/sample-snapshot.json"))
+                .expect("fixture snapshot"),
+            0,
+        );
+        handle_key(&mut app, shift_key('w'), &tx);
+        assert!(
+            matches!(app.write, WriteState::Confirming(WriteIntent::RenewIp)),
+            "{:?}",
+            app.write
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the confirm sends nothing to the worker"
+        );
+
+        // The key belongs to the Device tab: elsewhere it is unbound.
+        app.write = WriteState::Idle;
+        app.select_tab(Tab::Dashboard);
+        handle_key(&mut app, shift_key('w'), &tx);
+        assert_eq!(
+            app.write,
+            WriteState::Idle,
+            "W must be inert outside the Device tab"
+        );
     }
 
     #[test]

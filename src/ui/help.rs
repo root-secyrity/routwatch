@@ -179,6 +179,11 @@ pub fn rows() -> Vec<KeyRow> {
             full: "device: dump the endpoints to JSON / restart (type REBOOT)",
         },
         KeyRow {
+            keys: "W",
+            short: "renew the WAN address",
+            full: "renew: the data connection drops for a few seconds and the ISP may keep the lease (Device)",
+        },
+        KeyRow {
             keys: "?",
             short: "this help",
             full: "this help",
