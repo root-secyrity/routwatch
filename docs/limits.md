@@ -238,8 +238,10 @@ why each one is stated instead of hidden.
   most one row a minute to `$XDG_DATA_HOME/routwatch/signal-history.jsonl`, and a write
   that fails never fails the command the user asked for. The common cause is the
   sidecar lock being held by another routwatch, which is why a gap in the log is read as
-  "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
-  log off for scripts that read every second.
+  "no sample", not as "the link was down". The lock is tried three times, 5 ms apart,
+  before the sample is skipped: a trim takes 131 ms and is not chased, while a holder
+  that lasts only milliseconds is gone by the second attempt.
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the log off for scripts that read every second.
 
 - **The signal log keeps three days and trims itself by rewriting**: the cap is 4320
   rows, one row a minute, because the drift guard compares today against two complete
@@ -252,7 +254,8 @@ why each one is stated instead of hidden.
   downlink and uplink earfcn as numbers plus the transmission mode. A v1 row still
   reads, with those fields `None`: a legacy row is dated, not damaged, and a reader
   that needs the cell key skips it rather than inventing one. A row from a newer
-  version is refused with one warning.
+  version is refused with one warning, printed by the TUI and by `history --signal`
+  and `antenna worth` alike, so a skipped row is never a silently shorter log.
 
 - **The drift guard cannot judge before two complete v2 days**: it compares
   today's best SINR on one cell against the median of the previous days' best,
