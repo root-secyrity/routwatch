@@ -648,9 +648,12 @@ fn twenty_sequential_runs_never_exhaust_the_sessions() {
     let (ip, logins, logouts) = session_fake_router();
     let cfg = config_for(&ip);
     for n in 1..=20 {
+        // The guard is bound, not passed inline: dropping it deletes the
+        // directory, and the child needs the path to exist while it runs.
+        let home = temp_data_home("sessions");
         let mut cmd = bin();
         cmd.env("ROUTWATCH_PASSWORD", "test-placeholder")
-            .env("XDG_DATA_HOME", temp_data_home("sessions").to_path_buf())
+            .env("XDG_DATA_HOME", home.to_path_buf())
             .args(["--config", cfg.to_str().unwrap(), "status", "--json"]);
         let out = cmd.output().expect("run status");
         assert_eq!(
