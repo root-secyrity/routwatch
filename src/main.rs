@@ -2057,11 +2057,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             let rows = match routwatch::signal_history::path() {
                 Some(p) => {
                     let l = routwatch::signal_history::load(&p);
-                    if l.damaged > 0 {
-                        eprintln!(
-                            "antenna: {} of {} signal rows could not be read and are skipped",
-                            l.damaged, l.total
-                        );
+                    if let Some(w) = &l.warn {
+                        eprintln!("antenna: {w}");
                     }
                     l.rows
                 }
@@ -2095,11 +2092,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 return Err(ApiError::Quiet(2));
             };
             let l = routwatch::signal_history::load(&p);
-            if l.damaged > 0 {
-                eprintln!(
-                    "history: {} of {} rows could not be read and are skipped",
-                    l.damaged, l.total
-                );
+            if let Some(w) = &l.warn {
+                eprintln!("history: {w}");
             }
             let rows: Vec<routwatch::signal_history::Row> =
                 l.rows.iter().rev().take(limit).rev().cloned().collect();
