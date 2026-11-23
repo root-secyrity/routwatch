@@ -3736,6 +3736,13 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             }
         }
         KeyCode::Char('z') if matches!(app.tab, Tab::Traffic | Tab::Dns) => app.begin_dns_reset(),
+        // The dashboard's client row opens in the Clients tab, with that client
+        // still selected: `enter open` in the panel footer is this arm.
+        KeyCode::Enter if app.tab == Tab::Dashboard => {
+            if !app.dash_open_client() {
+                app.note("no client row to open");
+            }
+        }
         // Local baseline reset, not a router write: it asks once and never
         // touches the month counters.
         KeyCode::Char('b') if app.tab == Tab::Traffic => app.reset_confirm = true,
@@ -3750,6 +3757,18 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         // --- Clients tab: sort / copy ---
         KeyCode::Char('s') if app.tab == Tab::Clients && !shift => {
             app.sort_next();
+        }
+        // The dashboard's clients panel advertises `s sort` too, and its footer
+        // does not print the active key the way the Clients tab does, so the
+        // change is announced there instead of left to be noticed in the order.
+        KeyCode::Char('s') if app.tab == Tab::Dashboard && !shift => {
+            app.sort_next();
+            app.note(format!("sorted by {}", app.client_sort.name()));
+        }
+        // The same panel advertises `f filter`: it narrows the rows to one band.
+        KeyCode::Char('f') if app.tab == Tab::Dashboard && !shift => {
+            app.dash_filter_next();
+            app.note(format!("clients: {} only", app.dash_filter.name()));
         }
         KeyCode::Char('c') if app.tab == Tab::Clients => copy_selected(app),
         // --- Device: dump / restart prompt ---
@@ -3805,7 +3824,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             None => app.note("no preset selected: n cycles them"),
         },
         // Settings: `,` is the family convention, `s` works everywhere except the
-        // Clients tab (where it sorts), and Shift+S still opens it there.
+        // Clients and Dashboard tabs (where it sorts), and Shift+S still opens it
+        // in both.
         KeyCode::Char(',') => app.settings_open = true,
         // Refresh period: `[` and `]` work from any view, not only inside the
         // settings overlay (where they also appear).
@@ -3901,6 +3921,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 app.band_cursor_move(1);
             } else if app.tab == Tab::Dns {
                 app.dns_preset_move(1);
+            } else if app.tab == Tab::Dashboard {
+                app.dash_cursor(1);
             } else {
                 app.client_cursor(1);
             }
@@ -3912,6 +3934,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 app.band_cursor_move(-1);
             } else if app.tab == Tab::Dns {
                 app.dns_preset_move(-1);
+            } else if app.tab == Tab::Dashboard {
+                app.dash_cursor(-1);
             } else {
                 app.client_cursor(-1);
             }
@@ -4715,6 +4739,78 @@ mod key_tests {
             app.write,
             WriteState::Idle,
             "W must be inert outside the Device tab"
+        );
+    }
+
+    /// The dashboard's own hint and the clients panel footer promise `j/k`,
+    /// `enter open`, `s sort` and `f filter`; every one of them has an arm.
+    #[test]
+    fn the_dashboard_keys_the_hint_advertises_work() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        app.on_snapshot(
+            serde_json::from_str(include_str!("../fixtures/sample-snapshot.json"))
+                .expect("fixture snapshot"),
+            0,
+        );
+        app.select_tab(Tab::Dashboard);
+
+        // j/k move the row under the dashboard's own cursor.
+        assert_eq!(app.dash_sel, 0, "the table starts on its first row");
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_eq!(app.dash_sel, 1, "j moves the dashboard cursor");
+        handle_key(&mut app, key(KeyCode::Char('k')), &tx);
+        assert_eq!(app.dash_sel, 0, "k moves it back");
+
+        // s sort: the order changes and the change is named, because this
+        // footer does not print the active key the way the Clients tab does.
+        let before = app.client_sort;
+        handle_key(&mut app, key(KeyCode::Char('s')), &tx);
+        assert_ne!(app.client_sort, before, "s must sort the table");
+        assert!(
+            app.live_notice().unwrap_or("").contains("sorted by"),
+            "the new order must be named: {:?}",
+            app.live_notice()
+        );
+        assert!(
+            !app.settings_open,
+            "s on the dashboard sorts; it must not open the settings overlay"
+        );
+
+        // f filter narrows the rows to one band.
+        let before = app.dash_filter;
+        handle_key(&mut app, key(KeyCode::Char('f')), &tx);
+        assert_ne!(app.dash_filter, before, "f must change the filter");
+        assert!(
+            app.live_notice().unwrap_or("").contains("only"),
+            "the new filter must be named: {:?}",
+            app.live_notice()
+        );
+
+        // Shift+S is still the way into the settings overlay from here.
+        handle_key(&mut app, shift_key('s'), &tx);
+        assert!(app.settings_open, "Shift+S must still open the settings");
+        app.settings_open = false;
+
+        // enter opens the row under the cursor in the Clients tab, with that
+        // client selected there.
+        app.dash_filter = routwatch::app::DashFilter::All;
+        app.dash_sel = 0;
+        app.dash_cursor(1);
+        let wanted = app
+            .dash_clients()
+            .get(app.dash_sel)
+            .and_then(|c| c.ip.clone());
+        assert!(wanted.is_some(), "the fixture ships client addresses");
+        handle_key(&mut app, key(KeyCode::Enter), &tx);
+        assert_eq!(app.tab, Tab::Clients, "enter opens the Clients tab");
+        let shown = app
+            .selected_client()
+            .and_then(|i| app.sorted_clients()[i].ip.clone());
+        assert_eq!(shown, wanted, "the opened row is the one under the cursor");
+        assert!(
+            rx.try_recv().is_err(),
+            "opening a row sends nothing to the worker"
         );
     }
 
