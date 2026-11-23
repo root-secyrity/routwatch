@@ -25,6 +25,12 @@ Newest first. Each section lists what changed, in the words the release uses.
   speed run is shown beside it, not inside it: three runs at one position and
   constant RSRP moved x1.69 (measured 2026-11-22), so throughput cannot place the
   lever. No purchase advice and no causal claim.
+- The two CLI readers of the signal log now print the note the TUI already showed
+  when rows are skipped: damaged lines, and rows written by a newer routwatch. A
+  skipped row is a reported row, not a quietly shorter log.
+- A write to the signal log tries the sidecar lock three times, 5 ms apart, before
+  it gives up on the sample: a holder that lasts milliseconds is not the same thing
+  as another routwatch trimming the log, and the wait stays under 10 ms.
 
 ## 0.9.2
 
