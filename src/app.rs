@@ -2059,11 +2059,19 @@ impl App {
     /// file this writes is an alert event, and only when the alert is new for
     /// this cell and this local day.
     pub fn load_guard(&mut self) {
+        let now = unix_now();
+        self.load_guard_at(now);
+    }
+
+    /// The same read with the clock named instead of read. The guard groups rows
+    /// by local day and asks for six hours of the current one, so a test that
+    /// writes a day of its own cannot go through the wall clock: before 06:00
+    /// local no day yet holds the six hours a verdict needs.
+    pub(crate) fn load_guard_at(&mut self, now: u64) {
         let Some(log) = crate::signal_history::path() else {
             return;
         };
         let rows = crate::signal_history::load(&log).rows;
-        let now = unix_now();
         self.guard = crate::advisor::drift_guard(&rows, now);
         let c = &self.guard.cell;
         let (Some(earfcn), Some(pci)) = (c.earfcn_dl, c.pci) else {
@@ -3760,6 +3768,21 @@ mod tests {
         }
     }
 
+    /// The last minute of the local day `now` falls in, found by walking forward
+    /// for the same reason: no timezone and no day length is assumed.
+    fn day_end_now(now: u64) -> u64 {
+        let mut t = now;
+        let day = crate::signal_history::local_stamp(now)[..10].to_string();
+        loop {
+            let next = t + 60;
+            if crate::signal_history::local_stamp(next)[..10] != day {
+                return t;
+            }
+            t = next;
+            assert!(t - now < 2 * 86_400, "no day boundary found");
+        }
+    }
+
     fn keyed_line(at: u64, sinr: f32) -> String {
         let r = crate::signal_history::Row {
             v: crate::signal_history::VERSION,
@@ -3786,7 +3809,10 @@ mod tests {
         let _home = crate::test_env::isolate_data_home("guard-event");
         let log = crate::signal_history::path().expect("a data dir is set");
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
-        let now = unix_now();
+        // The guard asks for six hours of the day it is handed, so the last
+        // minute of today is named here instead of being read: the test must hold
+        // at any hour of the real day.
+        let now = day_end_now(unix_now());
         let mut body = String::new();
         // Two complete previous days at 9.2 dB, then today at 4.5 dB: a 4.7 dB drop.
         for back in 1..=2 {
@@ -3802,7 +3828,7 @@ mod tests {
         std::fs::write(&log, body).unwrap();
 
         let mut app = fixture_app();
-        app.load_guard();
+        app.load_guard_at(now);
         assert!(app.guard.cell.alert, "{:?}", app.guard);
         let events = crate::events::path().unwrap();
         let first = std::fs::read_to_string(&events).unwrap();
@@ -3811,7 +3837,7 @@ mod tests {
             1,
             "{first}"
         );
-        app.load_guard();
+        app.load_guard_at(now);
         let second = std::fs::read_to_string(&events).unwrap();
         assert_eq!(
             second, first,
