@@ -4,6 +4,18 @@ Newest first. Each section lists what changed, in the words the release uses.
 
 ## Unreleased
 
+- **The observation log records a serving-cell change**: one `cell` row when the key
+  changes, held over two reads, with the key before and after, the band and the TAC the
+  read reported, and no verdict on the signal. It opens no incident and no cause, and
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` does not mute it: the switch keeps a file small, it does
+  not lose the timeline. `routwatch cells changes [--json] [--window SECS]` prints them.
+- **`routwatch compare --around ID` puts one cell beside itself**: two windows of 1800 s
+  from the local signal, speed and event logs, with the median and the 10th percentile, a
+  class past three measured standard deviations of noise, `insufficient` instead of a delta
+  when a side has under 10 rows or under half its window covered, and the download
+  difference only when both sides hold two speed reads. A key change inside the window
+  splits it, so two cells are never held against each other, and nothing is read from MCS.
+
 - **`routwatch budget [--json]`**: what this cycle spent, the limit, the pace the
   ledger measured and how much of the window that pace was divided by, read from
   the local ledger alone: no config file, no router session. With no config the

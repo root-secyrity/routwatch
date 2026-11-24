@@ -143,6 +143,18 @@ enum Cmd {
         #[command(subcommand)]
         action: CellsCmd,
     },
+    /// Compare one cell with itself before and after a logged event (no network)
+    Compare {
+        /// The event id, `KIND-UNIXTIME`, as `cells changes` prints it
+        #[arg(long, value_name = "ID")]
+        around: String,
+        /// Seconds on each side of the event (default 1800)
+        #[arg(long, value_name = "SECS")]
+        window: Option<u64>,
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Print this machine's ledger against the month budget (no network)
     Budget {
         /// Machine-readable JSON
@@ -474,6 +486,15 @@ enum CellsCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Print the logged cell changes, newest first (reads the log, no network)
+    Changes {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Keep the last SECS of the log, counted back from its newest row
+        #[arg(long, value_name = "SECS")]
+        window: Option<u64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -654,6 +675,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Speedtest { .. })
             | Some(Cmd::History { .. })
             | Some(Cmd::Cells { .. })
+            | Some(Cmd::Compare { .. })
             | Some(Cmd::Budget { .. })
             | Some(Cmd::Antenna { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
@@ -2144,6 +2166,76 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 println!("{}", serde_json::to_string_pretty(&records).unwrap());
             } else {
                 print!("{}", routwatch::cells::cells_table(&records));
+            }
+            Ok(())
+        }
+        Some(Cmd::Cells {
+            action: CellsCmd::Changes { json, window },
+        }) => {
+            let Some(p) = routwatch::events::path() else {
+                eprintln!("cells changes: this platform has no data directory, so no log is kept");
+                return Err(ApiError::Quiet(2));
+            };
+            let loaded = routwatch::events::load(&p);
+            if loaded.damaged > 0 {
+                eprintln!(
+                    "{}: {} damaged line(s) skipped",
+                    p.display(),
+                    loaded.damaged
+                );
+            }
+            let rows = routwatch::cells::change_rows(&loaded, window);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+            } else {
+                print!("{}", routwatch::cells::changes_table(&rows));
+            }
+            Ok(())
+        }
+        Some(Cmd::Compare {
+            around,
+            window,
+            json,
+        }) => {
+            // Three local logs and nothing else: no client is built, so the
+            // router is never asked.
+            let mut src = routwatch::incidents::Source::load();
+            // The window maths and the smear both read time forward; the loader
+            // keeps file order, which a log written by hand may not.
+            src.signal.sort_by_key(|r| r.at_unix);
+            let Some(event) = src
+                .events
+                .iter()
+                .find(|e| format!("{}-{}", e.kind, e.at_unix) == around)
+            else {
+                eprintln!(
+                    "compare: {around} is not in the current event log (it keeps its last {} rows)",
+                    routwatch::events::KEEP
+                );
+                return Err(ApiError::Usage(
+                    "compare: no such event in the log".to_string(),
+                ));
+            };
+            let neighbours: Vec<u64> = src
+                .events
+                .iter()
+                .filter(|e| e.at_unix != event.at_unix)
+                .map(|e| e.at_unix)
+                .collect();
+            let smear_ms = routwatch::incidents::smear_ms(&src);
+            let input = routwatch::compare::CompareInput {
+                event,
+                signal: &src.signal,
+                speed: &src.speed,
+                neighbours: &neighbours,
+                window_secs: window.unwrap_or(routwatch::compare::WINDOW_SECS),
+                smear_ms,
+            };
+            let c = routwatch::compare::compare(&input);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&c).unwrap());
+            } else {
+                print!("{}", routwatch::compare::summary(&c));
             }
             Ok(())
         }

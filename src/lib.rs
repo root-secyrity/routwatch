@@ -9,6 +9,7 @@ pub mod app;
 pub mod capabilities;
 pub mod cells;
 pub mod client_detail;
+pub mod compare;
 pub mod completion;
 pub mod config;
 pub mod config_snapshot;

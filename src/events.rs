@@ -26,10 +26,12 @@ pub const KEEP: usize = 2000;
 /// Compact once the file passes this size, checked after an append.
 const MAX_BYTES: u64 = 512 * 1024;
 
-/// The eight families of state change. `ReadFail` is a state change too: a tier
+/// The nine families of state change. `ReadFail` is a state change too: a tier
 /// that stopped answering is why a panel froze. `Config` carries field names
 /// only, never a value and never a fingerprint. `Tm` is the cell's transmission
-/// mode moving while the cell itself stayed. `Budget` is the local ledger
+/// mode moving while the cell itself stayed. `Cell` is the serving cell itself
+/// changing, which is context for everything read after it, never a verdict on
+/// the link. `Budget` is the local ledger
 /// crossing 80% or 95% of the month's budget, a fact about this machine's
 /// history and not about the link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +43,7 @@ pub enum EventKind {
     Signal,
     Config,
     Tm,
+    Cell,
     Budget,
 }
 
@@ -54,6 +57,7 @@ impl EventKind {
             EventKind::Signal => "signal",
             EventKind::Config => "config",
             EventKind::Tm => "tm",
+            EventKind::Cell => "cell",
             EventKind::Budget => "budget",
         }
     }
@@ -67,6 +71,7 @@ impl EventKind {
             "signal" => Some(EventKind::Signal),
             "config" => Some(EventKind::Config),
             "tm" => Some(EventKind::Tm),
+            "cell" => Some(EventKind::Cell),
             "budget" => Some(EventKind::Budget),
             _ => None,
         }
@@ -241,6 +246,8 @@ pub struct Watch {
     confirmed_tm: Option<String>,
     /// A TM value seen once, with how many reads in a row have shown it.
     pending_tm: Option<(String, u32)>,
+    /// A cell key seen once, with how many reads in a row have shown it.
+    pending_cell: Option<(crate::cells::CellKey, u32)>,
 }
 
 impl Watch {
@@ -252,6 +259,7 @@ impl Watch {
         self.prev_cell = cell_key(snap);
         self.confirmed_tm = snap.signal.tm.clone();
         self.pending_tm = None;
+        self.pending_cell = None;
     }
 
     /// One radio-tier read. Returns the rows this read earns, oldest first.
@@ -285,43 +293,87 @@ impl Watch {
         }
         self.poor = Some(poor);
 
-        // TM moves on its own while the signal stays, so it gets its own row.
-        // One read that disagrees with the confirmed value is not a change yet:
-        // some firmware alternates the field for a single sample.
+        // A cell change is a change of context, not a verdict: the row says
+        // which cell the read left and which one it arrived on. The rule is the
+        // TM rule, because the firmware can name another cell for one sample:
+        // two reads in a row make the change, and a return drops the candidate.
         if let Some(key) = cell_key(snap) {
-            if let Some(tm) = snap.signal.tm.clone() {
-                if self.prev_cell.as_ref() != Some(&key) {
-                    // Another cell is another baseline, never a TM change.
+            match self.prev_cell.clone() {
+                // A first read is a baseline: there is nothing to be a change
+                // from, and the catalog records it as a sighting instead.
+                None => {
                     self.prev_cell = Some(key);
-                    self.confirmed_tm = Some(tm);
-                    self.pending_tm = None;
-                } else if self.confirmed_tm.is_none() {
-                    self.confirmed_tm = Some(tm);
-                    self.pending_tm = None;
-                } else if self.confirmed_tm.as_deref() == Some(tm.as_str()) {
-                    self.pending_tm = None;
-                } else {
-                    let held = match self.pending_tm.as_mut() {
-                        Some((candidate, held)) if candidate == &tm => {
+                    self.pending_cell = None;
+                }
+                Some(prev) if prev == key => {
+                    // The confirmed cell answered, so a single odd read is gone.
+                    self.pending_cell = None;
+                }
+                Some(prev) => {
+                    let held = match self.pending_cell.as_mut() {
+                        Some((candidate, held)) if *candidate == key => {
                             *held += 1;
                             *held
                         }
                         _ => {
-                            self.pending_tm = Some((tm.clone(), 1));
+                            self.pending_cell = Some((key.clone(), 1));
                             1
                         }
                     };
                     if held >= 2 {
-                        let before = self.confirmed_tm.clone();
-                        self.confirmed_tm = Some(tm.clone());
+                        self.prev_cell = Some(key.clone());
+                        self.pending_cell = None;
+                        // The TM arrived with the cell, so it is that cell's
+                        // baseline. Writing a TM row here would report the same
+                        // change twice.
+                        self.confirmed_tm = snap.signal.tm.clone();
                         self.pending_tm = None;
                         rows.push(ObsEvent::new(
-                            EventKind::Tm,
+                            EventKind::Cell,
                             crate::worker::tier_label(crate::worker::Tier::Radio),
                             at_unix,
                             "changed",
-                            Some(tm_detail(&key, before.as_deref(), &tm, held)),
+                            Some(cell_change_detail(snap, &prev, &key, held)),
                         ));
+                    }
+                }
+            }
+        }
+
+        // TM moves on its own while the cell stays, so it gets its own row.
+        // One read that disagrees with the confirmed value is not a change yet:
+        // some firmware alternates the field for a single sample.
+        if let Some(key) = cell_key(snap) {
+            if self.prev_cell.as_ref() == Some(&key) {
+                if let Some(tm) = snap.signal.tm.clone() {
+                    if self.confirmed_tm.is_none() {
+                        self.confirmed_tm = Some(tm);
+                        self.pending_tm = None;
+                    } else if self.confirmed_tm.as_deref() == Some(tm.as_str()) {
+                        self.pending_tm = None;
+                    } else {
+                        let held = match self.pending_tm.as_mut() {
+                            Some((candidate, held)) if candidate == &tm => {
+                                *held += 1;
+                                *held
+                            }
+                            _ => {
+                                self.pending_tm = Some((tm.clone(), 1));
+                                1
+                            }
+                        };
+                        if held >= 2 {
+                            let before = self.confirmed_tm.clone();
+                            self.confirmed_tm = Some(tm.clone());
+                            self.pending_tm = None;
+                            rows.push(ObsEvent::new(
+                                EventKind::Tm,
+                                crate::worker::tier_label(crate::worker::Tier::Radio),
+                                at_unix,
+                                "changed",
+                                Some(tm_detail(&key, before.as_deref(), &tm, held)),
+                            ));
+                        }
                     }
                 }
             }
@@ -337,21 +389,48 @@ fn cell_key(snap: &crate::model::Snapshot) -> Option<crate::cells::CellKey> {
         .and_then(crate::cells::key_from_row)
 }
 
-/// The cell and the TM move, in one line. ARFCN, band and PCI are broadcast
-/// parameters, so they can be named; nothing here is device identity.
-fn tm_detail(key: &crate::cells::CellKey, before: Option<&str>, after: &str, held: u32) -> String {
-    let cell = match key {
+/// One cell key as a line a person reads. ARFCN and PCI are broadcast
+/// parameters, so they can be named; a key without an ARFCN says so instead of
+/// printing a dash that would read like a missing value.
+fn cell_label(key: &crate::cells::CellKey) -> String {
+    match key {
         crate::cells::CellKey::Carrier { earfcn_dl, pci } => {
             format!("earfcn_dl {earfcn_dl} pci {pci}")
         }
         crate::cells::CellKey::Unkeyed { band, pci } => {
             format!("band {band} pci {pci} earfcn unknown")
         }
-    };
+    }
+}
+
+/// The cell and the TM move, in one line. Nothing here is device identity.
+fn tm_detail(key: &crate::cells::CellKey, before: Option<&str>, after: &str, held: u32) -> String {
+    let cell = cell_label(key);
     format!(
         "{cell} tm {} -> {after} held {held}",
         before.unwrap_or("unknown")
     )
+}
+
+/// The cell a read left and the cell it arrived on, with the band and the TAC
+/// the read reported. No signal figure: the row says the context moved, and a
+/// figure here would read as a verdict on the link.
+fn cell_change_detail(
+    snap: &crate::model::Snapshot,
+    before: &crate::cells::CellKey,
+    after: &crate::cells::CellKey,
+    held: u32,
+) -> String {
+    let mut parts = vec![format!("{} -> {}", cell_label(before), cell_label(after))];
+    if let Some(band) = snap.signal.band.as_deref() {
+        parts.push(format!("band {band}"));
+    }
+    match snap.signal.tac.and_then(|t| u16::try_from(t).ok()) {
+        Some(tac) => parts.push(format!("tac {tac}")),
+        None => parts.push("tac unknown".to_string()),
+    }
+    parts.push(format!("held {held}"));
+    parts.join(" ")
 }
 
 /// Up means the firmware says it is connected. An address can be held while the
@@ -458,10 +537,11 @@ mod tests {
             EventKind::Signal,
             EventKind::Config,
             EventKind::Tm,
+            EventKind::Cell,
             EventKind::Budget,
         ];
-        // The module doc calls them the eight families: this list is the count.
-        assert_eq!(kinds.len(), 8);
+        // The module doc calls them the nine families: this list is the count.
+        assert_eq!(kinds.len(), 9);
         for k in kinds {
             assert_eq!(EventKind::parse(k.as_str()), Some(k));
         }
@@ -545,13 +625,15 @@ mod tests {
             .is_empty(),
             "another cell is another baseline, not a TM move"
         );
+        let rows = w.radio(
+            &read(Some(395), Some("DL:300 UL:18300"), Some("TM[4]")),
+            160,
+        );
+        assert_eq!(rows.len(), 1, "the second read confirms the cell: {rows:?}");
+        assert_eq!(rows[0].kind, "cell");
         assert!(
-            w.radio(
-                &read(Some(395), Some("DL:300 UL:18300"), Some("TM[4]")),
-                160
-            )
-            .is_empty(),
-            "and staying on it does not report the baseline it arrived with"
+            rows.iter().all(|e| e.kind != "tm"),
+            "the TM arrived with the cell, so it is not a TM change: {rows:?}"
         );
     }
 
@@ -565,5 +647,137 @@ mod tests {
             "a PCI alone names no cell, so it cannot carry a cell's TM"
         );
         assert!(w.radio(&read(None, EARFCN, Some("TM[4]")), 160).is_empty());
+    }
+
+    const OTHER: Option<&str> = Some("DL:300 UL:18300");
+
+    #[test]
+    fn a_cell_change_held_two_reads_writes_one_row() {
+        let mut w = Watch::default();
+        w.prime(&read(Some(481), EARFCN, Some("TM[3]")));
+
+        assert!(
+            w.radio(&read(Some(395), OTHER, Some("TM[3]")), 100)
+                .is_empty(),
+            "one read that names another cell is not a change yet"
+        );
+        let mut arrived = read(Some(395), OTHER, Some("TM[3]"));
+        arrived.signal.band = Some("B3".into());
+        arrived.signal.tac = Some(516);
+        let rows = w.radio(&arrived, 160);
+        assert_eq!(rows.len(), 1, "two reads in a row earn one row: {rows:?}");
+        let e = &rows[0];
+        assert_eq!(e.kind, "cell");
+        assert_eq!(e.tier, "signal");
+        assert_eq!(e.outcome, "changed");
+        assert_eq!(e.at_unix, 160);
+        let detail = e.detail.as_deref().expect("the row names both cells");
+        assert!(detail.contains("earfcn_dl 100 pci 481"), "{detail}");
+        assert!(detail.contains("earfcn_dl 300 pci 395"), "{detail}");
+        assert!(detail.contains("band B3"), "{detail}");
+        assert!(detail.contains("tac 516"), "{detail}");
+        assert!(detail.contains("held 2"), "{detail}");
+        assert!(
+            !detail.contains("rsrp") && !detail.contains("sinr"),
+            "the row is context, not a verdict: {detail}"
+        );
+
+        assert!(
+            w.radio(&read(Some(395), OTHER, Some("TM[3]")), 220)
+                .is_empty(),
+            "staying on the new cell is not another change"
+        );
+    }
+
+    #[test]
+    fn a_single_stray_cell_read_writes_nothing() {
+        let mut w = Watch::default();
+        w.prime(&read(Some(481), EARFCN, Some("TM[3]")));
+
+        assert!(
+            w.radio(&read(Some(395), OTHER, Some("TM[4]")), 100)
+                .is_empty(),
+            "one read that names another cell is not a change yet"
+        );
+        assert!(
+            w.radio(&read(Some(481), EARFCN, Some("TM[3]")), 160)
+                .is_empty(),
+            "the confirmed cell came back, so the odd read is dropped"
+        );
+        assert!(
+            w.radio(&read(Some(481), EARFCN, Some("TM[3]")), 220)
+                .is_empty(),
+            "and the stray read left no TM baseline behind it"
+        );
+    }
+
+    #[test]
+    fn a_return_to_the_previous_cell_is_its_own_change() {
+        let mut w = Watch::default();
+        w.prime(&read(Some(481), EARFCN, Some("TM[3]")));
+        assert!(w
+            .radio(&read(Some(395), OTHER, Some("TM[3]")), 100)
+            .is_empty());
+        assert_eq!(
+            w.radio(&read(Some(395), OTHER, Some("TM[3]")), 160).len(),
+            1
+        );
+
+        assert!(w
+            .radio(&read(Some(481), EARFCN, Some("TM[3]")), 220)
+            .is_empty());
+        let rows = w.radio(&read(Some(481), EARFCN, Some("TM[3]")), 280);
+        assert_eq!(
+            rows.len(),
+            1,
+            "the way back is a change of its own: {rows:?}"
+        );
+        assert_eq!(rows[0].kind, "cell");
+        let detail = rows[0].detail.as_deref().expect("both cells");
+        assert!(
+            detail.contains("earfcn_dl 300 pci 395 -> earfcn_dl 100 pci 481"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn an_unkeyed_cell_never_merges_with_a_keyed_one() {
+        let mut w = Watch::default();
+        w.prime(&read(Some(481), EARFCN, Some("TM[3]")));
+
+        // Same band and PCI, but the firmware reported no ARFCN: the key is the
+        // band variant, so it is another cell and it says why.
+        assert!(w
+            .radio(&read(Some(481), None, Some("TM[3]")), 100)
+            .is_empty());
+        let rows = w.radio(&read(Some(481), None, Some("TM[3]")), 160);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let detail = rows[0].detail.as_deref().expect("both keys");
+        assert!(
+            detail.contains("earfcn_dl 100 pci 481 -> band B1 pci 481 earfcn unknown"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn a_cell_change_and_a_tm_change_write_one_row() {
+        let mut w = Watch::default();
+        w.prime(&read(Some(481), EARFCN, Some("TM[3]")));
+
+        assert!(w
+            .radio(&read(Some(395), OTHER, Some("TM[4]")), 100)
+            .is_empty());
+        let rows = w.radio(&read(Some(395), OTHER, Some("TM[4]")), 160);
+        assert_eq!(rows.len(), 1, "one change, one row: {rows:?}");
+        assert_eq!(rows[0].kind, "cell");
+        assert!(
+            rows.iter().all(|e| e.kind != "tm"),
+            "the TM came with the cell, so it is that cell's baseline: {rows:?}"
+        );
+        assert!(
+            w.radio(&read(Some(395), OTHER, Some("TM[4]")), 220)
+                .is_empty(),
+            "and the new baseline is not a change either"
+        );
     }
 }

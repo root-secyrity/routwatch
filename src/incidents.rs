@@ -362,6 +362,21 @@ mod tests {
         assert!(detect(&src(vec![ev(EventKind::Wan, "up", 100)])).is_empty());
     }
 
+    /// A cell change is context for everything read after it, never a fault: the
+    /// log can carry one and the incident list still comes back empty.
+    #[test]
+    fn a_cell_change_alone_opens_no_incident() {
+        assert_eq!(Kind::parse("cell"), None);
+        let loaded = src(vec![ObsEvent::new(
+            EventKind::Cell,
+            "signal",
+            100,
+            "changed",
+            Some("earfcn_dl 100 pci 481 -> earfcn_dl 300 pci 395 band B3 tac 516 held 2".into()),
+        )]);
+        assert!(detect(&loaded).is_empty());
+    }
+
     #[test]
     fn the_same_fault_twice_in_the_window_is_one_incident() {
         let out = detect(&src(vec![

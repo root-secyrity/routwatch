@@ -336,11 +336,159 @@ pub fn cells_table(records: &[CellRecord]) -> String {
     out
 }
 
+/// One row of the cell-change log, as `cells changes` prints it. The detail is
+/// the log's own line carried through, so a reader sees what was written rather
+/// than a second rendering of it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChangeRow {
+    /// `{kind}-{at_unix}`, the same shape an incident id has, so a caller can
+    /// name one row of the log without the log carrying an id column.
+    pub id: String,
+    pub at_unix: u64,
+    /// The same moment in local time, for reading.
+    pub at: String,
+    pub tier: String,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// The `cell` rows of an event log, newest first.
+///
+/// `window` keeps the last N seconds counted back from the newest row, not from
+/// the clock: a log that stopped three days ago still prints the rows it holds
+/// instead of an empty frame.
+pub fn change_rows(loaded: &crate::events::Loaded, window: Option<u64>) -> Vec<ChangeRow> {
+    let Some(newest) = loaded
+        .rows
+        .iter()
+        .filter(|e| e.kind == "cell")
+        .map(|e| e.at_unix)
+        .max()
+    else {
+        return Vec::new();
+    };
+    let floor = window.map(|w| newest.saturating_sub(w));
+    let mut rows: Vec<ChangeRow> = loaded
+        .rows
+        .iter()
+        .filter(|e| e.kind == "cell")
+        .filter(|e| floor.is_none_or(|f| e.at_unix >= f))
+        .map(|e| ChangeRow {
+            id: format!("{}-{}", e.kind, e.at_unix),
+            at_unix: e.at_unix,
+            at: signal_history::local_iso(e.at_unix),
+            tier: e.tier.clone(),
+            outcome: e.outcome.clone(),
+            detail: e.detail.clone(),
+        })
+        .collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.at_unix));
+    rows
+}
+
+/// The `cells changes` table. It lists what the log recorded; it draws no
+/// conclusion from it, because a cell change is context and not a fault.
+pub fn changes_table(rows: &[ChangeRow]) -> String {
+    let mut out = format!("Cell changes · {}\n", rows.len());
+    if rows.is_empty() {
+        out.push_str(
+            "no cell change recorded: the first read of a cell is a baseline, not a change\n",
+        );
+        return out;
+    }
+    out.push_str(&format!("{:<16}  {:<19}  {}\n", "id", "at", "change"));
+    for r in rows {
+        out.push_str(&format!(
+            "{:<16}  {:<19}  {}\n",
+            r.id,
+            r.at,
+            r.detail.as_deref().unwrap_or("-")
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Signal;
     use std::path::PathBuf;
+
+    /// An event log built by hand: two cell rows and two rows of other kinds, so
+    /// the filter is tested rather than assumed.
+    fn event_log() -> crate::events::Loaded {
+        use crate::events::{EventKind, Loaded, ObsEvent};
+        Loaded {
+            rows: vec![
+                ObsEvent::new(
+                    EventKind::Cell,
+                    "signal",
+                    1_700_000_000,
+                    "changed",
+                    Some("earfcn_dl 100 pci 481 -> earfcn_dl 300 pci 395 held 2".into()),
+                ),
+                ObsEvent::new(
+                    EventKind::Tm,
+                    "signal",
+                    1_700_000_100,
+                    "changed",
+                    Some("earfcn_dl 100 pci 481 tm TM3 -> TM4".into()),
+                ),
+                ObsEvent::new(EventKind::ReadFail, "signal", 1_700_000_200, "busy", None),
+                ObsEvent::new(
+                    EventKind::Cell,
+                    "signal",
+                    1_700_090_000,
+                    "changed",
+                    Some("earfcn_dl 300 pci 395 -> earfcn_dl 100 pci 481 held 2".into()),
+                ),
+            ],
+            damaged: 0,
+        }
+    }
+
+    #[test]
+    fn changes_reads_only_cell_rows_newest_first() {
+        let rows = change_rows(&event_log(), None);
+        assert_eq!(rows.len(), 2, "only the cell rows: {rows:?}");
+        assert_eq!(rows[0].at_unix, 1_700_090_000);
+        assert_eq!(rows[1].at_unix, 1_700_000_000);
+        assert_eq!(rows[0].id, "cell-1700090000");
+        assert_eq!(rows[0].tier, "signal");
+        assert_eq!(rows[0].outcome, "changed");
+        assert!(rows[0].at.contains('T'), "{}", rows[0].at);
+    }
+
+    /// The window counts back from the newest row of the log, not from the clock:
+    /// a log that stopped days ago still prints what it holds.
+    #[test]
+    fn the_window_counts_back_from_the_newest_row() {
+        let loaded = event_log();
+        let narrow = change_rows(&loaded, Some(3600));
+        assert_eq!(narrow.len(), 1, "{narrow:?}");
+        assert_eq!(narrow[0].at_unix, 1_700_090_000);
+        let wide = change_rows(&loaded, Some(90_000));
+        assert_eq!(wide.len(), 2);
+    }
+
+    #[test]
+    fn a_log_with_no_cell_row_prints_the_empty_text() {
+        let empty = crate::events::Loaded::default();
+        assert!(change_rows(&empty, None).is_empty());
+        let text = changes_table(&[]);
+        assert_eq!(text, "Cell changes · 0\nno cell change recorded: the first read of a cell is a baseline, not a change\n");
+    }
+
+    /// A cell change is context: the row may name what changed and never why.
+    #[test]
+    fn the_changes_table_states_no_cause() {
+        let text = changes_table(&change_rows(&event_log(), None));
+        assert!(text.starts_with("Cell changes · 2\n"), "{text}");
+        for word in ["because", "caused", "due to", "rsrp", "sinr"] {
+            assert!(!text.contains(word), "{word} in:\n{text}");
+        }
+    }
 
     /// A scratch `cells.json`, removed when the test ends (panic or not).
     struct Scratch(PathBuf);

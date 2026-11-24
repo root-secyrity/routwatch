@@ -515,6 +515,41 @@ why each one is stated instead of hidden.
 - **`best_sinr` is a whole dB**: the record keeps `i32` because that is the shape this
   round was specified with, while the signal log keeps the fraction. Reading a cell's
   best SINR from the catalog therefore loses the decimal that the log still has.
+- **A cell change is a row, and it is context, not a fault**: when the serving cell key
+  changes, the worker writes one `cell` row to the observation log with the key before,
+  the key after, the band and the TAC the read reported, and `held 2`, because the new
+  key must be read twice in a row before it counts. The first read of a cell is a
+  baseline, not a change, and the row is the same key rule as the catalog: downlink
+  ARFCN and PCI, or band and PCI when the ARFCN did not parse, never PCI alone. The row
+  says which cell was being served and when; it names no cause, opens no incident and
+  carries no RSRP or SINR verdict, and a cell change that lands with a transmission-mode
+  change writes the cell row only. `routwatch cells changes` prints the rows.
+- **The signal-log switch does not silence the event log**: `ROUTWATCH_DISABLE_SIGNAL_LOG=1`
+  stops the minute signal log and the cells catalog. The observation log keeps recording,
+  because it is the record of what happened, not a measurement series, and a switch meant
+  to keep a file small is not a licence to lose the timeline. A test sets the variable and
+  shows the cell row still written.
+- **`compare` compares one cell with itself**: `routwatch compare --around ID` takes an
+  event id and two windows of 1800 s, and every stretch between the event is compared with
+  its own other side, never across two cells: a key change inside the window splits it, and
+  the two halves of a split are not held against each other. A cost, not a promise.
+- **A thin side is insufficient, not zero**: a side with fewer than 10 rows, or whose rows
+  cover less than half the window (a row is one 60 s sample, so coverage is
+  `rows * 60 / window`), prints `insufficient` with no delta at all. Coverage of exactly
+  0.5 counts as enough.
+- **The noise thresholds are three measured standard deviations**: SINR moves by 3.6 dB
+  (3 x 1.202 dB) and RSRP by 0.7 dB (3 x 0.223 dB) before a step is called real, and a
+  smaller move is `within noise`. Both spreads were measured on 2026-11-22 over 14.4
+  minutes of a still link on the H122-373 (200 samples, `routwatch record --interval 2`),
+  and they are declared once, in `src/compare.rs`. The median and the 10th percentile are printed,
+  never the mean, because one bad sample should not move a verdict. A SINR rise with an
+  RSRP fall is `mixed`, with no single verdict.
+- **Download is compared only when both sides have two reads**: one speed row per side
+  states no difference, and the transfer is never inferred from MCS (r -0.161 over the same
+  still link, so MCS and SINR did not move together). Two events closer together than the
+  smear print that their order is not resolved; the smear is the widest gap between the
+  signal samples the log already holds, so it grows with a missing stretch instead of
+  claiming a fresher order than the rows support.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
