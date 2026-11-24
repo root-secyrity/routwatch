@@ -474,6 +474,15 @@ enum CellsCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Print the logged cell changes, newest first (reads the log, no network)
+    Changes {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Keep the last SECS of the log, counted back from its newest row
+        #[arg(long, value_name = "SECS")]
+        window: Option<u64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2144,6 +2153,29 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 println!("{}", serde_json::to_string_pretty(&records).unwrap());
             } else {
                 print!("{}", routwatch::cells::cells_table(&records));
+            }
+            Ok(())
+        }
+        Some(Cmd::Cells {
+            action: CellsCmd::Changes { json, window },
+        }) => {
+            let Some(p) = routwatch::events::path() else {
+                eprintln!("cells changes: this platform has no data directory, so no log is kept");
+                return Err(ApiError::Quiet(2));
+            };
+            let loaded = routwatch::events::load(&p);
+            if loaded.damaged > 0 {
+                eprintln!(
+                    "{}: {} damaged line(s) skipped",
+                    p.display(),
+                    loaded.damaged
+                );
+            }
+            let rows = routwatch::cells::change_rows(&loaded, window);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+            } else {
+                print!("{}", routwatch::cells::changes_table(&rows));
             }
             Ok(())
         }
