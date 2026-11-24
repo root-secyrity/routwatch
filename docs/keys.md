@@ -31,14 +31,16 @@ handler no longer answers to, so a key added without a row here fails nothing.
 |---|---|---|
 | `S` or `,` | everywhere except Clients / Dashboard / Bands | settings: theme, view, graph, refresh, budget; `w` saves, `Esc` closes |
 | `-` / `+` | settings | traffic budget in 10 GB steps |
-| `?` | everywhere | this help, grouped by section; `j` `k` or `PageUp` / `PageDown` scroll it when the list is taller than the screen |
+| `?` | everywhere | this help, grouped by section; a long description wraps onto the next line, and `j` `k` or `PageUp` / `PageDown` scroll it when the list is taller than the screen |
 | `i` | everywhere | event feed: `j`/`k` read back, `space` pauses, `Esc` or `i` closes |
 | `Esc` | everywhere | close whatever is open: help, settings, event feed, band confirm, open message |
 
 While the event feed is open it owns `j` `k` `space` `Esc`, and while the help is
 open it owns `j` `k` `PageUp` `PageDown`, so those keys stop moving the list
-underneath until you close it. `?` reopens the help at the top. On Clients and on
-the dashboard's client table `s` sorts, and on Bands `s` saves the ticked merge,
+underneath until you close it. `?` reopens the help at the top. A section heading in
+the help is drawn as a filled band rather than coloured text, because a terminal
+theme can give the heading colour and the key colour the same value. On Clients and
+on the dashboard's client table `s` sorts, and on Bands `s` saves the ticked merge,
 so `Shift+S` (or `,`) is the way into settings from those sections.
 
 ## Section keys

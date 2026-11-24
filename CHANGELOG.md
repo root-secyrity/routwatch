@@ -51,6 +51,16 @@ Newest first. Each section lists what changed, in the words the release uses.
   window while it is open, so they no longer move the selection behind it; `?` and
   `Esc` still close it, and opening starts at the top. A heading whose rows all fell
   outside the window is not drawn.
+- **A long help description is wrapped, and a section is a band**: a description that
+  did not fit the panel used to be cut and ended in an ellipsis, so the longest rows
+  (the SMS keys, the dashboard row, `W renew`, the settings `i`) lost their ending. The
+  text now continues on the next line, indented under the description column, and the
+  panel is measured in the lines the rows actually draw rather than in their number: at
+  120 columns the whole list needs 56 rows and anything shorter scrolls, exactly as
+  before. A section heading is now a filled bar (the label drawn on the title colour)
+  because two palette slots can resolve to one colour, which made the headings look
+  like the key column on a terminal theme. The keys column is still cut, which is why
+  `Enter / s / f` shows an ellipsis.
 
 ## 0.9.2
 
