@@ -26,7 +26,7 @@ pub struct AlignSample {
     pub at_ms: u64,
     pub sinr_db: f64,
     /// The serving cell this read came from. A change clears the peak.
-    pub pci: Option<u16>,
+    pub pci: Option<u32>,
 }
 
 /// The best 15 s average held on the current cell.
@@ -34,7 +34,7 @@ pub struct AlignSample {
 pub struct PeakHold {
     pub sinr_db: f64,
     pub at_ms: u64,
-    pub pci: Option<u16>,
+    pub pci: Option<u32>,
 }
 
 /// Which way the average moved. Three words, because a 3.6 dB deadband cannot
@@ -80,17 +80,30 @@ pub struct AlignView {
     pub cleared_at: Option<u64>,
 }
 
-/// The mean SINR of the reads stamped in `(from_ms, to_ms]`, or None when that
-/// span holds none. Half-open on the left, so two neighbouring windows never
-/// count the same read twice.
-pub fn sinr_average(samples: &[AlignSample], from_ms: u64, to_ms: u64) -> Option<f64> {
+/// The mean SINR of the reads no more than `window_ms` old as of `now_ms`, or
+/// None when the window holds none. Ages, not stamps, so a window that starts
+/// before the clock did is not a special case.
+pub fn sinr_average(samples: &[AlignSample], now_ms: u64, window_ms: u64) -> Option<f64> {
+    mean_of(
+        samples
+            .iter()
+            .filter(|s| in_window(s.at_ms, now_ms, window_ms)),
+    )
+}
+
+/// A read belongs to a window when it is not from the future and its age is
+/// under the window. The edges are exclusive on the old side, so neighbouring
+/// windows never count the same read twice.
+fn in_window(at_ms: u64, now_ms: u64, window_ms: u64) -> bool {
+    at_ms <= now_ms && now_ms - at_ms < window_ms
+}
+
+fn mean_of<'a>(reads: impl Iterator<Item = &'a AlignSample>) -> Option<f64> {
     let mut sum = 0.0;
     let mut n = 0u32;
-    for s in samples {
-        if s.at_ms > from_ms && s.at_ms <= to_ms {
-            sum += s.sinr_db;
-            n += 1;
-        }
+    for s in reads {
+        sum += s.sinr_db;
+        n += 1;
     }
     (n > 0).then(|| sum / f64::from(n))
 }
@@ -106,12 +119,10 @@ pub fn align_engine(samples: &[AlignSample], now_ms: u64) -> AlignView {
     let seg_start = last_cell_change(&sorted);
     let segment = &sorted[seg_start..];
 
-    let average = sinr_average(segment, now_ms.saturating_sub(WINDOW_MS), now_ms);
-    let previous = sinr_average(
-        segment,
-        now_ms.saturating_sub(2 * WINDOW_MS),
-        now_ms.saturating_sub(WINDOW_MS),
-    );
+    let average = sinr_average(segment, now_ms, WINDOW_MS);
+    let previous = mean_of(segment.iter().filter(|s| {
+        in_window(s.at_ms, now_ms, 2 * WINDOW_MS) && !in_window(s.at_ms, now_ms, WINDOW_MS)
+    }));
     let direction = match (average, previous) {
         (Some(now), Some(was)) if now - was > SINR_DEADBAND_DB => Direction::Rising,
         (Some(now), Some(was)) if was - now > SINR_DEADBAND_DB => Direction::Falling,
@@ -123,7 +134,7 @@ pub fn align_engine(samples: &[AlignSample], now_ms: u64) -> AlignView {
     // to the earliest stamp, which is when the level was reached.
     let mut peak: Option<PeakHold> = None;
     for s in segment {
-        let Some(avg) = sinr_average(segment, s.at_ms.saturating_sub(WINDOW_MS), s.at_ms) else {
+        let Some(avg) = sinr_average(segment, s.at_ms, WINDOW_MS) else {
             continue;
         };
         let held = PeakHold {
@@ -162,7 +173,7 @@ mod tests {
     use super::*;
 
     /// A burst of reads one second apart, all on one value and one cell.
-    fn burst(at_ms: u64, n: u64, sinr_db: f64, pci: Option<u16>) -> Vec<AlignSample> {
+    fn burst(at_ms: u64, n: u64, sinr_db: f64, pci: Option<u32>) -> Vec<AlignSample> {
         (0..n)
             .map(|i| AlignSample {
                 at_ms: at_ms + i * 1000,
@@ -179,29 +190,29 @@ mod tests {
     #[test]
     fn the_average_is_the_mean_of_its_window() {
         let samples = vec![
-            // Outside the window on the left, so it must not be counted.
+            // Older than both windows: it must not be averaged in either.
             AlignSample {
                 at_ms: 0,
-                sinr_db: 99.0,
+                sinr_db: 3.0,
                 pci: Some(100),
             },
             AlignSample {
-                at_ms: 20_000,
+                at_ms: 40_000,
                 sinr_db: 2.0,
                 pci: Some(100),
             },
             AlignSample {
-                at_ms: 21_000,
+                at_ms: 41_000,
                 sinr_db: 4.0,
                 pci: Some(100),
             },
             AlignSample {
-                at_ms: 22_000,
+                at_ms: 42_000,
                 sinr_db: 6.0,
                 pci: Some(100),
             },
         ];
-        let view = align_engine(&samples, 22_000);
+        let view = align_engine(&samples, 42_000);
         assert!(close(view.average.unwrap(), 4.0), "{view:?}");
         assert!(
             view.previous.is_none(),
