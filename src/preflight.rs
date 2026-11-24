@@ -95,7 +95,40 @@ pub fn for_intent(intent: &WriteIntent, snap: Option<&Snapshot>) -> Preflight {
                 warning: Some("DNS does not restart the radio".to_string()),
             }
         }
+        WriteIntent::RenewIp => Preflight {
+            rows: vec![
+                (
+                    "wan ip now".to_string(),
+                    snap.and_then(|s| s.device.wan_ip.clone())
+                        .unwrap_or_else(|| "not reported".to_string()),
+                ),
+                ("connection".to_string(), connection_line(snap)),
+            ],
+            warning: Some(
+                "the data connection drops for a few seconds and the ISP may hand back the same address"
+                    .to_string(),
+            ),
+        },
     }
+}
+
+/// The cell the address will come back on, so a change of cell is visible before
+/// the confirm: an address that returns on another cell is a different path.
+fn connection_line(snap: Option<&Snapshot>) -> String {
+    let Some(s) = snap else {
+        return "no snapshot read yet".to_string();
+    };
+    let mut parts = vec![s.connection.net_type.clone()];
+    if s.connection.endc {
+        parts.push("ENDC on".to_string());
+    }
+    if let Some(band) = &s.signal.band {
+        parts.push(band.clone());
+    }
+    if let Some(pci) = s.signal.pci {
+        parts.push(format!("pci {pci}"));
+    }
+    parts.join(" · ")
 }
 
 /// The confirm modal must not look like a write that can work when the firmware
@@ -235,5 +268,53 @@ mod tests {
             .rows
             .iter()
             .any(|(k, _)| k == "support"));
+    }
+
+    /// The confirm has to show what is being given up: the address in hand now and
+    /// the cell it will come back on, and it has to say the link drops rather than
+    /// leave the user to find out.
+    #[test]
+    fn a_renew_shows_the_address_now_and_warns_about_the_drop() {
+        let snap = Snapshot {
+            device: crate::model::Device {
+                wan_ip: Some("198.51.100.7".into()),
+                ..Default::default()
+            },
+            connection: crate::model::Connection {
+                net_type: "LTE".into(),
+                endc: true,
+                ..Default::default()
+            },
+            signal: crate::model::Signal {
+                band: Some("B1".into()),
+                pci: Some(481),
+                ..Default::default()
+            },
+            ..Snapshot::default()
+        };
+        let p = for_intent(&WriteIntent::RenewIp, Some(&snap));
+        assert!(p
+            .rows
+            .iter()
+            .any(|(k, v)| k == "wan ip now" && v == "198.51.100.7"));
+        assert!(p
+            .rows
+            .iter()
+            .any(|(k, v)| k == "connection" && v == "LTE · ENDC on · B1 · pci 481"));
+        let w = p.warning.unwrap_or_default();
+        assert!(w.contains("drops for a few seconds"), "{w}");
+        assert!(w.contains("same address"), "{w}");
+
+        // Nothing read yet: the row says so instead of leaving a blank the user
+        // would read as "no address".
+        let bare = for_intent(&WriteIntent::RenewIp, None);
+        assert!(bare
+            .rows
+            .iter()
+            .any(|(k, v)| k == "wan ip now" && v == "not reported"));
+        assert!(bare
+            .rows
+            .iter()
+            .any(|(k, v)| k == "connection" && v == "no snapshot read yet"));
     }
 }

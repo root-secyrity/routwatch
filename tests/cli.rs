@@ -648,9 +648,12 @@ fn twenty_sequential_runs_never_exhaust_the_sessions() {
     let (ip, logins, logouts) = session_fake_router();
     let cfg = config_for(&ip);
     for n in 1..=20 {
+        // The guard is bound, not passed inline: dropping it deletes the
+        // directory, and the child needs the path to exist while it runs.
+        let home = temp_data_home("sessions");
         let mut cmd = bin();
         cmd.env("ROUTWATCH_PASSWORD", "test-placeholder")
-            .env("XDG_DATA_HOME", temp_data_home("sessions").to_path_buf())
+            .env("XDG_DATA_HOME", home.to_path_buf())
             .args(["--config", cfg.to_str().unwrap(), "status", "--json"]);
         let out = cmd.output().expect("run status");
         assert_eq!(
@@ -873,6 +876,55 @@ fn history_signal_reads_the_log_without_a_config_or_a_network() {
     let one = stdout(&out);
     assert_eq!(one.lines().count(), 1, "{one}");
     assert!(one.contains("-101.0"), "{one}");
+}
+
+#[test]
+fn a_row_from_a_newer_build_is_counted_out_loud_by_both_readers() {
+    let home = temp_data_home("signewer");
+    let log = signal_log(&home);
+    std::fs::create_dir_all(log.parent().unwrap()).expect("data dir");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let ours = format!(
+        "{{\"v\":2,\"at_unix\":{},\"band\":\"B1\",\"earfcn_dl\":100,\"earfcn_ul\":18100,\
+         \"pci\":481,\"rsrp_dbm\":-96.0,\"rsrq_db\":-6.0,\"sinr_db\":4.5,\"tm\":\"TM[4]\",\
+         \"endc\":true,\"net_type\":\"LTE\",\"nr_band\":null}}\n",
+        now - 60
+    );
+    let future = format!(
+        "{{\"v\":99,\"at_unix\":{},\"band\":\"B1\",\"pci\":481}}\n",
+        now
+    );
+    std::fs::write(&log, ours + &future).expect("log");
+
+    // The row this build cannot read is skipped, and the reader says so rather
+    // than returning a log that is quietly one row shorter.
+    for args in [
+        vec!["history", "--signal", "--json"],
+        vec!["antenna", "worth", "--json"],
+    ] {
+        let out = bin()
+            .env("XDG_DATA_HOME", &*home)
+            .env("XDG_CONFIG_HOME", NO_CONFIG)
+            .args(&args)
+            .output()
+            .expect("run");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{} stderr: {}",
+            args[0],
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("1 line(s) from a newer routwatch ignored"),
+            "{} stderr: {}",
+            args[0],
+            stderr(&out)
+        );
+    }
 }
 
 #[test]

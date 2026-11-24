@@ -687,6 +687,22 @@ mod tests {
         assert!(names().contains(&"auto"), "auto must be reachable by name");
     }
 
+    /// The help draws a section heading as a band: `inverse` text on a `title`
+    /// background. A palette that made the two the same colour would draw an
+    /// invisible label, so the two slots must differ everywhere. The named ANSI
+    /// slots are resolved by the terminal itself, so this proves the slots differ,
+    /// not that the terminal paints them far apart.
+    #[test]
+    fn inverse_reads_on_the_title_slot_in_every_palette() {
+        for name in palettes() {
+            let theme = Theme::get(name);
+            assert_ne!(
+                theme.inverse, theme.title,
+                "{name} resolves the band label to its own background"
+            );
+        }
+    }
+
     #[test]
     fn unknown_theme_falls_back_to_dark_like_the_family() {
         assert_eq!(by_name("nonsense").id, "dark");

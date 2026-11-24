@@ -404,15 +404,21 @@ pub(crate) fn lock_exclusive(path: &Path) -> io::Result<Option<std::fs::File>> {
         .write(true)
         .truncate(false)
         .mode(0o600)
-        .open(lock)?;
+        .open(&lock)?;
     // SAFETY: the fd stays open for the life of `f`; LOCK_NB reports contention
-    // instead of blocking, so the TUI never waits on a CLI run.
-    let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc == 0 {
-        Ok(Some(f))
-    } else {
-        Ok(None)
+    // instead of blocking, so the TUI never waits on a CLI run. A lost attempt can
+    // be a holder that lasts milliseconds rather than a writer, so it is retried
+    // twice: a trim (131 ms) still ends as None, and the wait a caller sees stays
+    // under 10 ms.
+    for attempt in 0..3 {
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(Some(f));
+        }
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
+    Ok(None)
 }
 
 /// Trim the file to its newest `keep` rows. Lock first, then read, then write, so
@@ -498,6 +504,31 @@ mod tests {
         fn deref(&self) -> &std::path::Path {
             &self.file
         }
+    }
+
+    #[test]
+    fn a_lock_this_process_holds_is_contention_with_a_bounded_wait() {
+        let d = Scratch::new("locktries");
+        let held = lock_exclusive(&d).unwrap().expect("the first lock");
+        let started = std::time::Instant::now();
+        assert!(
+            lock_exclusive(&d).unwrap().is_none(),
+            "a lock already held is contention, never a free path"
+        );
+        let waited = started.elapsed();
+        assert!(
+            waited >= std::time::Duration::from_millis(9),
+            "two retries, 5 ms apart, take at least 10 ms: {waited:?}"
+        );
+        assert!(
+            waited < std::time::Duration::from_secs(1),
+            "the wait is bounded, it never blocks on another routwatch: {waited:?}"
+        );
+        drop(held);
+        assert!(
+            lock_exclusive(&d).unwrap().is_some(),
+            "the lock is free once its holder drops it"
+        );
     }
 
     impl AsRef<std::path::Path> for Scratch {

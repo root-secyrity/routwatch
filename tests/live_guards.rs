@@ -216,8 +216,10 @@ fn the_signal_log_writes_one_row_a_minute() {
 }
 
 #[test]
-fn the_signal_log_cap_is_still_1440() {
-    assert_eq!(signal_history::CAP, 1440, "about a day at one row a minute");
+fn the_signal_log_cap_guards_three_days() {
+    // Two complete previous days are what the drift guard compares against, so
+    // the cap must hold more than two days: three days at one row a minute.
+    assert_eq!(signal_history::CAP, 4320, "three days at one row a minute");
     let dir = TempDir::new("cap");
     let log = dir.signal_log();
     let mut body = String::new();
@@ -233,6 +235,9 @@ fn the_signal_log_cap_is_still_1440() {
             sinr_db: None,
             pci: None,
             endc: None,
+            earfcn_dl: None,
+            earfcn_ul: None,
+            tm: None,
         };
         body.push_str(&serde_json::to_string(&row).expect("row json"));
         body.push('\n');

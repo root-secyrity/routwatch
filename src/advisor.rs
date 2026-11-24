@@ -166,7 +166,7 @@ fn band_number(band: &str) -> Option<u8> {
     t.parse().ok()
 }
 
-fn median(mut values: Vec<f32>) -> Option<f32> {
+pub(crate) fn median(mut values: Vec<f32>) -> Option<f32> {
     if values.is_empty() {
         return None;
     }
@@ -179,7 +179,7 @@ fn median(mut values: Vec<f32>) -> Option<f32> {
     })
 }
 
-fn percentile(values: &[f32], p: f64) -> Option<f32> {
+pub(crate) fn percentile(values: &[f32], p: f64) -> Option<f32> {
     if values.is_empty() {
         return None;
     }
@@ -189,7 +189,7 @@ fn percentile(values: &[f32], p: f64) -> Option<f32> {
     Some(sorted[idx])
 }
 
-fn median_f64(values: &[f64]) -> Option<f64> {
+pub(crate) fn median_f64(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
@@ -389,6 +389,254 @@ pub fn advise(input: &Input) -> Advice {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Drift guard: is the aim still where it was?
+//
+// A directional antenna does not turn by itself, but its mount can: wind on a
+// loose clamp, a slow creep over days. The guard compares today's best SINR on
+// one cell with the best SINR that same cell reached on previous complete local
+// days, and refuses to say anything before two such days exist. SINR, not RSRP:
+// an aim that slipped keeps receiving the tower, and only loses the ratio.
+//
+// Like `advise`, it takes rows and a clock value and touches nothing: no file,
+// no network, no time source of its own.
+// ---------------------------------------------------------------------------
+
+/// Where a gauge stops saying "fair": the cut the signal bars are labelled
+/// with, declared once so a bar that reads "poor" and a class that reads
+/// "limited" cannot disagree on the same number.
+pub const RSRP_FAIR_DBM: f32 = -100.0;
+pub const SINR_FAIR_DB: f32 = 10.0;
+
+/// How far today's best SINR must sit below the baseline to be called drift.
+/// The measured daily spread of one cell's best SINR over 80.55 h was 3 dB, so
+/// a 3 dB difference is the weather and not the mount.
+pub const GUARD_ALERT_DB: f32 = 4.0;
+
+/// Complete previous days a baseline needs.
+pub const GUARD_BASELINE_DAYS: usize = 2;
+
+/// Days behind a medium and a high baseline.
+const GUARD_MEDIUM_DAYS: usize = 3;
+const GUARD_HIGH_DAYS: usize = 5;
+
+/// Rows a previous day needs to count: one hour at the measured minute cadence.
+/// A day that began at 23:40 is a memory of twenty minutes, not of a day.
+const GUARD_DAY_ROWS: usize = 60;
+
+/// Today must cover this much before its best is compared with anything.
+pub const GUARD_TODAY_SECS: u64 = 6 * 3600;
+
+/// The cell being judged, and the numbers behind its verdict.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct CellGuard {
+    pub earfcn_dl: Option<u32>,
+    pub pci: Option<u32>,
+    /// Best SINR on this cell today, so far.
+    pub today_best_db: Option<f32>,
+    /// Median of the best SINR of each complete previous day.
+    pub baseline_db: Option<f32>,
+    /// How far today's best sits below the baseline. Positive is worse.
+    pub drift_db: Option<f32>,
+    /// Complete previous days the baseline was built from.
+    pub days: usize,
+    pub alert: bool,
+    pub confidence: Confidence,
+}
+
+/// What the guard can say, and what it is still waiting for.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct GuardAdvice {
+    pub cell: CellGuard,
+    /// PCI changes seen inside the judged earfcn: another cell, not a drift.
+    pub pci_changes: usize,
+    /// Rows carrying no earfcn or no pci, written before v2. Counted, never
+    /// judged: a cell key guessed from a legacy row would be an invention.
+    pub legacy_rows: usize,
+    /// True while the evidence is still being collected: no verdict yet.
+    pub collecting: bool,
+    pub notes: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// The local calendar day a row belongs to, as `YYYY-MM-DD`, through the same
+/// libc path `signal_history::local_stamp` uses.
+fn local_day(unix: u64) -> String {
+    let stamp = crate::signal_history::local_stamp(unix);
+    stamp.get(0..10).unwrap_or("").to_string()
+}
+
+fn best_sinr(rows: &[&crate::signal_history::Row]) -> Option<f32> {
+    rows.iter().filter_map(|r| r.sinr_db).fold(None, |acc, v| {
+        Some(match acc {
+            Some(a) => a.max(v),
+            None => v,
+        })
+    })
+}
+
+/// Judge one cell against its own past. Pure: rows in, opinion out.
+pub fn drift_guard(rows: &[crate::signal_history::Row], now_unix: u64) -> GuardAdvice {
+    let mut out = GuardAdvice::default();
+    let in_past: Vec<&crate::signal_history::Row> =
+        rows.iter().filter(|r| r.at_unix <= now_unix).collect();
+    let keyed: Vec<&crate::signal_history::Row> = in_past
+        .iter()
+        .copied()
+        .filter(|r| r.earfcn_dl.is_some() && r.pci.is_some())
+        .collect();
+    out.legacy_rows = in_past.len() - keyed.len();
+    if out.legacy_rows > 0 {
+        out.notes.push(format!(
+            "{} row(s) carry no earfcn or pci: written before v2, not judged",
+            out.legacy_rows
+        ));
+    }
+    let Some(newest) = keyed.last() else {
+        out.missing.push(
+            "no row with an earfcn and a pci: the guard needs v2 rows, and none exist yet"
+                .to_string(),
+        );
+        return out;
+    };
+    let earfcn = newest.earfcn_dl;
+    let pci = newest.pci;
+    out.cell.earfcn_dl = earfcn;
+    out.cell.pci = pci;
+
+    let same_earfcn: Vec<&crate::signal_history::Row> = keyed
+        .iter()
+        .copied()
+        .filter(|r| r.earfcn_dl == earfcn)
+        .collect();
+    let mut changes = 0usize;
+    let mut last: Option<u32> = None;
+    let mut pcis: Vec<u32> = Vec::new();
+    for r in &same_earfcn {
+        let Some(p) = r.pci else { continue };
+        match last {
+            Some(prev) if prev != p => {
+                changes += 1;
+                pcis.push(p);
+            }
+            None => pcis.push(p),
+            _ => {}
+        }
+        last = Some(p);
+    }
+    out.pci_changes = changes;
+    if changes > 0 {
+        out.notes.push(format!(
+            "pci changed inside earfcn {}: {}: another cell, and its rows are not part of this cell's drift",
+            earfcn.map(|e| e.to_string()).unwrap_or_default(),
+            pcis.iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(" then ")
+        ));
+    }
+
+    // Everything below is the judged cell only: same earfcn, same pci.
+    let cell: Vec<&crate::signal_history::Row> = same_earfcn
+        .iter()
+        .copied()
+        .filter(|r| r.pci == pci)
+        .collect();
+    let today = local_day(now_unix);
+    let today_rows: Vec<&crate::signal_history::Row> = cell
+        .iter()
+        .copied()
+        .filter(|r| local_day(r.at_unix) == today)
+        .collect();
+    if today_rows.is_empty() {
+        out.missing.push(
+            "no row for this cell today: the guard judges today against previous days".to_string(),
+        );
+        out.collecting = true;
+        return out;
+    }
+    out.cell.today_best_db = best_sinr(&today_rows);
+    let first = today_rows.first().map(|r| r.at_unix).unwrap_or(now_unix);
+    let last_at = today_rows.last().map(|r| r.at_unix).unwrap_or(now_unix);
+    let covered = last_at.saturating_sub(first) + crate::signal_history::SIGNAL_SAMPLE_SECS;
+    if covered < GUARD_TODAY_SECS {
+        out.collecting = true;
+        out.missing.push(format!(
+            "today covers {:.1} h of this cell, {} h needed before a verdict",
+            covered as f64 / 3600.0,
+            GUARD_TODAY_SECS / 3600
+        ));
+        return out;
+    }
+    let Some(today_best) = out.cell.today_best_db else {
+        out.collecting = true;
+        out.missing.push(
+            "no SINR figure in today's rows for this cell: the guard compares SINR, not RSRP"
+                .to_string(),
+        );
+        return out;
+    };
+
+    let mut by_day: std::collections::BTreeMap<String, Vec<&crate::signal_history::Row>> =
+        std::collections::BTreeMap::new();
+    for r in &cell {
+        by_day.entry(local_day(r.at_unix)).or_default().push(r);
+    }
+    let mut bests: Vec<f32> = Vec::new();
+    let mut skipped = 0usize;
+    for (day, day_rows) in &by_day {
+        if *day == today {
+            continue;
+        }
+        if day_rows.len() < GUARD_DAY_ROWS {
+            skipped += 1;
+            continue;
+        }
+        if let Some(best) = best_sinr(day_rows) {
+            bests.push(best);
+        }
+    }
+    if skipped > 0 {
+        out.notes.push(format!(
+            "{} previous day(s) had fewer than {GUARD_DAY_ROWS} rows and did not enter the baseline",
+            skipped
+        ));
+    }
+    out.cell.days = bests.len();
+    if bests.len() < GUARD_BASELINE_DAYS {
+        out.collecting = true;
+        out.missing.push(format!(
+            "baseline needs {GUARD_BASELINE_DAYS} complete previous days on this cell, {} so far",
+            bests.len()
+        ));
+        return out;
+    }
+    let Some(baseline) = median(bests) else {
+        out.collecting = true;
+        return out;
+    };
+    out.cell.baseline_db = Some(baseline);
+    out.cell.drift_db = Some(baseline - today_best);
+    out.cell.alert = out.cell.drift_db.unwrap_or(0.0) >= GUARD_ALERT_DB;
+    out.cell.confidence = if out.cell.days >= GUARD_HIGH_DAYS {
+        Confidence::High
+    } else if out.cell.days >= GUARD_MEDIUM_DAYS {
+        Confidence::Medium
+    } else {
+        Confidence::Low
+    };
+    if out.cell.alert {
+        out.notes.push(format!(
+            "cell {}/{}: today's best {today_best:.1} dB is {:.1} dB below the {baseline:.1} dB baseline of {} day(s)",
+            earfcn.map(|e| e.to_string()).unwrap_or_default(),
+            pci.map(|p| p.to_string()).unwrap_or_default(),
+            out.cell.drift_db.unwrap_or(0.0),
+            out.cell.days
+        ));
+    }
+    out
+}
+
 fn preset_offers(presets: &[(String, Vec<u8>)], band: &str) -> bool {
     let Ok(n) = band.parse::<u8>() else {
         return false;
@@ -441,6 +689,9 @@ mod tests {
             sinr_db: Some(10.0),
             pci: None,
             endc: None,
+            earfcn_dl: None,
+            earfcn_ul: None,
+            tm: None,
         }
     }
 
@@ -507,6 +758,175 @@ mod tests {
         assert!(
             advice.missing.iter().any(|m| m.contains("routwatch scan")),
             "the missing evidence is named with the command that would supply it"
+        );
+    }
+
+    // ------------------------------------------------------------ drift guard
+
+    /// The first second of the local day `unix` sits in, minute precise. The
+    /// tests build their days from this, so they hold in any time zone.
+    fn start_of_day(unix: u64) -> u64 {
+        let day = local_day(unix);
+        let mut t = unix;
+        while t >= 3_600 && local_day(t - 3_600) == day {
+            t -= 3_600;
+        }
+        while t >= 60 && local_day(t - 60) == day {
+            t -= 60;
+        }
+        t
+    }
+
+    fn keyed(at: u64, earfcn: u32, pci: u32, sinr: f32) -> crate::signal_history::Row {
+        let mut r = row(at, "3", -95.0);
+        r.sinr_db = Some(sinr);
+        r.pci = Some(pci);
+        r.earfcn_dl = Some(earfcn);
+        r.earfcn_ul = Some(earfcn + 18_000);
+        r
+    }
+
+    /// Rows of one cell on one local day, starting a minute after its midnight.
+    fn day(
+        start: u64,
+        count: usize,
+        sinr: f32,
+        earfcn: u32,
+        pci: u32,
+    ) -> Vec<crate::signal_history::Row> {
+        (0..count)
+            .map(|i| keyed(start + 60 + i as u64 * 60, earfcn, pci, sinr))
+            .collect()
+    }
+
+    const EARFCN: u32 = 1_650;
+    const PCI: u32 = 481;
+
+    /// Two complete previous days at 9 dB, plus today starting at `today_best`.
+    fn three_days(today_best: f32, today_rows: usize) -> (Vec<crate::signal_history::Row>, u64) {
+        let anchor = 1_700_000_000;
+        let today_start = start_of_day(anchor);
+        let yesterday = start_of_day(today_start - 60);
+        let before = start_of_day(yesterday - 60);
+        let mut rows = day(before, 360, 9.0, EARFCN, PCI);
+        rows.extend(day(yesterday, 360, 9.0, EARFCN, PCI));
+        rows.extend(day(today_start, today_rows, today_best, EARFCN, PCI));
+        let now = today_start + 6 * 3_600 + 120;
+        (rows, now)
+    }
+
+    #[test]
+    fn four_db_below_the_baseline_alerts_and_three_does_not() {
+        let (rows, now) = three_days(5.0, 361);
+        let g = drift_guard(&rows, now);
+        assert!(!g.collecting, "{:?}", g);
+        assert_eq!(g.cell.baseline_db, Some(9.0));
+        assert_eq!(g.cell.today_best_db, Some(5.0));
+        assert!(g.cell.alert, "4 dB is drift: {:?}", g.cell);
+
+        let (rows, now) = three_days(6.0, 361);
+        let g = drift_guard(&rows, now);
+        assert!(
+            !g.cell.alert,
+            "3 dB is the daily spread, not the mount: {:?}",
+            g.cell
+        );
+        assert_eq!(g.cell.drift_db, Some(3.0));
+    }
+
+    #[test]
+    fn a_short_today_is_missing_not_an_alarm() {
+        let (rows, now) = three_days(1.0, 120);
+        let g = drift_guard(&rows, now);
+        assert!(g.collecting);
+        assert!(!g.cell.alert, "two hours cannot accuse the mount");
+        assert!(
+            g.missing.iter().any(|m| m.contains("6 h needed")),
+            "{:?}",
+            g.missing
+        );
+    }
+
+    #[test]
+    fn one_previous_day_is_not_a_baseline() {
+        let anchor = 1_700_000_000;
+        let today_start = start_of_day(anchor);
+        let yesterday = start_of_day(today_start - 60);
+        let mut rows = day(yesterday, 360, 9.0, EARFCN, PCI);
+        rows.extend(day(today_start, 361, 9.0, EARFCN, PCI));
+        let now = today_start + 6 * 3_600 + 120;
+        let g = drift_guard(&rows, now);
+        assert!(g.collecting);
+        assert_eq!(g.cell.days, 1);
+        assert!(!g.cell.alert);
+        assert!(
+            g.missing
+                .iter()
+                .any(|m| m.contains("2 complete previous days")),
+            "{:?}",
+            g.missing
+        );
+    }
+
+    #[test]
+    fn a_thin_previous_day_does_not_enter_the_baseline() {
+        let anchor = 1_700_000_000;
+        let today_start = start_of_day(anchor);
+        let yesterday = start_of_day(today_start - 60);
+        let before = start_of_day(yesterday - 60);
+        let mut rows = day(before, 10, 20.0, EARFCN, PCI);
+        rows.extend(day(yesterday, 360, 9.0, EARFCN, PCI));
+        rows.extend(day(today_start, 361, 9.0, EARFCN, PCI));
+        let now = today_start + 6 * 3_600 + 120;
+        let g = drift_guard(&rows, now);
+        assert_eq!(g.cell.days, 1, "twenty minutes is not a day");
+        assert!(g.collecting);
+        assert!(
+            g.notes.iter().any(|n| n.contains("fewer than 60 rows")),
+            "{:?}",
+            g.notes
+        );
+    }
+
+    #[test]
+    fn a_pci_change_inside_one_earfcn_is_another_cell_not_a_drift() {
+        let (mut rows, now) = three_days(5.0, 361);
+        // The newest sample moved to another cell on the same earfcn. That is a
+        // handover, and its 2 dB is compared with that cell's past, not this one.
+        let today_start = start_of_day(1_700_000_000);
+        rows.extend(day(today_start, 361, 2.0, EARFCN, 395));
+        let g = drift_guard(&rows, now);
+        assert_eq!(g.cell.pci, Some(395));
+        assert_eq!(g.pci_changes, 1);
+        assert!(
+            g.notes.iter().any(|n| n.contains("pci changed")),
+            "{:?}",
+            g.notes
+        );
+        assert!(
+            !g.cell.alert,
+            "a new cell has no baseline yet: {:?}",
+            g.cell
+        );
+        assert!(g.collecting);
+    }
+
+    #[test]
+    fn legacy_rows_are_counted_and_never_judged() {
+        let rows = vec![row(1_000, "3", -95.0), row(1_060, "3", -94.0)];
+        let g = drift_guard(&rows, 2_000);
+        assert_eq!(g.legacy_rows, 2);
+        assert_eq!(g.cell.earfcn_dl, None);
+        assert!(!g.cell.alert);
+        assert!(
+            g.notes.iter().any(|n| n.contains("before v2")),
+            "{:?}",
+            g.notes
+        );
+        assert!(
+            g.missing.iter().any(|m| m.contains("v2 rows")),
+            "{:?}",
+            g.missing
         );
     }
 }

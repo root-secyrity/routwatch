@@ -35,6 +35,7 @@ config.toml
 !/tests/live_probe.rs
 !/tests/tier_*.rs
 !/tests/advisor.rs
+!/tests/antenna_worth.rs
 
 # static binaries from packaging/musl-build.sh
 /dist/

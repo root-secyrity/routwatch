@@ -26,6 +26,9 @@ pub enum WriteIntent {
         secondary: String,
     },
     ResetDns,
+    /// The data connection goes off and comes back on, and the ISP may hand the
+    /// same lease back: that is a result about the ISP, not a failure to write.
+    RenewIp,
 }
 
 impl WriteIntent {
@@ -45,6 +48,7 @@ impl WriteIntent {
                 format!("DNS {primary} / {secondary}")
             }
             WriteIntent::ResetDns => "DNS: router answers DNS itself".to_string(),
+            WriteIntent::RenewIp => "renew the WAN address".to_string(),
         }
     }
 }

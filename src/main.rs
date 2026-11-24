@@ -336,6 +336,11 @@ enum Cmd {
         #[command(subcommand)]
         action: IpAction,
     },
+    /// The radio side of an antenna decision, from the saved logs (no network)
+    Antenna {
+        #[command(subcommand)]
+        action: AntennaAction,
+    },
     /// Saved long-term history
     History {
         /// Signal rows (no network)
@@ -507,6 +512,19 @@ enum IncidentsCmd {
 }
 
 #[derive(Subcommand)]
+enum AntennaAction {
+    /// Whether another antenna would change what this cell gives, from the saved
+    /// logs (no network, no write)
+    Worth {
+        /// Window to judge, in seconds
+        #[arg(long, default_value_t = routwatch::antenna::WINDOW_SECS)]
+        window: u64,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum IpAction {
     /// Drop the data connection, bring it back, and watch for the address
     Renew {
@@ -614,6 +632,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Replay { .. })
             | Some(Cmd::Speedtest { .. })
             | Some(Cmd::History { .. })
+            | Some(Cmd::Antenna { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
     );
     let cfg = if offline {
@@ -2031,6 +2050,32 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 code => Err(ApiError::Quiet(code)),
             }
         }
+        Some(Cmd::Antenna {
+            action: AntennaAction::Worth { window, json },
+        }) => {
+            let now = routwatch::app::unix_now();
+            let rows = match routwatch::signal_history::path() {
+                Some(p) => {
+                    let l = routwatch::signal_history::load(&p);
+                    if let Some(w) = &l.warn {
+                        eprintln!("antenna: {w}");
+                    }
+                    l.rows
+                }
+                None => Vec::new(),
+            };
+            let speed = match routwatch::history::path() {
+                Some(p) => routwatch::history::load(&p).rows,
+                None => Vec::new(),
+            };
+            let report = routwatch::antenna::antenna_worth(&rows, &speed, now, window);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                print!("{}", routwatch::antenna::table(&report));
+            }
+            Ok(())
+        }
         Some(Cmd::History {
             signal,
             json,
@@ -2047,11 +2092,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 return Err(ApiError::Quiet(2));
             };
             let l = routwatch::signal_history::load(&p);
-            if l.damaged > 0 {
-                eprintln!(
-                    "history: {} of {} rows could not be read and are skipped",
-                    l.damaged, l.total
-                );
+            if let Some(w) = &l.warn {
+                eprintln!("history: {w}");
             }
             let rows: Vec<routwatch::signal_history::Row> =
                 l.rows.iter().rev().take(limit).rev().cloned().collect();
@@ -3133,6 +3175,12 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     // timer rather than on every snapshot.
     app.load_incidents();
     let mut incidents_at = std::time::Instant::now();
+    // The guard is a reading of the signal log too, and that log gains at most
+    // one row a minute (SIGNAL_SAMPLE_SECS), so five minutes is enough to notice
+    // a change and cheap enough to re-parse (4320 rows: 131 ms in a debug build).
+    const GUARD_REFRESH_SECS: u64 = 300;
+    app.load_guard();
+    let mut guard_at = std::time::Instant::now();
     app.mark_dirty();
 
     while !app.quit {
@@ -3140,6 +3188,10 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
         if incidents_at.elapsed().as_secs() >= 60 {
             app.load_incidents();
             incidents_at = std::time::Instant::now();
+        }
+        if guard_at.elapsed().as_secs() >= GUARD_REFRESH_SECS {
+            app.load_guard();
+            guard_at = std::time::Instant::now();
         }
         // Once every 30 s, not on every poll: the ledger is a file, and the
         // counters move by kilobytes a second.
@@ -3625,6 +3677,32 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
     }
 
+    // The help overlay owns the scroll keys while it is open, so j/k cannot move
+    // the selection behind it, and the page keys cannot page SMS under it.
+    // Every other key falls through: q quits, ? and Esc close it.
+    if app.help {
+        let page = app.help_cap.get().max(1) as i16;
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                scroll_help(app, 1);
+                return;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                scroll_help(app, -1);
+                return;
+            }
+            KeyCode::PageDown => {
+                scroll_help(app, page);
+                return;
+            }
+            KeyCode::PageUp => {
+                scroll_help(app, -page);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char('i') => {
@@ -3646,7 +3724,12 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 if app.settings_open { " · w saves" } else { "" }
             ));
         }
-        KeyCode::Char('?') => app.help = !app.help,
+        KeyCode::Char('?') => {
+            app.help = !app.help;
+            if app.help {
+                app.help_off = 0;
+            }
+        }
         // Esc closes the overlay first; the sections below get it afterwards.
         KeyCode::Esc if app.help => app.help = false,
         KeyCode::Char('v') => app.cycle_view(),
@@ -3684,6 +3767,13 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             }
         }
         KeyCode::Char('z') if matches!(app.tab, Tab::Traffic | Tab::Dns) => app.begin_dns_reset(),
+        // The dashboard's client row opens in the Clients tab, with that client
+        // still selected: `enter open` in the panel footer is this arm.
+        KeyCode::Enter if app.tab == Tab::Dashboard => {
+            if !app.dash_open_client() {
+                app.note("no client row to open");
+            }
+        }
         // Local baseline reset, not a router write: it asks once and never
         // touches the month counters.
         KeyCode::Char('b') if app.tab == Tab::Traffic => app.reset_confirm = true,
@@ -3699,6 +3789,18 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         KeyCode::Char('s') if app.tab == Tab::Clients && !shift => {
             app.sort_next();
         }
+        // The dashboard's clients panel advertises `s sort` too, and its footer
+        // does not print the active key the way the Clients tab does, so the
+        // change is announced there instead of left to be noticed in the order.
+        KeyCode::Char('s') if app.tab == Tab::Dashboard && !shift => {
+            app.sort_next();
+            app.note(format!("sorted by {}", app.client_sort.name()));
+        }
+        // The same panel advertises `f filter`: it narrows the rows to one band.
+        KeyCode::Char('f') if app.tab == Tab::Dashboard && !shift => {
+            app.dash_filter_next();
+            app.note(format!("clients: {} only", app.dash_filter.name()));
+        }
         KeyCode::Char('c') if app.tab == Tab::Clients => copy_selected(app),
         // --- Device: dump / restart prompt ---
         KeyCode::Char('x') if app.tab == Tab::Device => {
@@ -3708,6 +3810,17 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         KeyCode::Char('b') if app.tab == Tab::Device => {
             app.open_input(InputKind::RestartConfirm);
+        }
+        // --- Device: renew the address. A capital W: lowercase w belongs to the
+        // settings overlay, and f is the dashboard filter. ---
+        KeyCode::Char('w') if shift && app.tab == Tab::Device => {
+            if !app.allow_write {
+                app.note("writes are off: start with --allow-write");
+            } else if app.snap.is_none() {
+                app.note("no snapshot yet: the confirm has nothing to compare");
+            } else {
+                app.begin_renew_confirm();
+            }
         }
         // --- Bands tab: merge presets (load, save the tick, delete) ---
         KeyCode::Char('n') if on_bands => match app.band_preset_next() {
@@ -3742,7 +3855,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             None => app.note("no preset selected: n cycles them"),
         },
         // Settings: `,` is the family convention, `s` works everywhere except the
-        // Clients tab (where it sorts), and Shift+S still opens it there.
+        // Clients and Dashboard tabs (where it sorts), and Shift+S still opens it
+        // in both.
         KeyCode::Char(',') => app.settings_open = true,
         // Refresh period: `[` and `]` work from any view, not only inside the
         // settings overlay (where they also appear).
@@ -3838,6 +3952,8 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 app.band_cursor_move(1);
             } else if app.tab == Tab::Dns {
                 app.dns_preset_move(1);
+            } else if app.tab == Tab::Dashboard {
+                app.dash_cursor(1);
             } else {
                 app.client_cursor(1);
             }
@@ -3849,12 +3965,30 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 app.band_cursor_move(-1);
             } else if app.tab == Tab::Dns {
                 app.dns_preset_move(-1);
+            } else if app.tab == Tab::Dashboard {
+                app.dash_cursor(-1);
             } else {
                 app.client_cursor(-1);
             }
         }
         _ => {}
     }
+}
+
+/// Scroll the help overlay by `delta` lines. The unit is a line of
+/// `ui::help::rows()`, where a heading counts as one, because that is the unit
+/// the renderer measured: clamping over the key rows alone would stop short by
+/// the heading lines and leave the last sections unreachable.
+fn scroll_help(app: &mut App, delta: i16) {
+    let total = routwatch::ui::help::rows().len() as u16;
+    let cap = app.help_cap.get().max(1);
+    let max = total.saturating_sub(cap);
+    let next = if delta >= 0 {
+        app.help_off.saturating_add(delta as u16)
+    } else {
+        app.help_off.saturating_sub(delta.unsigned_abs())
+    };
+    app.help_off = next.min(max);
 }
 
 /// Letters are matched case-insensitively: `v` must do what `V` does, like the
@@ -4027,6 +4161,11 @@ fn send_apply(app: &mut App, tx: &Sender<WorkerCmd>) {
                 primary: String::new(),
                 secondary: String::new(),
                 reset: true,
+                intent: intent.clone(),
+            });
+        }
+        WriteIntent::RenewIp => {
+            let _ = tx.send(WorkerCmd::Renew {
                 intent: intent.clone(),
             });
         }
@@ -4408,6 +4547,71 @@ mod key_tests {
         assert!(!app.events_open);
     }
 
+    /// The overlay's window is a contract between the renderer and the keys: the
+    /// renderer records how many lines fit, and the keys move the window by that
+    /// many, so `j` must not leak to the selection behind it.
+    #[test]
+    fn the_help_overlay_owns_j_and_k_while_it_is_open() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        app.client_sel = 2;
+        app.dash_sel = 2;
+
+        handle_key(&mut app, key(KeyCode::Char('?')), &tx);
+        assert!(app.help, "? must open the help");
+        assert_eq!(app.help_off, 0, "a fresh open starts at the top");
+
+        app.help_cap.set(10);
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_eq!(app.help_off, 1, "j must scroll the help");
+        handle_key(&mut app, key(KeyCode::Down), &tx);
+        assert_eq!(app.help_off, 2, "Down must scroll the help");
+        handle_key(&mut app, key(KeyCode::PageDown), &tx);
+        assert_eq!(app.help_off, 12, "PgDn pages by the window height");
+        handle_key(&mut app, key(KeyCode::Char('k')), &tx);
+        assert_eq!(app.help_off, 11);
+        handle_key(&mut app, key(KeyCode::PageUp), &tx);
+        assert_eq!(app.help_off, 1);
+        assert_eq!(app.client_sel, 2, "j must not move the selection");
+        assert_eq!(app.dash_sel, 2, "j must not move the dashboard cursor");
+
+        // `?` closes it, and the next open starts at the top again.
+        handle_key(&mut app, key(KeyCode::Char('?')), &tx);
+        assert!(!app.help);
+        handle_key(&mut app, key(KeyCode::Char('?')), &tx);
+        assert!(app.help);
+        assert_eq!(app.help_off, 0);
+        handle_key(&mut app, key(KeyCode::Esc), &tx);
+        assert!(!app.help, "Esc must still close the help");
+    }
+
+    /// The window stops on the last line, so no key press is dead and the last
+    /// section is reachable at any height.
+    #[test]
+    fn the_help_window_stops_on_the_last_row() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        let total = routwatch::ui::help::rows().len() as u16;
+        app.help_cap.set(16);
+        handle_key(&mut app, key(KeyCode::Char('?')), &tx);
+
+        for _ in 0..40 {
+            handle_key(&mut app, key(KeyCode::PageDown), &tx);
+        }
+        assert_eq!(
+            app.help_off,
+            total - 16,
+            "the last page must stop on the last line"
+        );
+        handle_key(&mut app, key(KeyCode::Char('k')), &tx);
+        assert_eq!(app.help_off, total - 17);
+
+        for _ in 0..40 {
+            handle_key(&mut app, key(KeyCode::PageUp), &tx);
+        }
+        assert_eq!(app.help_off, 0, "the top is a floor, not an underflow");
+    }
+
     /// The first frame leaves before the startup reads: the boot draw sits above
     /// the first `usage::load` in this file, so the screen answers at once and
     /// the disk work happens behind it. A reorder puts the disk back in front of
@@ -4449,6 +4653,7 @@ mod key_tests {
     use super::frame_due;
     use ratatui::crossterm::event::Event;
     use routwatch::app::LogLevel;
+    use routwatch::write::{WriteIntent, WriteState};
     use std::collections::VecDeque;
     use std::time::Duration;
 
@@ -4570,7 +4775,7 @@ mod key_tests {
             assert_eq!(app.graph, before, "g must no longer cycle a renderer");
         }
         // A key that does nothing is a lie: it goes from the help table too.
-        for row in routwatch::ui::help::rows() {
+        for row in routwatch::ui::help::key_rows() {
             let text = format!("{} {} {}", row.keys, row.short, row.full);
             // The settings row still names the `graph` setting, which a config
             // file can set to braille or ascii; what it may not do is offer a
@@ -4593,6 +4798,132 @@ mod key_tests {
                 tab.hints()
             );
         }
+    }
+
+    /// `W` renews from the Device tab alone: on another tab it stays inert, with
+    /// writing off it says why, and it sends nothing until the user confirms.
+    #[test]
+    fn the_renew_key_opens_a_confirmed_write_and_is_inert_elsewhere() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        app.select_tab(Tab::Device);
+
+        // Writing off: refused out loud, and nothing opens.
+        handle_key(&mut app, shift_key('w'), &tx);
+        assert_eq!(app.write, WriteState::Idle, "{:?}", app.write);
+        assert!(
+            app.live_notice().unwrap_or("").contains("--allow-write"),
+            "a refused key must say why: {:?}",
+            app.live_notice()
+        );
+
+        // Writing on but no sample yet: the confirm has nothing to compare.
+        app.allow_write = true;
+        handle_key(&mut app, shift_key('w'), &tx);
+        assert_eq!(app.write, WriteState::Idle, "{:?}", app.write);
+        assert!(
+            app.live_notice().unwrap_or("").contains("snapshot"),
+            "the second refusal must say why too: {:?}",
+            app.live_notice()
+        );
+
+        app.on_snapshot(
+            serde_json::from_str(include_str!("../fixtures/sample-snapshot.json"))
+                .expect("fixture snapshot"),
+            0,
+        );
+        handle_key(&mut app, shift_key('w'), &tx);
+        assert!(
+            matches!(app.write, WriteState::Confirming(WriteIntent::RenewIp)),
+            "{:?}",
+            app.write
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the confirm sends nothing to the worker"
+        );
+
+        // The key belongs to the Device tab: elsewhere it is unbound.
+        app.write = WriteState::Idle;
+        app.select_tab(Tab::Dashboard);
+        handle_key(&mut app, shift_key('w'), &tx);
+        assert_eq!(
+            app.write,
+            WriteState::Idle,
+            "W must be inert outside the Device tab"
+        );
+    }
+
+    /// The dashboard's own hint and the clients panel footer promise `j/k`,
+    /// `enter open`, `s sort` and `f filter`; every one of them has an arm.
+    #[test]
+    fn the_dashboard_keys_the_hint_advertises_work() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = bare_app();
+        app.on_snapshot(
+            serde_json::from_str(include_str!("../fixtures/sample-snapshot.json"))
+                .expect("fixture snapshot"),
+            0,
+        );
+        app.select_tab(Tab::Dashboard);
+
+        // j/k move the row under the dashboard's own cursor.
+        assert_eq!(app.dash_sel, 0, "the table starts on its first row");
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_eq!(app.dash_sel, 1, "j moves the dashboard cursor");
+        handle_key(&mut app, key(KeyCode::Char('k')), &tx);
+        assert_eq!(app.dash_sel, 0, "k moves it back");
+
+        // s sort: the order changes and the change is named, because this
+        // footer does not print the active key the way the Clients tab does.
+        let before = app.client_sort;
+        handle_key(&mut app, key(KeyCode::Char('s')), &tx);
+        assert_ne!(app.client_sort, before, "s must sort the table");
+        assert!(
+            app.live_notice().unwrap_or("").contains("sorted by"),
+            "the new order must be named: {:?}",
+            app.live_notice()
+        );
+        assert!(
+            !app.settings_open,
+            "s on the dashboard sorts; it must not open the settings overlay"
+        );
+
+        // f filter narrows the rows to one band.
+        let before = app.dash_filter;
+        handle_key(&mut app, key(KeyCode::Char('f')), &tx);
+        assert_ne!(app.dash_filter, before, "f must change the filter");
+        assert!(
+            app.live_notice().unwrap_or("").contains("only"),
+            "the new filter must be named: {:?}",
+            app.live_notice()
+        );
+
+        // Shift+S is still the way into the settings overlay from here.
+        handle_key(&mut app, shift_key('s'), &tx);
+        assert!(app.settings_open, "Shift+S must still open the settings");
+        app.settings_open = false;
+
+        // enter opens the row under the cursor in the Clients tab, with that
+        // client selected there.
+        app.dash_filter = routwatch::app::DashFilter::All;
+        app.dash_sel = 0;
+        app.dash_cursor(1);
+        let wanted = app
+            .dash_clients()
+            .get(app.dash_sel)
+            .and_then(|c| c.ip.clone());
+        assert!(wanted.is_some(), "the fixture ships client addresses");
+        handle_key(&mut app, key(KeyCode::Enter), &tx);
+        assert_eq!(app.tab, Tab::Clients, "enter opens the Clients tab");
+        let shown = app
+            .selected_client()
+            .and_then(|i| app.sorted_clients()[i].ip.clone());
+        assert_eq!(shown, wanted, "the opened row is the one under the cursor");
+        assert!(
+            rx.try_recv().is_err(),
+            "opening a row sends nothing to the worker"
+        );
     }
 
     #[test]

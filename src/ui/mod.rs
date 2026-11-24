@@ -126,7 +126,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     if app.help {
-        draw_help(f, area, &app.theme, app.allow_write);
+        draw_help(f, area, app);
     }
     if app.events_open {
         draw_events(f, area, app);
@@ -351,6 +351,7 @@ fn draw_write_modal(f: &mut Frame, area: Rect, app: &App) {
                 WriteIntent::ApplyBands { .. } => " apply bands? ",
                 WriteIntent::SetDns { .. } => " set dns? ",
                 WriteIntent::ResetDns => " reset dns? ",
+                WriteIntent::RenewIp => " renew wan ip? ",
             };
             let mut body = vec![intent.label(), String::new()];
             for (key, value) in &p.rows {
@@ -935,8 +936,15 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_help(f: &mut Frame, area: Rect, theme: &Theme, allow_write: bool) {
-    help::draw(f, area, theme, allow_write);
+fn draw_help(f: &mut Frame, area: Rect, app: &App) {
+    help::draw(
+        f,
+        area,
+        &app.theme,
+        app.allow_write,
+        app.help_off,
+        &app.help_cap,
+    );
 }
 
 /// Render one frame to text - the screenshot substitute for tests and for
@@ -2580,18 +2588,26 @@ mod tests {
 
     #[test]
     fn help_uses_the_room_a_wide_terminal_has() {
-        // The panel must use the width it is given: 52 columns cut 12 of 21 rows
-        // mid-word even on a 120 column terminal.
+        // The panel must use the width it is given: the short rows are what a
+        // narrow terminal sees, so a needle that only exists in the full text
+        // proves the room was used. 120 columns draw the list on 56 lines, so a
+        // 30 row terminal shows the first window and every needle has to come
+        // from inside it.
         let text = help_frame(120, 30, false);
         for needle in [
             "not through the router",
-            "back in the tick list",
+            "capital P, from any section",
+            "t in settings does the same",
+            "w saves",
             "switch section from any view",
             "v / V",
-            "S / ,",
         ] {
             assert!(text.contains(needle), "help lost {needle:?}\n{text}");
         }
+        assert!(
+            text.contains("rows 1-"),
+            "the window must say where it is\n{text}"
+        );
     }
 
     #[test]
@@ -2611,14 +2627,15 @@ mod tests {
 
     #[test]
     fn help_keeps_quit_and_the_help_key_on_a_short_screen() {
-        // 60x20 has room for 17 body rows; the last two rows are pinned on
-        // purpose, and the cut is announced instead of vanishing.
+        // 60x20 has room for 17 body lines; the window takes 16 of them and the
+        // last line names where the reader is, so the cut is announced instead
+        // of the rows vanishing.
         let text = help_frame(60, 20, false);
         assert!(text.contains("quit"), "the q row must survive\n{text}");
         assert!(text.contains("this help"), "the ? row must survive\n{text}");
         assert!(
-            text.contains("more rows"),
-            "a cut must be announced\n{text}"
+            text.contains("rows 1-15 of 45"),
+            "the window must say where it is\n{text}"
         );
     }
 
@@ -2659,12 +2676,154 @@ mod tests {
         );
     }
 
+    /// A heading owns the rows under it: two headings in a row, a heading last,
+    /// or a key row before any heading all say the list was assembled wrong.
     #[test]
-    fn the_help_names_all_nine_sections() {
+    fn every_help_heading_has_a_row_under_it() {
+        assert!(
+            matches!(
+                crate::ui::help::rows().first(),
+                Some(crate::ui::help::HelpRow::Heading(_))
+            ),
+            "the first row must be a heading, not a key outside any section"
+        );
+        let mut sections = 0;
+        let mut rows_under = 0;
+        for row in crate::ui::help::rows() {
+            match row {
+                crate::ui::help::HelpRow::Heading(t) => {
+                    assert!(
+                        rows_under > 0 || sections == 0,
+                        "the section {t:?} has no row under it"
+                    );
+                    sections += 1;
+                    rows_under = 0;
+                }
+                crate::ui::help::HelpRow::Key(_) => rows_under += 1,
+            }
+        }
+        assert!(sections > 1, "the list must be grouped");
+        assert!(rows_under > 0, "the last section has no row under it");
+    }
+
+    /// At a size that shows the whole list, every heading is drawn, in the data's
+    /// order, directly above the keys it names.
+    #[test]
+    fn the_help_groups_the_keys_under_a_heading() {
+        // Wrapping makes the list taller than its 45 source rows, so the whole
+        // list needs the drawn height, not the row count.
+        let text = help_frame(120, 60, false);
+        assert!(
+            !text.contains("rows 1-"),
+            "a 120x60 frame holds the whole wrapped list, so nothing may be windowed\n{text}"
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        let mut at = 0usize;
+        for row in crate::ui::help::rows() {
+            if let crate::ui::help::HelpRow::Heading(t) = row {
+                let found = lines
+                    .iter()
+                    .skip(at)
+                    .position(|l| l.contains(t))
+                    .unwrap_or_else(|| panic!("the section {t:?} is not drawn\n{text}"));
+                at += found + 1;
+            }
+        }
+        let net = lines
+            .iter()
+            .position(|l| l.contains("NETWORK (Tab 4)"))
+            .expect("the network section");
+        assert!(
+            lines[net + 1].contains("download/upload test"),
+            "the row under the network heading must be T: {:?}",
+            lines[net + 1]
+        );
+    }
+
+    /// The complaint this round fixes: a description that did not fit was cut and
+    /// ended in an ellipsis. The narrowest panel fills the frame, so the frame is
+    /// the panel; at 34x60 the wrapped list is drawn whole, and only the last line
+    /// (the footer, one sentence rather than a description) may still be cut.
+    #[test]
+    fn the_help_never_cuts_a_description_it_can_wrap() {
+        let text = help_frame(34, 60, false);
+        assert!(
+            !text.contains("rows "),
+            "34x60 must hold the whole wrapped list\n{text}"
+        );
+        let panel: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with('│') && l.ends_with('│'))
+            .collect();
+        let body = &panel[..panel.len() - 1];
+        for line in body {
+            let drawn = line.trim_end_matches('│');
+            assert!(
+                !drawn.trim_end().ends_with('…'),
+                "a description was cut, not wrapped: {line:?}"
+            );
+        }
+    }
+
+    /// The height the wrapped list needs, measured from both sides: one row more
+    /// fits it, one row less windows it. This is what holds the count in the
+    /// panel-height arithmetic.
+    #[test]
+    fn the_panel_is_tall_enough_for_the_wrapped_list_at_120x56() {
+        let fits = help_frame(120, 56, false);
+        assert!(
+            !fits.contains("rows 1-"),
+            "56 rows must hold the whole wrapped list\n{fits}"
+        );
+        let short = help_frame(120, 55, false);
+        assert!(
+            short.contains("rows 1-"),
+            "one row less must window the list\n{short}"
+        );
+    }
+
+    /// The window scrolls instead of hiding rows: it names the lines it shows,
+    /// and a section scrolled past is gone from the frame.
+    #[test]
+    fn the_help_window_scrolls_and_names_the_rows_it_shows() {
+        let mut app = fixture_app();
+        app.help = true;
+        let top = render_to_string(&app, 60, 20);
+        assert!(top.contains("GLOBAL KEYS"), "{top}");
+        assert_eq!(
+            app.help_cap.get(),
+            16,
+            "the renderer must tell the keys how many lines fit"
+        );
+        assert!(
+            !top.contains("DNS (Tab 8)"),
+            "the last section cannot fit in a 16 line window\n{top}"
+        );
+        app.help_off = u16::MAX;
+        let end = render_to_string(&app, 60, 20);
+        assert!(end.contains("DNS (Tab 8)"), "{end}");
+        assert!(end.contains("rows 30-45 of 45"), "{end}");
+        assert!(!end.contains("GLOBAL KEYS"), "{end}");
+    }
+
+    /// One frame shows one window of the list, so this reads the data: the
+    /// sections are named once each and none is blank. What the frame shows of
+    /// them is the grouping test's job.
+    #[test]
+    fn the_help_names_every_section_it_has() {
         let mut app = fixture_app();
         app.help = true;
         let text = render_to_string(&app, 100, 40);
         assert!(text.contains("1..9 / Tab"), "help is stale:\n{text}");
+        let mut seen: Vec<&'static str> = Vec::new();
+        for row in crate::ui::help::rows() {
+            if let crate::ui::help::HelpRow::Heading(t) = row {
+                assert!(!t.is_empty(), "a section must be named");
+                assert!(!seen.contains(&t), "the section {t:?} is named twice");
+                seen.push(t);
+            }
+        }
+        assert!(seen.len() > 1, "the list must be grouped: {seen:?}");
     }
 
     #[test]
@@ -3109,11 +3268,35 @@ mod tests {
 
     #[test]
     fn the_help_lists_the_speed_key() {
-        let rows = crate::ui::help::rows();
+        let rows = crate::ui::help::key_rows();
         assert!(
             rows.iter().any(|r| r.keys == "T"),
             "the help must name the key T opens"
         );
+    }
+
+    /// The Device tab advertises `W renew` in the status bar and the help only
+    /// if the handler really answers to it, filed under the section whose key it
+    /// is: the heading carries the section, not the row's own text.
+    #[test]
+    fn the_renew_row_is_in_the_help_and_the_device_hint() {
+        let mut section: &'static str = "";
+        let mut found = None;
+        for row in crate::ui::help::rows() {
+            match row {
+                crate::ui::help::HelpRow::Heading(t) => section = t,
+                crate::ui::help::HelpRow::Key(k) if k.keys == "W" => found = Some((section, k)),
+                _ => {}
+            }
+        }
+        let (section, row) = found.expect("the help must name the key W opens");
+        assert!(row.short.contains("renew"), "{}", row.short);
+        assert_eq!(
+            section, "DEVICE (Tab 7)",
+            "the row must sit under the section its key belongs to"
+        );
+        let hint = Tab::Device.hints();
+        assert!(hint.contains("W renew"), "{hint}");
     }
 
     #[test]

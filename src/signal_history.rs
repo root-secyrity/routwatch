@@ -14,9 +14,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Snapshot;
 
-pub const VERSION: u32 = 1;
-/// One row per sample; the cap keeps about a day at the default minute.
-pub const CAP: usize = 1440;
+/// v2 adds the earfcn halves and the transmission mode. A v1 row still reads:
+/// the three new fields carry `serde(default)`, so an old row arrives as a
+/// legacy row with `None` instead of being counted damaged. Newer rows are the
+/// only ones refused, because a row this build cannot name is not one it can
+/// judge.
+pub const VERSION: u32 = 2;
+/// Three days at one row a minute. The drift guard needs two complete previous
+/// days to build a baseline, and a cap of one day only supplies them when the
+/// collector happened to sleep.
+pub const CAP: usize = 4320;
 /// A signal log is for trends. A row every poll would be thirty rows a minute
 /// describing the same cell.
 pub const SIGNAL_SAMPLE_SECS: u64 = 60;
@@ -33,6 +40,18 @@ pub struct Row {
     pub sinr_db: Option<f32>,
     pub pci: Option<u32>,
     pub endc: Option<bool>,
+    /// The downlink half of `Signal.earfcn`, split at write time: the firmware
+    /// sends `DL:100 UL:18100`, and a cell key built from that string would only
+    /// compare text. `None` on a legacy row, which is a fact about when it was
+    /// written, not a lost value.
+    #[serde(default)]
+    pub earfcn_dl: Option<u32>,
+    #[serde(default)]
+    pub earfcn_ul: Option<u32>,
+    /// `transmode` as the firmware writes it (`TM[4]`). A row without it is
+    /// legacy, the same way.
+    #[serde(default)]
+    pub tm: Option<String>,
 }
 
 impl Row {
@@ -45,6 +64,11 @@ impl Row {
         if sig.rsrp_dbm.is_none() && sig.sinr_db.is_none() && sig.rsrq_db.is_none() {
             return None;
         }
+        let (earfcn_dl, earfcn_ul) = sig
+            .earfcn
+            .as_deref()
+            .map(parse_earfcn)
+            .unwrap_or((None, None));
         Some(Row {
             v: VERSION,
             at_unix,
@@ -56,8 +80,39 @@ impl Row {
             sinr_db: sig.sinr_db,
             pci: sig.pci,
             endc: Some(s.connection.endc),
+            earfcn_dl,
+            earfcn_ul,
+            tm: sig.tm.clone(),
         })
     }
+}
+
+/// Split the firmware's composite `DL:100 UL:18100` into the two numbers.
+///
+/// A half that is present but not a number poisons the pair: `DL:abc UL:7` is
+/// not evidence that the uplink is 7, it is evidence that the string is not the
+/// shape this build expects.
+pub fn parse_earfcn(text: &str) -> (Option<u32>, Option<u32>) {
+    let mut dl = None;
+    let mut ul = None;
+    for token in text.split_whitespace() {
+        let (half, value) = match token.split_once(':') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        match half {
+            "DL" => match value.parse::<u32>() {
+                Ok(n) => dl = Some(n),
+                Err(_) => return (None, None),
+            },
+            "UL" => match value.parse::<u32>() {
+                Ok(n) => ul = Some(n),
+                Err(_) => return (None, None),
+            },
+            _ => {}
+        }
+    }
+    (dl, ul)
 }
 
 /// What a read of the log gives back. `rows` is in file order, oldest first, so
@@ -237,8 +292,8 @@ pub(crate) fn repair_tail(f: &mut std::fs::File) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The newest `at_unix` in the file, read from the last 8 KiB only: the cap is
-/// 1440 rows and deciding one write must not read 300 KB.
+/// The newest `at_unix` in the file, read from the last 8 KiB only: one write
+/// decision must not read the whole multi-day log.
 fn last_at_unix(f: &mut std::fs::File) -> std::io::Result<Option<u64>> {
     const TAIL: u64 = 8 * 1024;
     let len = f.metadata()?.len();
@@ -315,6 +370,9 @@ pub fn compact_if_needed(path: &Path, keep: usize) -> std::io::Result<usize> {
     rows.drain(..drop);
     let mut body = String::new();
     for r in &rows {
+        // A trim drops rows, it never relabels the ones it keeps: a legacy row
+        // stays v1 with its nulls, so the version keeps saying what was asked
+        // for when the row was written.
         body.push_str(
             &serde_json::to_string(r)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
@@ -530,7 +588,7 @@ mod tests {
         let d = TempDir::new("newer");
         let mut line = serde_json::to_string(&row_at(1000)).unwrap();
         line.push('\n');
-        let newer = line.replace("\"v\":1", "\"v\":2");
+        let newer = line.replace("\"v\":2", "\"v\":3");
         std::fs::write(d.log(), format!("{line}{newer}")).unwrap();
         let l = load(&d.log());
         assert_eq!(l.total, 1, "only the row this build understands");
@@ -567,5 +625,97 @@ mod tests {
         let wrote = record_if_due(&snapshot(None, None), 1000, &d.log()).unwrap();
         assert!(!wrote);
         assert!(!d.log().exists());
+    }
+
+    const LEGACY_V1: &str = r#"{"v":1,"at_unix":1000,"net_type":"LTE","band":"3","nr_band":null,"rsrp_dbm":-95.0,"rsrq_db":null,"sinr_db":3.0,"pci":481,"endc":false}"#;
+
+    fn legacy_at(at: u64) -> String {
+        LEGACY_V1.replace("\"at_unix\":1000", &format!("\"at_unix\":{at}"))
+    }
+
+    #[test]
+    fn the_earfcn_string_is_split_into_its_two_halves() {
+        assert_eq!(parse_earfcn("DL:100 UL:18100"), (Some(100), Some(18100)));
+        assert_eq!(parse_earfcn("DL:100"), (Some(100), None));
+        assert_eq!(parse_earfcn("UL:18100"), (None, Some(18100)));
+        assert_eq!(parse_earfcn(""), (None, None));
+        assert_eq!(
+            parse_earfcn("DL:abc UL:7"),
+            (None, None),
+            "one bad half is not evidence for the other"
+        );
+        assert_eq!(
+            parse_earfcn("DL:100 UL:18100 junk"),
+            (Some(100), Some(18100)),
+            "a token this build does not know is skipped, not fatal"
+        );
+    }
+
+    #[test]
+    fn a_new_row_carries_the_cell_key_and_the_transmission_mode() {
+        let mut s = snapshot(Some(-95.0), Some(3.0));
+        s.signal.earfcn = Some("DL:1650 UL:19650".into());
+        s.signal.tm = Some("TM[4]".into());
+        let r = Row::from_snapshot(&s, 1000).expect("row");
+        assert_eq!(r.v, VERSION);
+        assert_eq!(r.earfcn_dl, Some(1650));
+        assert_eq!(r.earfcn_ul, Some(19650));
+        assert_eq!(r.tm.as_deref(), Some("TM[4]"));
+        let round: Row = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(round, r, "a v2 row survives its own write");
+    }
+
+    #[test]
+    fn a_row_with_no_earfcn_writes_nulls_not_a_guess() {
+        let r = row_at(1000);
+        assert_eq!(r.earfcn_dl, None);
+        assert_eq!(r.earfcn_ul, None);
+        assert_eq!(r.tm, None);
+    }
+
+    #[test]
+    fn a_v1_row_reads_as_legacy_without_counting_as_damaged() {
+        let d = TempDir::new("legacy");
+        std::fs::write(d.log(), format!("{LEGACY_V1}\n")).unwrap();
+        let l = load(&d.log());
+        assert_eq!(l.total, 1, "{:?}", l);
+        assert_eq!(l.damaged, 0, "an old row is old, not broken: {:?}", l);
+        assert_eq!(l.warn, None, "{:?}", l);
+        assert_eq!(
+            l.rows[0].v, 1,
+            "the row keeps the version it was written with"
+        );
+        assert_eq!(l.rows[0].earfcn_dl, None);
+        assert_eq!(l.rows[0].tm, None);
+    }
+
+    #[test]
+    fn a_read_never_rewrites_the_file() {
+        let d = TempDir::new("readonly");
+        std::fs::write(d.log(), format!("{LEGACY_V1}\n")).unwrap();
+        let before = std::fs::read(d.log()).unwrap();
+        let _ = load(&d.log());
+        let after = std::fs::read(d.log()).unwrap();
+        assert_eq!(before, after, "a read is a read");
+    }
+
+    #[test]
+    fn a_rewrite_keeps_each_row_s_own_version_and_the_legacy_nulls() {
+        let d = TempDir::new("rewrite");
+        let mut oldest = serde_json::to_string(&row_at(1000)).unwrap();
+        oldest.push('\n');
+        let mut newest = serde_json::to_string(&row_at(1120)).unwrap();
+        newest.push('\n');
+        // A v2 row, then a legacy row, then a v2 row. Trimmed to the newest two,
+        // the legacy row survives the rewrite and so do its nulls and its version.
+        std::fs::write(d.log(), format!("{oldest}{}\n{newest}", legacy_at(1060))).unwrap();
+        assert_eq!(compact_if_needed(&d.log(), 2).unwrap(), 2);
+        let l = load(&d.log());
+        assert_eq!(l.total, 2, "{:?}", l);
+        assert_eq!(l.rows[0].at_unix, 1060);
+        assert_eq!(l.rows[0].v, 1, "a trim does not relabel what is asked for");
+        assert_eq!(l.rows[0].earfcn_dl, None, "absence is not lost by a trim");
+        assert_eq!(l.rows[1].at_unix, 1120);
+        assert_eq!(l.rows[1].v, VERSION);
     }
 }

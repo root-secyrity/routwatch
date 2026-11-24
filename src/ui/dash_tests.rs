@@ -647,3 +647,26 @@ fn throughput_still_renders_and_still_shares_the_time_axis() {
         "the same sample starts both plots:\nmap  {map_row}\ndown {down_row}"
     );
 }
+
+/// The panel footer and the status bar advertise the same dashboard keys. The
+/// footer names them in its own words, so the two strings are compared word by
+/// word: a key that leaves one list must leave both.
+#[test]
+fn the_clients_footer_names_the_same_keys_as_the_dashboard_hint() {
+    let frame = render_to_string(&app(120), 120, 42);
+    let footer = frame
+        .lines()
+        .find(|l| l.contains("j/k move"))
+        .unwrap_or_else(|| panic!("the clients panel footer is missing:\n{frame}"));
+    assert!(footer.contains("enter opens a client"), "{footer}");
+    assert!(footer.contains("s sort"), "{footer}");
+    assert!(footer.contains("f filter"), "{footer}");
+
+    let hint = Tab::Dashboard.hints();
+    for word in ["j/k", "enter open", "s sort", "f filter"] {
+        assert!(
+            hint.contains(word),
+            "the dashboard hint lost {word}: {hint}"
+        );
+    }
+}

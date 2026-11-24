@@ -2,6 +2,66 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
+## Unreleased
+
+**The signal log remembers the cell, and the guard reads it back**
+
+- A signal row is v2: it carries the downlink and uplink earfcn as numbers and the
+  transmission mode. `DL:100 UL:18100` is parsed once, on the way in; a malformed
+  half writes `null` rather than a guess. A v1 row still reads with those fields
+  empty, and a row from a newer version is refused with one warning.
+- The log keeps three days instead of one (4320 rows, one a minute), because the
+  guard needs two complete previous days to have a baseline. Measured 2026-11-22:
+  trimming 4380 rows took 131 ms and turned 813 KB into 802 KB. A trim keeps each
+  row's own version, so a v1 row stays v1 instead of being relabelled v2.
+- **The drift guard**: the signal tab draws one line when today's best SINR on the
+  serving cell is 4 dB or more below the median of the previous days' best, and one
+  line while it is still collecting. It draws nothing otherwise, and writes one
+  observation event per alert, never one per check. A pci change inside one earfcn
+  is reported as another cell and kept out of the drift number.
+- **`routwatch antenna worth`**: one class per cell from the saved log,
+  signal-limited, interference-limited, not-signal-limited or insufficient, using
+  the same cuts as the gauges. RSRQ is shown and kept out of the class, and a saved
+  speed run is shown beside it, not inside it: three runs at one position and
+  constant RSRP moved x1.69 (measured 2026-11-22), so throughput cannot place the
+  lever. No purchase advice and no causal claim.
+- The two CLI readers of the signal log now print the note the TUI already showed
+  when rows are skipped: damaged lines, and rows written by a newer routwatch. A
+  skipped row is a reported row, not a quietly shorter log.
+- A write to the signal log tries the sidecar lock three times, 5 ms apart, before
+  it gives up on the sample: a holder that lasts milliseconds is not the same thing
+  as another routwatch trimming the log, and the wait stays under 10 ms.
+- **`Shift+W` renews the WAN address from the Device section**: the same write the
+  CLI already had (`routwatch ip renew`), behind the same confirm, whose rows print
+  the address now and whose warning says the connection drops for a few seconds and
+  the ISP may keep the lease. With writing off, or with no sample yet, the key says
+  why instead of opening a confirm that cannot compare anything.
+- **The dashboard answers the four keys its own panels advertise**: its hint and the
+  clients panel footer promised `j`/`k`, `enter opens a client`, `s sort` and
+  `f filter`, and none of the four had an arm on that section (lowercase `s` opened
+  the settings overlay, `f` and `Enter` did nothing). `Enter` now opens the row in
+  the Clients section with that client still selected, `s` sorts and names the order
+  (this footer does not print the active key), `f` narrows the table to one band, and
+  `j`/`k` move the dashboard's own cursor. `Shift+S` and `,` still open settings.
+- **The `?` overlay is grouped by section, and it scrolls**: the keys are filed under
+  headings (GLOBAL KEYS, SETTINGS, then one per section that answers a key of its own,
+  through DNS), and a window shorter than the list names the lines it shows
+  (`rows 1-15 of 45`), so the last sections are reached by scrolling rather than by
+  resizing the terminal. `j` `k` and `PgUp`/`PgDn` move the
+  window while it is open, so they no longer move the selection behind it; `?` and
+  `Esc` still close it, and opening starts at the top. A heading whose rows all fell
+  outside the window is not drawn.
+- **A long help description is wrapped, and a section is a band**: a description that
+  did not fit the panel used to be cut and ended in an ellipsis, so the longest rows
+  (the SMS keys, the dashboard row, `W renew`, the settings `i`) lost their ending. The
+  text now continues on the next line, indented under the description column, and the
+  panel is measured in the lines the rows actually draw rather than in their number: at
+  120 columns the whole list needs 56 rows and anything shorter scrolls, exactly as
+  before. A section heading is now a filled bar (the label drawn on the title colour)
+  because two palette slots can resolve to one colour, which made the headings look
+  like the key column on a terminal theme. The keys column is still cut, which is why
+  `Enter / s / f` shows an ellipsis.
+
 ## 0.9.2
 
 **Sessions are closed on every exit path** (#69)

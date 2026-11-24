@@ -102,7 +102,7 @@ impl Tab {
             Tab::Network => "p ping host · T speed test · e report",
             Tab::Clients => "j/k select · s sort · c copy mac · e report",
             Tab::Sms => "j/k · Enter open · space mark · a all · d delete · m read · n page · R inbox",
-            Tab::Device => "x dump json · b restart · R extras",
+            Tab::Device => "x dump json · b restart · W renew · R extras",
             Tab::Dns => "j/k choose · Enter apply · d type · D auto · e report",
             Tab::Signal => "v view · e report",
         }
@@ -559,11 +559,23 @@ pub struct App {
     pub paused: bool,
     pub quit: bool,
     pub help: bool,
+    /// First visible line of the grouped help, counted in lines of
+    /// `ui::help::rows()` where a heading is one line.
+    pub help_off: u16,
+    /// Content lines the help panel could show. The renderer measures it and
+    /// records it here, so the scroll keys clamp against the real capacity.
+    pub help_cap: std::cell::Cell<u16>,
     pub client_sel: usize,
     pub error_log: VecDeque<String>,
     /// Incidents derived from the logs on disk. Read at start and on a slow
     /// timer, never per snapshot: they are a reading of history, not live state.
     pub incidents: Vec<crate::incidents::Incident>,
+    /// The drift guard's reading of the signal log. Like incidents, a reading of
+    /// history: loaded at start and on a slow timer, never per snapshot.
+    pub guard: crate::advisor::GuardAdvice,
+    /// The cell-and-day an alert was already written to the observation log for,
+    /// so the same alert is one event and not one per check.
+    pub guard_alerted: Option<(u32, u32, String)>,
     pub budget_gb: f64,
     /// Local ledger plus the budget baseline. Filled by `on_snapshot` and
     /// flushed by the TUI loop; `preview` and `status` never write it.
@@ -754,9 +766,13 @@ impl App {
             paused: false,
             quit: false,
             help: false,
+            help_off: 0,
+            help_cap: std::cell::Cell::new(1),
             client_sel: 0,
             error_log: VecDeque::new(),
             incidents: Vec::new(),
+            guard: crate::advisor::GuardAdvice::default(),
+            guard_alerted: None,
             budget_gb: budget_gb as f64,
             usage: crate::usage::Usage::default(),
             usage_path: None,
@@ -2047,6 +2063,60 @@ impl App {
         self.incidents = crate::incidents::detect(&crate::incidents::Source::load());
     }
 
+    /// Re-derive the drift guard from the signal log. A read of history: the one
+    /// file this writes is an alert event, and only when the alert is new for
+    /// this cell and this local day.
+    pub fn load_guard(&mut self) {
+        let now = unix_now();
+        self.load_guard_at(now);
+    }
+
+    /// The same read with the clock named instead of read. The guard groups rows
+    /// by local day and asks for six hours of the current one, so a test that
+    /// writes a day of its own cannot go through the wall clock: before 06:00
+    /// local no day yet holds the six hours a verdict needs.
+    pub(crate) fn load_guard_at(&mut self, now: u64) {
+        let Some(log) = crate::signal_history::path() else {
+            return;
+        };
+        let rows = crate::signal_history::load(&log).rows;
+        self.guard = crate::advisor::drift_guard(&rows, now);
+        let c = &self.guard.cell;
+        let (Some(earfcn), Some(pci)) = (c.earfcn_dl, c.pci) else {
+            return;
+        };
+        if !c.alert {
+            self.guard_alerted = None;
+            return;
+        }
+        let day = crate::signal_history::local_stamp(now)
+            .get(0..10)
+            .unwrap_or_default()
+            .to_string();
+        let key = (earfcn, pci, day);
+        if self.guard_alerted.as_ref() == Some(&key) {
+            return;
+        }
+        self.guard_alerted = Some(key);
+        let detail = format!(
+            "cell {earfcn}/{pci}: today's best {:.1} dB is {:.1} dB under the {:.1} dB baseline of {} complete day(s)",
+            c.today_best_db.unwrap_or(0.0),
+            c.drift_db.unwrap_or(0.0),
+            c.baseline_db.unwrap_or(0.0),
+            c.days
+        );
+        if let Some(events) = crate::events::path() {
+            let e = crate::events::ObsEvent::new(
+                crate::events::EventKind::Signal,
+                "guard",
+                now,
+                "drift",
+                Some(detail),
+            );
+            let _ = crate::events::append(&events, &e);
+        }
+    }
+
     /// Read the ledger and trim it. Called by the TUI only, never by `App::new`,
     /// so unit tests touch no disk.
     pub fn load_history(&mut self) {
@@ -2249,6 +2319,16 @@ impl App {
             return;
         }
         self.write = WriteState::Confirming(WriteIntent::ResetDns);
+    }
+
+    /// The renew is a real write that drops the link, so it opens the same confirm
+    /// the band and DNS writes use: the key handler decides whether writing is
+    /// allowed at all, and this one only refuses a second write at once.
+    pub fn begin_renew_confirm(&mut self) {
+        if self.write.is_busy() {
+            return;
+        }
+        self.write = WriteState::Confirming(WriteIntent::RenewIp);
     }
 }
 
@@ -3674,5 +3754,132 @@ mod tests {
         );
         let note = app.speed.as_ref().unwrap().note.clone().unwrap_or_default();
         assert!(note.contains("did not see"), "{note}");
+    }
+
+    /// The last minute of the local day `back` days ago (1 = yesterday), found
+    /// by watching the stamp change so the test does not assume a timezone.
+    fn day_end_before(now: u64, back: u32) -> u64 {
+        let mut t = now;
+        let mut seen = 0;
+        let mut day = crate::signal_history::local_stamp(now)[..10].to_string();
+        loop {
+            t -= 60;
+            let d = crate::signal_history::local_stamp(t)[..10].to_string();
+            if d != day {
+                seen += 1;
+                if seen == back {
+                    return t;
+                }
+                day = d;
+            }
+            assert!(now - t < 6 * 86_400, "no day boundary found");
+        }
+    }
+
+    /// The last minute of the local day `now` falls in, found by walking forward
+    /// for the same reason: no timezone and no day length is assumed.
+    fn day_end_now(now: u64) -> u64 {
+        let mut t = now;
+        let day = crate::signal_history::local_stamp(now)[..10].to_string();
+        loop {
+            let next = t + 60;
+            if crate::signal_history::local_stamp(next)[..10] != day {
+                return t;
+            }
+            t = next;
+            assert!(t - now < 2 * 86_400, "no day boundary found");
+        }
+    }
+
+    fn keyed_line(at: u64, sinr: f32) -> String {
+        let r = crate::signal_history::Row {
+            v: crate::signal_history::VERSION,
+            at_unix: at,
+            net_type: Some("LTE".into()),
+            band: Some("B1".into()),
+            nr_band: None,
+            rsrp_dbm: Some(-96.0),
+            rsrq_db: Some(-10.0),
+            sinr_db: Some(sinr),
+            pci: Some(481),
+            endc: Some(false),
+            earfcn_dl: Some(1650),
+            earfcn_ul: Some(18100),
+            tm: Some("TM[4]".into()),
+        };
+        let mut s = serde_json::to_string(&r).unwrap();
+        s.push('\n');
+        s
+    }
+
+    #[test]
+    fn one_alert_is_one_event_and_a_second_check_writes_nothing() {
+        let _home = crate::test_env::isolate_data_home("guard-event");
+        let log = crate::signal_history::path().expect("a data dir is set");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        // The guard asks for six hours of the day it is handed, so the last
+        // minute of today is named here instead of being read: the test must hold
+        // at any hour of the real day.
+        let now = day_end_now(unix_now());
+        let mut body = String::new();
+        // Two complete previous days at 9.2 dB, then today at 4.5 dB: a 4.7 dB drop.
+        for back in 1..=2 {
+            let end = day_end_before(now, back);
+            for k in (0..60u64).rev() {
+                body.push_str(&keyed_line(end - k * 60, 9.2));
+            }
+        }
+        // Oldest first: the guard reads coverage from the ends of the file.
+        for i in (0..360u64).rev() {
+            body.push_str(&keyed_line(now - i * 60, 4.5));
+        }
+        std::fs::write(&log, body).unwrap();
+
+        let mut app = fixture_app();
+        app.load_guard_at(now);
+        assert!(app.guard.cell.alert, "{:?}", app.guard);
+        let events = crate::events::path().unwrap();
+        let first = std::fs::read_to_string(&events).unwrap();
+        assert_eq!(
+            first.lines().filter(|l| l.contains("\"guard\"")).count(),
+            1,
+            "{first}"
+        );
+        app.load_guard_at(now);
+        let second = std::fs::read_to_string(&events).unwrap();
+        assert_eq!(
+            second, first,
+            "a second check on the same day appends nothing"
+        );
+    }
+
+    /// `W` on the Device tab opens the confirm; a write already in flight keeps
+    /// its own confirm rather than being replaced.
+    #[test]
+    fn a_renew_confirm_is_refused_while_a_write_is_in_flight() {
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            2000,
+        );
+        app.begin_renew_confirm();
+        assert!(
+            matches!(app.write, WriteState::Confirming(WriteIntent::RenewIp)),
+            "{:?}",
+            app.write
+        );
+
+        app.write = WriteState::Pending {
+            intent: WriteIntent::ResetDns,
+            since: Instant::now(),
+        };
+        app.begin_renew_confirm();
+        assert!(
+            matches!(&app.write, WriteState::Pending { intent, .. } if *intent == WriteIntent::ResetDns),
+            "a second write must not replace the one in flight: {:?}",
+            app.write
+        );
     }
 }

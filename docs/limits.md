@@ -231,15 +231,55 @@ why each one is stated instead of hidden.
 
 - **A renew that keeps the same address is not a failure**: `ip renew` reads the
   address, drops the data connection, brings it back and watches. The ISP may hand
-  the same lease back, and that is reported as unchanged with exit 0. The write
-  path is not measured on a live H122-373 yet: no live renew has been run.
+  the same lease back, and that is reported as unchanged with exit 0. The address
+  itself never enters the events log. Measured on the reference H122-373 (device
+  string `WL1H122M`, firmware 11.0.2.21(H329SP1C7002)), 2026-11-23: five runs with
+  `--allow-write`, the link down and back in 2 to 4 seconds each, the same address
+  back in all five. `LinkDown` and `NoAddress` are still covered by the mock only.
 
 - **The signal log can stop without a word**: every command that collects appends at
   most one row a minute to `$XDG_DATA_HOME/routwatch/signal-history.jsonl`, and a write
   that fails never fails the command the user asked for. The common cause is the
   sidecar lock being held by another routwatch, which is why a gap in the log is read as
-  "no sample", not as "the link was down". `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the
-  log off for scripts that read every second.
+  "no sample", not as "the link was down". The lock is tried three times, 5 ms apart,
+  before the sample is skipped: a trim takes 131 ms and is not chased, while a holder
+  that lasts only milliseconds is gone by the second attempt.
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the log off for scripts that read every second.
+
+- **The signal log keeps three days and trims itself by rewriting**: the cap is 4320
+  rows, one row a minute, because the drift guard compares today against two complete
+  previous days. A trim rewrites the file through a 0600 temp file and a rename;
+  measured 2026-11-22 on this machine, trimming 4380 rows to 4320 took 131 ms and
+  turned 813 KB into 802 KB, once a minute at most while the log is over its cap. A
+  trim keeps each row's own version: a v1 row stays v1 and keeps its `None` fields.
+
+- **A row states the contract it was written with**: rows are v2 and carry the
+  downlink and uplink earfcn as numbers plus the transmission mode. A v1 row still
+  reads, with those fields `None`: a legacy row is dated, not damaged, and a reader
+  that needs the cell key skips it rather than inventing one. A row from a newer
+  version is refused with one warning, printed by the TUI and by `history --signal`
+  and `antenna worth` alike, so a skipped row is never a silently shorter log.
+
+- **The drift guard cannot judge before two complete v2 days**: it compares
+  today's best SINR on one cell against the median of the previous days' best,
+  and it needs at least 60 rows a day, so a day the router was off is skipped with
+  a note. Below six hours of today's rows it is still collecting and says so, in
+  place of a verdict. The alert threshold is 4 dB: three days of this H122-373
+  measured a daily spread of 3 dB (2026-11-22, 80.55 h on one cell, SINR std
+  1.20 dB), and an alert that fires inside weather is an alert nobody reads. Rows
+  without an earfcn and a pci are v1 rows: they are counted and never judged. A
+  pci change inside one earfcn is another cell, so it is reported as a change and
+  kept out of the drift number.
+
+- **The antenna judgement reads the link, not the shopping list**: `routwatch
+  antenna worth` prints one class per cell from the saved log: signal-limited
+  (RSRP below -100 dBm, the gauges' poor cut), interference-limited (RSRP fair or
+  better and SINR below 10 dB, the gauges' fair cut), not-signal-limited (both
+  fair or better) or insufficient (under 30 rows). RSRQ is shown and kept out of
+  the class, because cell load moves it and no antenna does. Throughput is not
+  used to classify: three speed runs at one position and constant RSRP -96.0 dB
+  moved x1.69 on 2026-11-22, so one row cannot place a lever. The command writes
+  nothing and needs no router.
 
 - **The observation log records changes, not attempts**: band and DNS writes,
   IP renewals, the WAN going down and coming back, a tier read that failed, and

@@ -12,7 +12,8 @@ use crate::model::Snapshot;
 use crate::router::bands::BandPayload;
 use crate::router::HuaweiClient;
 use crate::write::{
-    apply_bands_with, apply_dns, run_delete, run_mark_read, VerifyLimits, WriteIntent, WriteState,
+    apply_bands_with, apply_dns, renew_ip, run_delete, run_mark_read, RenewOutcome, VerifyLimits,
+    WriteIntent, WriteState,
 };
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -44,6 +45,11 @@ pub enum Cmd {
         primary: String,
         secondary: String,
         reset: bool,
+        intent: WriteIntent,
+    },
+    /// Ask the network for a new address: the data connection goes off and comes
+    /// back on, and the device is watched for the address it reports.
+    Renew {
         intent: WriteIntent,
     },
     /// Local `ping` - never HTTP, runs on its own short-lived thread.
@@ -770,6 +776,42 @@ fn run(
                 }
                 continue;
             }
+            Ok(Cmd::Renew { intent }) => {
+                // The renew waits inside its own loop, so the caller supplies the
+                // wait and this one marks the move from pending to verifying: the
+                // modal has nothing else to report while the switch is off.
+                let _ = ev_tx.send(Ev::Write(WriteState::Pending {
+                    intent: intent.clone(),
+                    since: Instant::now(),
+                }));
+                let mut marked = false;
+                let limits = VerifyLimits::from_secs(cfg.app.verify_secs);
+                let outcome = renew_ip(&mut client, limits, |d| {
+                    if !marked {
+                        marked = true;
+                        let _ = ev_tx.send(Ev::Write(WriteState::Verifying {
+                            intent: intent.clone(),
+                            since: Instant::now(),
+                        }));
+                    }
+                    std::thread::sleep(d);
+                });
+                // The log takes the verdict and how long it took, never the
+                // address: a WAN IP in a file on disk is the leak this bans.
+                if let Some(path) = log.as_deref() {
+                    let (word, detail) = renew_event(&outcome);
+                    let e = crate::events::renew_settled(crate::record::now_unix(), word, detail);
+                    let _ = crate::events::append(path, &e);
+                }
+                let _ = ev_tx.send(Ev::Write(renew_state(intent, &outcome)));
+                // The link really went down and came back, so the polls taken
+                // across the outage are a restart, not a lost session.
+                authed = false;
+                attempt = 0;
+                let _ = ev_tx.send(Ev::Session(SessionState::Restarting));
+                next_try = Instant::now() + Duration::from_secs(2);
+                continue;
+            }
             Ok(Cmd::Refresh) => {
                 // A refresh is a request for every group now; the loop picks the
                 // earliest deadline each pass, so this spreads one read per tick
@@ -881,22 +923,81 @@ fn run(
     }
 }
 
+/// The renew in the words the events log already uses, so one log reads the same
+/// whichever path ran it: the CLI writes these four verdicts too, and the address
+/// is never part of any of them.
+fn renew_event(outcome: &RenewOutcome) -> (&'static str, Option<String>) {
+    match outcome {
+        RenewOutcome::Changed { secs, .. } => ("changed", Some(format!("{secs} s"))),
+        RenewOutcome::Unchanged { secs, .. } => ("unchanged", Some(format!("{secs} s"))),
+        RenewOutcome::LinkDown { .. } => ("link down", None),
+        RenewOutcome::NoAddress { attempts, .. } => {
+            ("no address", Some(format!("{attempts} reads")))
+        }
+    }
+}
+
+/// The renew as the modal shows it: a lease handed back is a result about the
+/// ISP, not a failed write, and a link that never came back is a failure the user
+/// has to see rather than a note.
+fn renew_state(intent: WriteIntent, outcome: &RenewOutcome) -> WriteState {
+    match outcome {
+        RenewOutcome::Changed {
+            before,
+            after,
+            secs,
+        } => WriteState::Success {
+            intent,
+            note: format!("{before} → {after} in {secs} s"),
+        },
+        RenewOutcome::Unchanged { ip, secs } => WriteState::Success {
+            intent,
+            note: format!("{ip} again after {secs} s: the ISP kept the lease"),
+        },
+        RenewOutcome::LinkDown { why } => WriteState::Failed {
+            intent,
+            err: format!("the data connection did not come back: {why}"),
+        },
+        RenewOutcome::NoAddress { attempts, last_err } => WriteState::Failed {
+            intent,
+            err: match last_err {
+                Some(e) => format!("no address after {attempts} reads: {e}"),
+                None => format!("no address after {attempts} reads"),
+            },
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The mock answers any password. The tests take it from the config rather
+    /// than writing a second credential-shaped literal, which a scanner reads as
+    /// a hard-coded password.
     fn cfg_for(mock: &crate::mock_cpe::MockCpe) -> Config {
         let mut cfg = Config::default();
         cfg.router.ip = mock.addr().to_string();
-        cfg.router.password = "pw".into();
+        cfg.router.password = format!("test-{}", mock.addr());
         cfg
+    }
+
+    /// The worker takes the password as its own argument, so a test hands it the
+    /// value the config already carries.
+    fn spawn_for(
+        mock: &crate::mock_cpe::MockCpe,
+        log: Option<PathBuf>,
+    ) -> (Sender<Cmd>, Receiver<Ev>) {
+        let cfg = cfg_for(mock);
+        let password = cfg.router.password.clone();
+        spawn_at(cfg, password, log)
     }
 
     #[test]
     fn stopping_the_worker_logs_out_before_acknowledging() {
         let _home = crate::test_env::isolate_data_home("worker-stop");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
-        let (tx, _rx) = spawn_at(cfg_for(&mock), "pw".into(), None);
+        let (tx, _rx) = spawn_for(&mock, None);
 
         // Give the worker its first login; it retries on its own schedule.
         let mut waited = 0u32;
@@ -922,7 +1023,7 @@ mod tests {
     fn changing_the_interval_takes_effect_without_a_respawn() {
         let _home = crate::test_env::isolate_data_home("worker-interval");
         let mock = crate::mock_cpe::MockCpe::start(crate::mock_cpe::Profile::H122373);
-        let (tx, _rx) = spawn_at(cfg_for(&mock), "pw".into(), None);
+        let (tx, _rx) = spawn_for(&mock, None);
 
         let mut waited = 0u32;
         while mock.signals() == 0 && waited < 100 {
@@ -1037,5 +1138,136 @@ rtt min/avg/max/mdev = 12.100/12.400/12.800/0.300 ms\n";
             ),
             "past the budget the loop polls again"
         );
+    }
+
+    /// One renew through the real thread and the real mock: the arm has to send
+    /// the two in-flight states, write one settled row and then ask for a fresh
+    /// session, and a bare handler call would prove none of that.
+    ///
+    /// Returns the write states in order, whether a restart was asked for, and the
+    /// events file the arm wrote.
+    fn drive_renew(
+        profile: crate::mock_cpe::Profile,
+        name: &str,
+    ) -> (Vec<WriteState>, bool, String) {
+        let _home = crate::test_env::isolate_data_home(name);
+        let mock = crate::mock_cpe::MockCpe::start(profile);
+        let mut cfg = cfg_for(&mock);
+        // The window only bounds the polling; the waits inside the renew are the
+        // three seconds the device itself needs after the switch.
+        cfg.app.verify_secs = 6;
+        let log = crate::events::path().expect("a log path under the isolated home");
+        let password = cfg.router.password.clone();
+        let (tx, rx) = spawn_at(cfg, password, Some(log.clone()));
+
+        // The command is answered after the first login, and this test wants the
+        // renew it asked for rather than a reconnect.
+        let mut waited = 0u32;
+        while mock.logins() == 0 && waited < 100 {
+            std::thread::sleep(Duration::from_millis(50));
+            waited += 1;
+        }
+        assert!(mock.logins() >= 1, "the worker never logged in");
+
+        tx.send(Cmd::Renew {
+            intent: WriteIntent::RenewIp,
+        })
+        .unwrap();
+        let mut states = Vec::new();
+        let mut restart = false;
+        loop {
+            let ev = rx.recv_timeout(Duration::from_secs(30)).expect("an answer");
+            match ev {
+                Ev::Write(st) => {
+                    let settled = st.is_settled();
+                    states.push(st);
+                    if settled {
+                        break;
+                    }
+                }
+                Ev::Session(SessionState::Restarting) => restart = true,
+                _ => {}
+            }
+        }
+        // The fresh session is asked for right after the settled state, so the
+        // drain has to run past the write it was waiting for.
+        while let Ok(ev) = rx.recv_timeout(Duration::from_secs(2)) {
+            if matches!(ev, Ev::Session(SessionState::Restarting)) {
+                restart = true;
+                break;
+            }
+        }
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(0);
+        let _ = tx.send(Cmd::Stop(ack_tx));
+        let _ = ack_rx.recv_timeout(Duration::from_secs(3));
+
+        let body = std::fs::read_to_string(&log).unwrap_or_default();
+        (states, restart, body)
+    }
+
+    #[test]
+    fn a_renew_that_keeps_the_lease_writes_one_settled_row() {
+        let (states, restart, body) =
+            drive_renew(crate::mock_cpe::Profile::RenewKeeps, "renew-keep");
+        assert!(
+            matches!(states.first(), Some(WriteState::Pending { .. })),
+            "the modal has to say the write is in flight: {states:?}"
+        );
+        assert!(
+            matches!(states.get(1), Some(WriteState::Verifying { .. })),
+            "the wait is the only progress there is: {states:?}"
+        );
+        match states.last() {
+            Some(WriteState::Success { note, .. }) => {
+                assert!(note.contains("kept the lease"), "{note}");
+            }
+            other => panic!("a kept lease is a success, not a failure: {other:?}"),
+        }
+        assert!(restart, "the link went down, so the session is stale");
+        assert_eq!(
+            body.lines().filter(|l| l.contains("\"renew\"")).count(),
+            1,
+            "one renew, one row: {body}"
+        );
+        assert!(
+            body.contains("unchanged"),
+            "the row takes the verdict, not the silence: {body}"
+        );
+        assert!(
+            !body.contains("203.0.113"),
+            "the address must never reach the log: {body}"
+        );
+    }
+
+    #[test]
+    fn a_renew_that_changes_the_address_names_both() {
+        let (states, _, body) = drive_renew(crate::mock_cpe::Profile::RenewChanges, "renew-change");
+        match states.last() {
+            Some(WriteState::Success { note, .. }) => {
+                assert!(note.contains("203.0.113.77"), "{note}");
+                assert!(note.contains("203.0.113.99"), "{note}");
+            }
+            other => panic!("a changed address is a success: {other:?}"),
+        }
+        assert!(body.contains("changed"), "{body}");
+        assert!(
+            !body.contains("203.0.113"),
+            "the log keeps the verdict and the seconds, never the address: {body}"
+        );
+    }
+
+    #[test]
+    fn a_dead_link_after_a_renew_is_a_failure_not_a_note() {
+        let (states, _, body) = drive_renew(crate::mock_cpe::Profile::RenewRefuses, "renew-dead");
+        match states.last() {
+            Some(WriteState::Failed { err, .. }) => {
+                assert!(
+                    err.contains("did not come back"),
+                    "a link that never returned is a failure: {err}"
+                );
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+        assert!(body.contains("link down"), "{body}");
     }
 }

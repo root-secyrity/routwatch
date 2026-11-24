@@ -139,9 +139,11 @@ question.
   touch and warns that a deleted message cannot be recovered; `y` sends, `n` or
   `Esc` cancels without a POST.
 - The TUI itself starts read-only: `routwatch --allow-write` is what opens the write
-  keys (Bands `a`, SMS `d` and `m`). Without it those keys answer
-  `writes are off: start with --allow-write` and send nothing.
+  keys (Bands `a`, Device `b` and `W renew`, SMS `d` and `m`). Without it those
+  keys answer `writes are off: start with --allow-write` and send nothing.
 - Band changes drop the link for 10–30 seconds. The UI says so before you do it.
+- `W renew` on Device drops the data connection for a few seconds on purpose, and the
+  ISP may hand the same address back.
 
 ## SMS: read, mark read, delete
 
@@ -243,9 +245,11 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
   that, so a killed run leaves its session until the firmware frees it, which
   took 259 s after the last read on this machine.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
-  (`0600`, last 1440 rows) gives a drop nobody watched a shape. `routwatch history
+  (`0600`, three days of rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`
-  turns the log off.
+  turns the log off. The same rows feed `routwatch antenna worth`, which says whether
+  the cell is limited by how much arrives or by how clean it arrives, and the drift
+  guard, which says when today is worse than this cell's own last days.
 
 The rest, including the `100006` band-write code, the small-terminal order and the
 retired graph styles, are stated in [`docs/limits.md`](docs/limits.md). Nothing there
@@ -264,9 +268,11 @@ the four values the device carried before the apply back, forced.
   and data ceilings and sends nothing; `--settle` is a cap, not a duration.
 - One number per set is not a verdict: the test measures this host's path through
   the router, so a VPN or a second interface in that path measures itself.
-- **Not measured on hardware yet**: whether the H122-373 hands out a new address
-  through `ip renew`, and a revert taken after a real dropped link. Both are covered
-  by the mock, not by a live run.
+- **Measured on a WL1H122M (firmware 11.0.2.21(H329SP1C7002)), 2026-11-23**: five
+  `ip renew` runs, each with `--allow-write`; the data connection went down and came
+  back 2 to 4 seconds later every time and the ISP handed the same address back in
+  all five. The `LinkDown` and `NoAddress` paths are still covered by the mock only,
+  and a band revert taken after a real dropped link has not been run live.
 
 How each one behaves when it goes wrong is in [`docs/bands.md`](docs/bands.md) and
 [`docs/limits.md`](docs/limits.md).
