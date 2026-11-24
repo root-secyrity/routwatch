@@ -210,3 +210,72 @@ fn a_radio_read_records_the_cell_when_the_log_is_on() {
         assert_eq!(mode, 0o600, "the catalog is private");
     }
 }
+
+/// The switch silences the minute log and the catalog. It does not silence the
+/// event log: a cell change is the context a later question needs, and a script
+/// that asked for no background file about its reads still gets the event.
+#[test]
+fn the_log_switch_does_not_mute_the_event_log() {
+    let home = isolate_data_home("the_log_switch_does_not_mute_the_event_log");
+    let cells: PathBuf = home.data_dir().join("cells.json");
+    let log: PathBuf = home.data_dir().join("signal-history.jsonl");
+    let events: PathBuf = home.data_dir().join("events.jsonl");
+    let _switch = LOG_SWITCH.lock().unwrap_or_else(|p| p.into_inner());
+
+    std::env::set_var("ROUTWATCH_DISABLE_SIGNAL_LOG", "1");
+
+    // A muted radio read, through the same path the worker uses.
+    let stub = Stub::start();
+    let mut c = stub.client();
+    let mut snap = Snapshot::default();
+    let at = 1_700_000_000u64;
+    {
+        let now = || at;
+        let mut trace = |_: headless::Phase, _: PhaseState| {};
+        headless::collect_tier(&mut c, &mut snap, Tier::Radio, &now, &mut trace).expect("read");
+    }
+
+    // The row the worker would build and append under the same switch.
+    let mut a = Snapshot::default();
+    a.signal.rsrp_dbm = Some(-95.0);
+    a.signal.sinr_db = Some(9.0);
+    a.signal.band = Some("1".into());
+    a.signal.pci = Some(481);
+    a.signal.earfcn = Some("DL:100 UL:18100".into());
+    a.signal.tac = Some(516);
+    let mut b = a.clone();
+    b.signal.band = Some("3".into());
+    b.signal.pci = Some(395);
+    b.signal.earfcn = Some("DL:300 UL:18300".into());
+
+    let mut watch = routwatch::events::Watch::default();
+    watch.prime(&a);
+    assert!(
+        watch.radio(&b, at + 60).is_empty(),
+        "one read of a new cell is a candidate, not a change"
+    );
+    let rows = watch.radio(&b, at + 120);
+    assert_eq!(
+        rows.len(),
+        1,
+        "the second read confirms the change: {rows:?}"
+    );
+    assert_eq!(rows[0].kind, "cell");
+    routwatch::events::append(&events, &rows[0]).expect("append the event");
+
+    std::env::remove_var("ROUTWATCH_DISABLE_SIGNAL_LOG");
+
+    assert!(!log.exists(), "the switch still silences the minute log");
+    let (records, warn) = read_records(&cells);
+    assert_eq!(warn, None);
+    assert!(records.is_empty(), "and still leaves no catalog row");
+    let loaded = routwatch::events::load(&events);
+    assert_eq!(loaded.damaged, 0, "the event row is a clean line");
+    assert_eq!(
+        loaded.rows.len(),
+        1,
+        "the event log kept its row: {loaded:?}"
+    );
+    assert_eq!(loaded.rows[0].kind, "cell");
+    assert_eq!(loaded.rows[0].at_unix, at + 120);
+}
