@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
 
 mod common;
@@ -22,6 +22,10 @@ use routwatch::worker::Tier;
 const SES_DOC: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><response><SesInfo>SessionID=stub-session</SesInfo><TokInfo>stub-token</TokInfo></response>";
 const OK_DOC: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><response>OK</response>";
 const CELL_DOC: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><response><rsrp>-95dBm</rsrp><rsrq>-11dB</rsrq><sinr>9dB</sinr><band>1</band><pci>481</pci><earfcn>DL:100 UL:18100</earfcn><tac>516</tac></response>";
+
+/// The log switch is process-wide, so every test that sets it holds this lock:
+/// two tests setting and reading one env var in parallel would race.
+static LOG_SWITCH: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct Stub {
     addr: String,
@@ -128,14 +132,43 @@ fn respond(stream: &mut TcpStream, body: &str) {
 }
 
 #[test]
-fn a_radio_read_records_the_serving_cell() {
-    let home = isolate_data_home("a_radio_read_records_the_serving_cell");
+fn a_muted_read_writes_no_catalog_file() {
+    let home = isolate_data_home("a_muted_read_writes_no_catalog_file");
     let cells: PathBuf = home.data_dir().join("cells.json");
     let log: PathBuf = home.data_dir().join("signal-history.jsonl");
+    let _switch = LOG_SWITCH.lock().unwrap_or_else(|p| p.into_inner());
 
-    // The log switch must not gate the catalog: the catalog answers which cell was
-    // read, which is a fact even when a script asked for no minute rows.
+    // One switch, both records: a script that reads every second asked for no
+    // background file about its reads, so the catalog stays empty too.
     std::env::set_var("ROUTWATCH_DISABLE_SIGNAL_LOG", "1");
+    let stub = Stub::start();
+    let mut c = stub.client();
+    let mut snap = Snapshot::default();
+    let at = 1_700_000_000u64;
+    {
+        let now = || at;
+        let mut trace = |_: headless::Phase, _: PhaseState| {};
+        headless::collect_tier(&mut c, &mut snap, Tier::Radio, &now, &mut trace)
+            .expect("radio read");
+    }
+    std::env::remove_var("ROUTWATCH_DISABLE_SIGNAL_LOG");
+
+    assert!(!log.exists(), "the switch silences the minute log");
+    let (records, warn) = read_records(&cells);
+    assert_eq!(warn, None, "an absent catalog reads clean");
+    assert!(
+        records.is_empty(),
+        "a muted read must leave no cell behind: {records:?}"
+    );
+}
+
+#[test]
+fn a_radio_read_records_the_cell_when_the_log_is_on() {
+    let home = isolate_data_home("a_radio_read_records_the_cell_when_the_log_is_on");
+    let cells: PathBuf = home.data_dir().join("cells.json");
+    let log: PathBuf = home.data_dir().join("signal-history.jsonl");
+    let _switch = LOG_SWITCH.lock().unwrap_or_else(|p| p.into_inner());
+
     let stub = Stub::start();
     let mut c = stub.client();
     let mut snap = Snapshot::default();
@@ -148,8 +181,8 @@ fn a_radio_read_records_the_serving_cell() {
     }
 
     assert!(
-        !log.exists(),
-        "the switch still silences the minute log, so the two are separate"
+        log.exists(),
+        "with the switch off the read writes its minute row"
     );
     let (records, warn) = read_records(&cells);
     assert_eq!(warn, None, "a fresh catalog reads clean");
@@ -176,5 +209,4 @@ fn a_radio_read_records_the_serving_cell() {
             & 0o777;
         assert_eq!(mode, 0o600, "the catalog is private");
     }
-    std::env::remove_var("ROUTWATCH_DISABLE_SIGNAL_LOG");
 }

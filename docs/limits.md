@@ -244,7 +244,9 @@ why each one is stated instead of hidden.
   "no sample", not as "the link was down". The lock is tried three times, 5 ms apart,
   before the sample is skipped: a trim takes 131 ms and is not chased, while a holder
   that lasts only milliseconds is gone by the second attempt.
-  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the log off for scripts that read every second.
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the log off for scripts that read every second,
+  and turns the cells catalog off with it: both are background records of the same read,
+  so one switch silences both.
 
 - **The signal log keeps three days and trims itself by rewriting**: the cap is 4320
   rows, one row a minute, because the drift guard compares today against two complete
@@ -448,6 +450,8 @@ why each one is stated instead of hidden.
   holds one record per serving cell that a radio read has seen, and `routwatch cells
   list` prints them ordered by `last_seen`, newest first. That order is chronological,
   not a ranking: there is no best cell, no quality score and no throughput comparison.
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` stops the catalog as well, so a script that mutes the
+  minute log leaves no cell file either.
   Measured over 80.55 hours: two serving cells, one read 1438 times and the other twice,
   and the PCI changed inside that window. A second cell with a five minute window did
   not occur, so the per-cell comparison has no measurement behind it and is not offered;
