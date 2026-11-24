@@ -143,6 +143,12 @@ enum Cmd {
         #[command(subcommand)]
         action: CellsCmd,
     },
+    /// Print this machine's ledger against the month budget (no network)
+    Budget {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Fingerprint the settings, and diff them without storing a value
     Config {
         #[command(subcommand)]
@@ -648,6 +654,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Speedtest { .. })
             | Some(Cmd::History { .. })
             | Some(Cmd::Cells { .. })
+            | Some(Cmd::Budget { .. })
             | Some(Cmd::Antenna { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
     );
@@ -2137,6 +2144,22 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 println!("{}", serde_json::to_string_pretty(&records).unwrap());
             } else {
                 print!("{}", routwatch::cells::cells_table(&records));
+            }
+            Ok(())
+        }
+        Some(Cmd::Budget { json }) => {
+            // The ledger and the config file only: no client is built, so the
+            // router is never asked and nothing is written.
+            let cfg_path = config::config_path(ui_opts.config_path.clone())?;
+            let report = routwatch::usage::budget_report(
+                &routwatch::usage::load(&routwatch::usage::path()),
+                cfg.app.budget_gb,
+                !cfg_path.exists(),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                print!("{}", routwatch::usage::burn_text(&report));
             }
             Ok(())
         }

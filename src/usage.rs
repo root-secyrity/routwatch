@@ -396,6 +396,128 @@ pub fn projection(u: &Usage, now: u64, used: u64, budget: u64) -> Projection {
     }
 }
 
+/// How a coverage level is named in the CLI and in the panel. One spelling, so a
+/// reader of one surface recognises the other.
+pub fn coverage_word(c: Coverage) -> &'static str {
+    match c {
+        Coverage::Measured => "measured",
+        Coverage::Weak => "thin",
+        Coverage::Poor => "insufficient",
+    }
+}
+
+/// Bytes in the unit the panel's bar and this report share.
+pub fn gib(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
+/// A span of seconds in the shortest unit that keeps a digit.
+pub fn span(secs: u64) -> String {
+    if secs >= 86_400 {
+        format!("{:.1}d", secs as f64 / 86_400.0)
+    } else if secs >= 3_600 {
+        format!("{:.1}h", secs as f64 / 3_600.0)
+    } else {
+        format!("{}m", secs / 60)
+    }
+}
+
+/// The budget command's numbers, as one struct so the text and the `--json`
+/// shape cannot disagree about the same cycle.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BurnReport {
+    /// Bytes above the baseline, as of the last sample the ledger kept.
+    pub used_bytes: u64,
+    pub budget_gb: u64,
+    pub budget_bytes: u64,
+    pub percent: f64,
+    pub window_secs: u64,
+    pub watched_secs: u64,
+    /// measured, thin or insufficient, the same words the panel prints.
+    pub coverage: String,
+    /// None when the watched window was too short or too broken to divide.
+    pub per_day_bytes: Option<u64>,
+    pub days_left: Option<u32>,
+    pub over: bool,
+    /// The local stamp of the sample the numbers came from; empty before the
+    /// first sample.
+    pub as_of: String,
+    /// True when no config file was readable and the built-in budget was used.
+    pub budget_default: bool,
+}
+
+/// What this machine's ledger alone can say about the month: no router is read,
+/// so the bytes are the last sample's and the window is the one it watched.
+pub fn budget_report(u: &Usage, budget_gb: u64, budget_default: bool) -> BurnReport {
+    let budget_bytes = budget_gb.saturating_mul(1024 * 1024 * 1024);
+    let used_bytes = u.last_total.saturating_sub(u.base_bytes);
+    let p = projection(u, u.last_at, used_bytes, budget_bytes);
+    BurnReport {
+        used_bytes,
+        budget_gb,
+        budget_bytes,
+        percent: if budget_bytes == 0 {
+            0.0
+        } else {
+            used_bytes as f64 * 100.0 / budget_bytes as f64
+        },
+        window_secs: p.window_secs,
+        watched_secs: p.watched_secs,
+        coverage: coverage_word(p.coverage).to_string(),
+        per_day_bytes: p.per_day,
+        days_left: p.days_left,
+        over: p.over,
+        as_of: if u.last_at == 0 {
+            String::new()
+        } else {
+            crate::signal_history::local_stamp(u.last_at)
+        },
+        budget_default,
+    }
+}
+
+/// The `budget` command's text: facts, no verdict, and no number where the
+/// window cannot carry one.
+pub fn burn_text(r: &BurnReport) -> String {
+    let mut out = format!(
+        "Budget · {} GB{}\n",
+        r.budget_gb,
+        if r.budget_default {
+            " (default: no config file)"
+        } else {
+            ""
+        }
+    );
+    if r.as_of.is_empty() {
+        out.push_str("the ledger has no sample yet\n");
+        return out;
+    }
+    out.push_str(&format!("as of {}\n", r.as_of));
+    out.push_str(&format!(
+        "used {} of {} GB ({:.1}%)\n",
+        gib(r.used_bytes),
+        r.budget_gb,
+        r.percent
+    ));
+    match r.per_day_bytes {
+        Some(p) => {
+            let left = match r.days_left {
+                Some(d) => format!(" · {d} days left"),
+                None => String::new(),
+            };
+            out.push_str(&format!("rate {} /day{left}\n", gib(p)));
+        }
+        None => out.push_str("rate - · too little of the window was watched\n"),
+    }
+    out.push_str(&format!(
+        "coverage {} · {} watched of {}\n",
+        r.coverage,
+        span(r.watched_secs),
+        span(r.window_secs)
+    ));
+    out
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Totals {
     pub today: (u64, u64),

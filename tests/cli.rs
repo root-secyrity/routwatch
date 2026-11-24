@@ -474,6 +474,136 @@ fn temp_data_home(name: &str) -> TempDataHome {
     TempDataHome(d)
 }
 
+/// A usage ledger written by hand, so the budget report has a fixed month to
+/// read. The bytes are the shape `usage.rs` persists; nothing here is measured.
+fn write_ledger(home: &std::path::Path, body: &str) {
+    let dir = home.join("routwatch");
+    std::fs::create_dir_all(&dir).expect("ledger dir");
+    let path = dir.join("usage.json");
+    std::fs::write(&path, body).expect("write ledger");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod dir");
+}
+
+/// One month of the reference ledger: 2 GB used over a two hour window that
+/// was watched the whole time, so a rate exists and the coverage is measured.
+const LEDGER_TWO_HOURS: u64 = 1_790_000_000;
+
+fn ledger_body(used: u64, reset_at: u64, last_at: u64) -> String {
+    format!(
+        r#"{{"version":1,"base_bytes":1000000000,"reset_at":{reset_at},"source":0,"cycle_start":20780,"last_at":{last_at},"last_dl":0,"last_ul":0,"last_total":{},"thr_80":false,"thr_95":false,"days":[],"gaps":[]}}"#,
+        1_000_000_000 + used
+    )
+}
+
+#[test]
+fn the_budget_command_reports_the_ledger() {
+    let home = temp_data_home("budget-text");
+    let base = LEDGER_TWO_HOURS;
+    write_ledger(&home, &ledger_body(2_000_000_000, base, base + 7200));
+    let cfg = config("budget-text", 2000);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .args(["--config", cfg.to_str().expect("path"), "budget"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("Budget · 100 GB"), "{}", text);
+    assert!(text.contains("used 1.9 GB of 100 GB"), "{}", text);
+    assert!(text.contains("rate "), "{}", text);
+    assert!(text.contains("/day"), "{}", text);
+    assert!(text.contains("coverage measured"), "{}", text);
+    assert!(text.contains("watched of"), "{}", text);
+}
+
+#[test]
+fn the_budget_command_needs_no_config() {
+    let home = temp_data_home("budget-nocfg");
+    let base = LEDGER_TWO_HOURS;
+    write_ledger(&home, &ledger_body(2_000_000_000, base, base + 7200));
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["budget"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    // The default must say it is a default: a limit read from nowhere is not
+    // the configured limit and must not look like it.
+    assert!(text.contains("default: no config file"), "{}", text);
+    assert!(text.contains("Budget · 100 GB"), "{}", text);
+}
+
+#[derive(serde::Deserialize)]
+struct BudgetJson {
+    used_bytes: u64,
+    budget_gb: u64,
+    budget_bytes: u64,
+    percent: f64,
+    window_secs: u64,
+    watched_secs: u64,
+    coverage: String,
+    per_day_bytes: Option<u64>,
+    days_left: Option<u32>,
+    over: bool,
+    as_of: String,
+    budget_default: bool,
+}
+
+#[test]
+fn the_budget_command_json_parses() {
+    let home = temp_data_home("budget-json");
+    let base = LEDGER_TWO_HOURS;
+    write_ledger(&home, &ledger_body(2_000_000_000, base, base + 7200));
+    let cfg = config("budget-json", 2000);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .args(["--config", cfg.to_str().expect("path"), "budget", "--json"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let r: BudgetJson = serde_json::from_str(&stdout(&out)).expect("the twelve keys parse");
+    assert_eq!(r.used_bytes, 2_000_000_000);
+    assert_eq!(r.budget_gb, 100);
+    assert_eq!(r.budget_bytes, 100 * 1024 * 1024 * 1024);
+    assert_eq!(r.window_secs, 7200);
+    assert_eq!(r.watched_secs, 7200);
+    assert_eq!(r.coverage, "measured");
+    assert_eq!(r.per_day_bytes, Some(24_000_000_000));
+    assert_eq!(r.days_left, Some(5));
+    assert!(!r.over);
+    assert!(!r.budget_default);
+    assert!(r.percent > 1.8 && r.percent < 1.9, "{}", r.percent);
+    assert!(!r.as_of.is_empty());
+}
+
+#[test]
+fn the_budget_command_opens_no_session() {
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let home = temp_data_home("budget-offline");
+    let base = LEDGER_TWO_HOURS;
+    write_ledger(&home, &ledger_body(2_000_000_000, base, base + 7200));
+    let cfg = config_for(&addr.to_string());
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .args(["--config", cfg.to_str().expect("path"), "budget", "--json"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    // The ledger is on disk and the report is arithmetic over it, so nothing
+    // waited on the router socket when the command returned.
+    assert!(
+        listener.accept().is_err(),
+        "budget opened a session to {addr}"
+    );
+}
+
 #[test]
 fn history_lists_without_a_config_or_a_network() {
     let home = temp_data_home("hist");
