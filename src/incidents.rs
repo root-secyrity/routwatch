@@ -172,18 +172,34 @@ impl Source {
     }
 }
 
-/// The widest gap the signal log itself shows, in milliseconds. Zero means the
-/// log holds fewer than two samples, so it brackets nothing on its own.
-pub fn smear_ms(src: &Source) -> u64 {
-    let mut worst = 0;
-    let mut prev: Option<u64> = None;
-    for row in &src.signal {
-        if let Some(p) = prev {
-            worst = worst.max(row.at_unix.saturating_sub(p) * 1000);
-        }
-        prev = Some(row.at_unix);
+/// The 95th percentile of a set of gaps, in milliseconds. `None` when there is
+/// nothing to rank. Sorts in place: the caller hands over a scratch vector.
+pub fn gap_p95(gaps: &mut [u64]) -> Option<u64> {
+    if gaps.is_empty() {
+        return None;
     }
-    worst
+    gaps.sort_unstable();
+    Some(gaps[(gaps.len() * 95) / 100])
+}
+
+/// The smear that covers a window: the 95th percentile gap between the samples
+/// inside it, in milliseconds, read off a sorted copy so a log written out of
+/// order measures the same. `None` when the window holds fewer than two samples
+/// or no positive gap, because zero would claim the order of a pair inside a
+/// hole is settled. `samples` is unix seconds and may arrive in any order.
+pub fn smear_in_window(samples: &[u64], since: u64, now: u64) -> Option<u64> {
+    let mut at: Vec<u64> = samples
+        .iter()
+        .copied()
+        .filter(|t| *t >= since && *t <= now)
+        .collect();
+    at.sort_unstable();
+    let mut gaps: Vec<u64> = at
+        .windows(2)
+        .map(|w| w[1].saturating_sub(w[0]) * 1000)
+        .filter(|g| *g > 0)
+        .collect();
+    gap_p95(&mut gaps)
 }
 
 /// The smear that covers two moments: the widest gap between the signal samples
@@ -360,6 +376,54 @@ mod tests {
     #[test]
     fn a_quiet_log_yields_no_incidents() {
         assert!(detect(&src(vec![ev(EventKind::Wan, "up", 100)])).is_empty());
+    }
+
+    /// The log is written by one thread but read by a command that may sort it
+    /// first: the smear is a measurement of the window, so order must not move
+    /// it.
+    #[test]
+    fn a_mixed_order_log_measures_the_same_as_a_sorted_one() {
+        let sorted = [0, 10, 20, 30];
+        let mixed = [20, 0, 30, 10];
+        assert_eq!(
+            smear_in_window(&mixed, 0, 30),
+            smear_in_window(&sorted, 0, 30)
+        );
+        assert_eq!(smear_in_window(&sorted, 0, 30), Some(10_000));
+    }
+
+    /// The overnight hole in the real log is 16 hours wide: an event read inside
+    /// the day must not inherit it.
+    #[test]
+    fn a_gap_outside_the_window_does_not_enter() {
+        let samples = [0, 57_600, 57_660];
+        assert_eq!(
+            smear_in_window(&samples, 57_600, 57_660),
+            Some(60_000),
+            "the 16 hour hole sits before the window"
+        );
+    }
+
+    /// The max is what made every event look unresolved: a 58 000 s overnight gap
+    /// outranked every real cadence gap. One outlier must not win the rank.
+    #[test]
+    fn the_rank_is_the_95th_percentile_not_the_widest_gap() {
+        let mut samples: Vec<u64> = (0..100).map(|i| i * 10).collect();
+        samples.push(1_990);
+        let smear = smear_in_window(&samples, 0, 1_990).expect("a hundred gaps");
+        assert_eq!(smear, 10_000, "99 short gaps outrank the one 1000 s gap");
+    }
+
+    #[test]
+    fn one_sample_or_none_is_unmeasurable() {
+        assert_eq!(smear_in_window(&[], 0, 100), None);
+        assert_eq!(smear_in_window(&[50], 0, 100), None);
+        assert_eq!(
+            smear_in_window(&[50, 50], 0, 100),
+            None,
+            "two rows in the same second bound nothing"
+        );
+        assert_eq!(smear_in_window(&[200, 300], 0, 100), None, "both outside");
     }
 
     /// A cell change is context for everything read after it, never a fault: the

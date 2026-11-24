@@ -2222,7 +2222,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 .filter(|e| e.at_unix != event.at_unix)
                 .map(|e| e.at_unix)
                 .collect();
-            let smear_ms = routwatch::incidents::smear_ms(&src);
+            // The whole log is the window until the compare path passes its own:
+            // every event sees the same rank here, which is what it did before.
+            let smear_ms = routwatch::incidents::smear_in_window(
+                &src.signal.iter().map(|r| r.at_unix).collect::<Vec<_>>(),
+                0,
+                u64::MAX,
+            )
+            .unwrap_or(0);
             let input = routwatch::compare::CompareInput {
                 event,
                 signal: &src.signal,
