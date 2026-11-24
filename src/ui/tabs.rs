@@ -1566,10 +1566,9 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(Span::styled(rate, Style::default().fg(t.value))));
         lines.push(Line::from(Span::styled(
             format!(
-                "coverage {} · {} watched of {}",
+                "coverage {} · {}",
                 crate::usage::coverage_word(p.coverage),
-                crate::usage::span(p.watched_secs),
-                crate::usage::span(p.window_secs)
+                crate::usage::watched_of(p.watched_secs, p.window_secs)
             ),
             Style::default().fg(t.dim),
         )));
@@ -3609,6 +3608,15 @@ mod tests {
     fn the_panel_shows_burn_and_coverage() {
         let mut app = fixture_app();
         app.tab = Tab::Traffic;
+
+        // A cycle that has not started has no window, and the panel says that
+        // instead of printing "0m watched of 0m" as if it were measured.
+        let cold = crate::ui::render_to_string(&app, 120, 34);
+        let cold_burn = burn_lines(&cold);
+        assert_eq!(cold_burn.len(), 2, "{cold_burn:?}");
+        assert!(cold_burn[0].contains("rate - "), "{:?}", cold_burn[0]);
+        assert!(cold_burn[1].contains("no window yet"), "{:?}", cold_burn[1]);
+
         let now = app.snap.as_ref().expect("snapshot").generated_at;
         // Two days of a baseline watched the whole time, 2 GB used: a rate
         // exists and it was measured over the whole window.

@@ -398,6 +398,16 @@ pub fn projection(u: &Usage, now: u64, used: u64, budget: u64) -> Projection {
 
 /// How a coverage level is named in the CLI and in the panel. One spelling, so a
 /// reader of one surface recognises the other.
+/// "2.0h watched of 2.0h", or the plain truth when the cycle has no window yet:
+/// "0m watched of 0m" reads like a measurement and is not one.
+pub fn watched_of(watched_secs: u64, window_secs: u64) -> String {
+    if window_secs == 0 {
+        "no window yet".to_string()
+    } else {
+        format!("{} watched of {}", span(watched_secs), span(window_secs))
+    }
+}
+
 pub fn coverage_word(c: Coverage) -> &'static str {
     match c {
         Coverage::Measured => "measured",
@@ -510,10 +520,9 @@ pub fn burn_text(r: &BurnReport) -> String {
         None => out.push_str("rate - · too little of the window was watched\n"),
     }
     out.push_str(&format!(
-        "coverage {} · {} watched of {}\n",
+        "coverage {} · {}\n",
         r.coverage,
-        span(r.watched_secs),
-        span(r.window_secs)
+        watched_of(r.watched_secs, r.window_secs)
     ));
     out
 }
@@ -1005,6 +1014,31 @@ mod tests {
     }
 
     // ---------------------------------------------------------- projection
+
+    #[test]
+    fn a_cycle_with_no_window_says_so() {
+        // The first sample of a cycle sets the baseline, so the window is still
+        // zero and there is nothing to divide by: the line says that instead of
+        // printing "0m watched of 0m" as if it were measured.
+        let u = Usage {
+            reset_at: 1_790_000_000,
+            last_at: 1_790_000_000,
+            last_total: 1_790_000_000,
+            ..Usage::default()
+        };
+        let text = burn_text(&budget_report(&u, 100, true));
+        assert!(
+            text.contains("coverage insufficient · no window yet"),
+            "{text}"
+        );
+        assert!(!text.contains("0m watched"), "{text}");
+        assert!(text.contains("rate - "), "{text}");
+
+        // A ledger with no sample at all claims nothing about coverage.
+        let none = burn_text(&budget_report(&Usage::default(), 100, true));
+        assert!(none.contains("no sample yet"), "{none}");
+        assert!(!none.contains("coverage"), "{none}");
+    }
 
     #[test]
     fn a_projection_refuses_without_a_window() {
