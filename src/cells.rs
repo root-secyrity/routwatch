@@ -334,11 +334,35 @@ mod tests {
     use crate::model::Signal;
     use std::path::PathBuf;
 
-    fn scratch(tag: &str) -> PathBuf {
+    /// A scratch `cells.json`, removed when the test ends (panic or not).
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            if let Some(dir) = self.0.parent() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    fn scratch(tag: &str) -> Scratch {
         let dir = std::env::temp_dir().join(format!("rw-cells-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
-        dir.join("cells.json")
+        Scratch(dir.join("cells.json"))
     }
 
     fn sample(
