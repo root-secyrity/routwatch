@@ -547,9 +547,28 @@ why each one is stated instead of hidden.
 - **Download is compared only when both sides have two reads**: one speed row per side
   states no difference, and the transfer is never inferred from MCS (r -0.161 over the same
   still link, so MCS and SINR did not move together). Two events closer together than the
-  smear print that their order is not resolved; the smear is the widest gap between the
-  signal samples the log already holds, so it grows with a missing stretch instead of
-  claiming a fresher order than the rows support.
+  smear print that their order is not resolved. The smear is the 95th percentile of the
+  gaps between the reads inside the compared window, taken from a sorted copy of it: a
+  pause of hours outside the window cannot enter, and one lost read inside it cannot widen
+  the figure to a day. A window with fewer than two reads has no smear at all, and the note
+  then says the order cannot be resolved instead of printing a gap.
+- **The Align tab averages reads, not time**: the 15 s window holds the radio reads that
+  arrived in it, so a slower poll means fewer reads in the same window and a poll slower
+  than 15 s leaves it empty rather than repeating the last value. The measured cadence on
+  the H122-373 is 939 ms at the median and 1748 ms at the 95th percentile, so a window
+  usually holds between eight and sixteen reads. The right edge of the strip is the newest
+  read, never the wall clock, and the tab prints no "instant" or "real-time" figure because
+  no reading is one.
+- **The Align tab's arrow moves only past the measured noise**: a change smaller than
+  3.6 dB against the previous 15 s window reads `steady`, the same three-sigma bar
+  `compare` uses. The peak is the best rolling 15 s average of the current serving cell,
+  not a record, and a PCI change clears it and says so on screen.
+- **CQI is marked weak at six or below**: those indices are QPSK and low-order 16QAM on the
+  LTE table. The firmware's 127, which means the metric is absent, is dropped by the parser
+  before the screen sees it, so the word `weak` always means a measured low index.
+- **What a rotating antenna does to the average is unmeasured**: no sweep was recorded on
+  this link, so the tab shows the average and its direction and labels no shape as a sweep.
+  A sweep reading would need its own round and its own figures.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the

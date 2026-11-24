@@ -1,6 +1,7 @@
 //! Application state for the TUI. Pure data + transitions: no I/O here, so a
 //! test can build an `App` from a fixture and render it.
 
+use crate::align::{align_engine, AlignSample, AlignView};
 use crate::config::BandPreset;
 use crate::headless::{Phase, PhaseState};
 use crate::model::{Client, DeviceExtras, SmsMessage, Snapshot};
@@ -44,10 +45,12 @@ pub enum Tab {
     Dns,
     /// The signal-gauge dashboard, reachable as a tab (9) and as the `gauges` view.
     Signal,
+    /// The alignment tab: a 15 s SINR average, its direction and the session peak.
+    Align,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Dashboard,
         Tab::Bands,
         Tab::Traffic,
@@ -57,6 +60,7 @@ impl Tab {
         Tab::Device,
         Tab::Dns,
         Tab::Signal,
+        Tab::Align,
     ];
 
     pub fn title(&self) -> &'static str {
@@ -70,10 +74,11 @@ impl Tab {
             Tab::Device => "Device",
             Tab::Dns => "DNS",
             Tab::Signal => "Signal",
+            Tab::Align => "Align",
         }
     }
 
-    /// Short label for narrow terminals, where nine full titles do not fit.
+    /// Short label for narrow terminals, where the full titles do not fit.
     pub fn short(&self) -> &'static str {
         match self {
             Tab::Dashboard => "Dash",
@@ -85,6 +90,7 @@ impl Tab {
             Tab::Device => "Dev",
             Tab::Dns => "DNS",
             Tab::Signal => "Sig",
+            Tab::Align => "Align",
         }
     }
 
@@ -105,6 +111,25 @@ impl Tab {
             Tab::Device => "x dump json · b restart · W renew · R extras",
             Tab::Dns => "j/k choose · Enter apply · d type · D auto · e report",
             Tab::Signal => "v view · e report",
+            // No key of its own: the tab is read, not driven.
+            Tab::Align => "r refresh · P pause",
+        }
+    }
+
+    /// The digit that reaches this tab: 1..9 for the first nine, 0 for the
+    /// tenth. The bar prints it, so the label and the key never disagree.
+    pub fn key(&self) -> char {
+        match self.index() {
+            0..=8 => (b'1' + self.index() as u8) as char,
+            _ => '0',
+        }
+    }
+
+    pub fn from_key(c: char) -> Option<Tab> {
+        match c {
+            '1'..='9' => Some(Tab::from_index((c as u8 - b'1') as usize)),
+            '0' if Tab::ALL.len() > 9 => Some(Tab::from_index(9)),
+            _ => None,
         }
     }
 
@@ -279,6 +304,39 @@ pub enum PresetSaved {
     Saved(BandPreset),
     Duplicate(usize),
     Empty,
+}
+
+/// The alignment view, kept between frames. The key is the radio read's stamp,
+/// not the frame time: the loop redraws far more often than the radio is read,
+/// so a redraw of the same read reuses the view instead of averaging again.
+#[derive(Debug, Default)]
+pub struct AlignCache {
+    key: Option<u128>,
+    view: Option<AlignView>,
+    /// Builds since boot, and the frames that reused one. Read by the tests.
+    pub rebuilds: usize,
+    pub hits: usize,
+}
+
+impl AlignCache {
+    fn get_or_build(
+        &mut self,
+        key: u128,
+        samples: &VecDeque<AlignSample>,
+        now_ms: u64,
+    ) -> &AlignView {
+        if self.key != Some(key) || self.view.is_none() {
+            // A ring is two slices; the engine takes one, and a build happens
+            // once per radio read, not once per frame.
+            let flat: Vec<AlignSample> = samples.iter().copied().collect();
+            self.view = Some(align_engine(&flat, now_ms));
+            self.key = Some(key);
+            self.rebuilds += 1;
+        } else {
+            self.hits += 1;
+        }
+        self.view.as_ref().expect("built just above")
+    }
 }
 
 /// The client rows in display order, kept between frames. A frame reuses the
@@ -544,6 +602,10 @@ pub struct App {
     pub last_poll_ms: u128,
     /// When each tier last answered, from the worker's event. Empty on a
     /// replayed frame, which has no live read behind it.
+    /// One entry per radio read, stamped by the same monotonic clock the tab
+    /// averages over. Capped like the other rings.
+    pub align_samples: VecDeque<AlignSample>,
+    align_cache: std::cell::RefCell<AlignCache>,
     pub stamps: crate::worker::TierStamp,
     /// Set by anything that changes what a frame would draw, cleared when the
     /// frame is drawn. The loop repaints on this instead of on every iteration.
@@ -758,6 +820,8 @@ impl App {
             history_sinr: VecDeque::with_capacity(HISTORY),
             last_ok: None,
             last_poll_ms: 0,
+            align_samples: VecDeque::new(),
+            align_cache: std::cell::RefCell::new(AlignCache::default()),
             stamps: crate::worker::TierStamp::default(),
             needs_draw: true,
             last_sample_at: None,
@@ -869,6 +933,19 @@ impl App {
         let new_sample = radio_at.is_none() || self.last_sample_at != radio_at;
         if new_sample {
             self.last_sample_at = radio_at;
+            // The alignment tab averages on its own time base, so the sample
+            // carries the read's stamp and the cell it came from; a read with
+            // no SINR is not a sample the average can use.
+            if let Some(sinr) = snap.signal.sinr_db {
+                self.align_samples.push_back(AlignSample {
+                    at_ms: self.started.elapsed().as_millis() as u64,
+                    sinr_db: f64::from(sinr),
+                    pci: snap.signal.pci,
+                });
+                while self.align_samples.len() > HISTORY {
+                    self.align_samples.pop_front();
+                }
+            }
             self.history_dl.push_back(snap.traffic.dl_rate_bytes as f64);
             self.history_ul.push_back(snap.traffic.ul_rate_bytes as f64);
             while self.history_dl.len() > HISTORY {
@@ -1562,6 +1639,51 @@ impl App {
                 q.pop_front();
             }
         }
+        // The alignment tab reads the same synthetic session, one sample a
+        // second, stamped backwards from now so the 15 s window has a shape.
+        self.align_samples.clear();
+        // The synthetic clock has to reach back far enough to hold the samples
+        // it is about to place: a preview starts its stopwatch at zero, and
+        // subtracting from zero would stamp every sample at the same instant.
+        let now = (self.started.elapsed().as_millis() as u64).max(samples as u64 * 1000);
+        let pci = self.snap.as_ref().and_then(|s| s.signal.pci);
+        for i in 0..samples.min(HISTORY) {
+            let phase = i as f64 * 0.17;
+            let at = now.saturating_sub((samples as u64 - 1 - i as u64) * 1000);
+            self.align_samples.push_back(AlignSample {
+                at_ms: at,
+                sinr_db: (sinr + 10.0 * (phase * 0.8).sin()).clamp(-9.0, 29.0),
+                pci,
+            });
+        }
+    }
+
+    /// The alignment tab's numbers for the latest radio read, owned: the
+    /// renderer never holds a borrow into the sample ring or the cache.
+    pub fn align_view(&self) -> AlignView {
+        let key = self
+            .last_sample_at
+            .map(|at| at.saturating_duration_since(self.started).as_nanos())
+            .unwrap_or(0);
+        // The tab's clock is the newest radio read, not the frame clock: the
+        // average is over reads, and a slow poll must not turn a full window
+        // into an empty one. SIGNAL MAP's right edge means the same thing.
+        let now_ms = self
+            .align_samples
+            .back()
+            .map(|s| s.at_ms)
+            .unwrap_or_else(|| self.started.elapsed().as_millis() as u64);
+        self.align_cache
+            .borrow_mut()
+            .get_or_build(key, &self.align_samples, now_ms)
+            .clone()
+    }
+
+    /// Builds and reuses of the align view since boot, in that order: the two
+    /// numbers the once-per-read rule is held by.
+    pub fn align_counters(&self) -> (usize, usize) {
+        let c = self.align_cache.borrow();
+        (c.rebuilds, c.hits)
     }
 
     /// `a` in the Bands tab: needs a non-empty selection and nothing in flight.
@@ -2803,7 +2925,9 @@ mod tests {
     #[test]
     fn tabs_cycle_both_ways() {
         assert_eq!(Tab::Dashboard.next(), Tab::Bands);
-        assert_eq!(Tab::Dashboard.prev(), Tab::Signal);
+        // The tenth tab closes the ring: Dashboard's previous is now Align.
+        assert_eq!(Tab::Dashboard.prev(), Tab::Align);
+        assert_eq!(Tab::Align.next(), Tab::Dashboard);
         assert_eq!(Tab::parse("traffic"), Some(Tab::Traffic));
         assert_eq!(Tab::parse("Bands"), Some(Tab::Bands));
         assert_eq!(Tab::parse("nope"), None);
@@ -3035,6 +3159,39 @@ mod tests {
             points + 1,
             "a radio read must sample"
         );
+    }
+
+    /// One computation per radio read: the loop redraws far more often than the
+    /// radio is read, so averaging per frame would be work nobody asked for.
+    #[test]
+    fn the_align_view_is_built_once_per_radio_read() {
+        use crate::worker::Tier;
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            100,
+            600,
+        );
+        app.stamps
+            .set(Tier::Radio, Instant::now() - Duration::from_millis(900));
+        app.on_snapshot(fixture_snap(), 0);
+        let first = app.align_view();
+        assert!(first.average.is_some(), "the fixture carries a SINR");
+        for _ in 0..100 {
+            let view = app.align_view();
+            assert_eq!(view.average, first.average, "a redraw changed the view");
+        }
+        assert_eq!(
+            app.align_counters(),
+            (1, 100),
+            "one build, a hundred reuses"
+        );
+
+        app.stamps.set(Tier::Radio, Instant::now());
+        app.on_snapshot(fixture_snap(), 0);
+        let _ = app.align_view();
+        assert_eq!(app.align_counters(), (2, 100), "a new read is a new view");
     }
 
     #[test]

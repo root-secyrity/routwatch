@@ -15,7 +15,7 @@ handler no longer answers to, so a key added without a row here fails nothing.
 
 | Key | Where | Action |
 |---|---|---|
-| `1`–`9` / `Tab` / `Shift+Tab` | everywhere | jump to a section · next · previous (from any view) |
+| `0`–`9` / `Tab` / `Shift+Tab` | everywhere | jump to a section (the tenth answers to `0`) · next · previous (from any view) |
 | `j` `k` / `↑` `↓` | everywhere | move the selection: messages on SMS, bands on Bands, presets on DNS, the client row on the dashboard, clients elsewhere |
 | `v` / `V` | everywhere | cycle view: full → gauges → lite → dense |
 | `l` / `L` | everywhere | toggle lite, returning to the view you came from |

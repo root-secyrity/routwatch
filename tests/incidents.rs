@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use routwatch::incidents::{detect, smear_between, smear_ms, Confidence, Kind, WINDOW_SECS};
+use routwatch::incidents::{detect, smear_between, smear_in_window, Confidence, Kind, WINDOW_SECS};
 
 struct TempDir(PathBuf);
 
@@ -133,7 +133,9 @@ fn a_wider_gap_in_the_signal_log_widens_the_refusal() {
     // the log itself shows.
     write(&signal, &[signal_line(500), signal_line(505)]);
     let src = routwatch::incidents::Source::load_from(&events, &signal, &dir.path("none"));
-    assert_eq!(smear_ms(&src), 5000);
+    // The whole log is a window too: two rows five seconds apart.
+    let at: Vec<u64> = src.signal.iter().map(|r| r.at_unix).collect();
+    assert_eq!(smear_in_window(&at, 0, u64::MAX), Some(5000));
     // The smear that matters is the one bracketing the pair, and here the log does
     // not reach the event at 1000 s at all.
     assert_eq!(

@@ -89,8 +89,10 @@ each side by default. `segments` holds one entry per stretch of one cell, so a k
 inside the window splits it instead of comparing two cells; a side with fewer than 10 rows
 or under half the window covered is `insufficient` and carries no delta. `class` is one of
 `improved`, `degraded`, `within_noise`, `mixed`, `insufficient`, and `confidence` reuses the
-advisor's words (`insufficient`, `low`, `medium`, `high`). `notes` and `missing` are plain
-sentences, never a verdict:
+advisor's words (`insufficient`, `low`, `medium`, `high`). `smear_ms` is the 95th
+percentile of the gaps between the reads inside the window, and `null` when the window holds
+fewer than two of them: a window cannot rank an order it never saw. `notes` and `missing`
+are plain sentences, never a verdict:
 
 ```json
 {

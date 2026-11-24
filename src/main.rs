@@ -29,7 +29,7 @@ use ratatui::Terminal;
 /// help cannot advertise a shorter list than the tool answers to;
 /// `the_tab_help_names_every_section_it_accepts` holds the two together.
 const TAB_HELP: &str =
-    "Start on a tab: dashboard, bands, traffic, network, clients, sms, device, dns, signal";
+    "Start on a tab: dashboard, bands, traffic, network, clients, sms, device, dns, signal, align";
 
 /// Printed whenever the firmware's own `dhcpsdns_display` flag says the LAN DHCP
 /// DNS page does not exist: a write there is ignored, so the CLI says so up front.
@@ -2222,13 +2222,20 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 .filter(|e| e.at_unix != event.at_unix)
                 .map(|e| e.at_unix)
                 .collect();
-            let smear_ms = routwatch::incidents::smear_ms(&src);
+            let window_secs = window.unwrap_or(routwatch::compare::WINDOW_SECS);
+            // The smear is read off the window around the event, never off the
+            // whole log: an overnight hole outside it must not mute the day.
+            let smear_ms = routwatch::incidents::smear_in_window(
+                &src.signal.iter().map(|r| r.at_unix).collect::<Vec<_>>(),
+                event.at_unix.saturating_sub(window_secs),
+                event.at_unix.saturating_add(window_secs),
+            );
             let input = routwatch::compare::CompareInput {
                 event,
                 signal: &src.signal,
                 speed: &src.speed,
                 neighbours: &neighbours,
-                window_secs: window.unwrap_or(routwatch::compare::WINDOW_SECS),
+                window_secs,
                 smear_ms,
             };
             let c = routwatch::compare::compare(&input);
@@ -2833,25 +2840,6 @@ fn sms_delete_cmd(
     Ok(())
 }
 
-/// The smear the advice uses: the 95th percentile gap between the samples
-/// inside the window, not the widest gap in the whole log. An overnight pause
-/// is absence of observation, and letting it mute a whole day of readings would
-/// hide every real change instead of protecting them.
-fn window_smear(rows: &[routwatch::signal_history::Row], now: u64, window_secs: u64) -> u64 {
-    let since = now.saturating_sub(window_secs);
-    let mut gaps: Vec<u64> = rows
-        .windows(2)
-        .filter(|w| w[1].at_unix >= since && w[1].at_unix <= now)
-        .map(|w| w[1].at_unix.saturating_sub(w[0].at_unix) * 1000)
-        .filter(|ms| *ms > 0)
-        .collect();
-    if gaps.is_empty() {
-        return 0;
-    }
-    gaps.sort_unstable();
-    gaps[(gaps.len() * 95) / 100]
-}
-
 /// Band advice from the logs. Reads only: the one request it makes is the
 /// advertised list, and a router that does not answer narrows the advice
 /// instead of stopping it.
@@ -2865,7 +2853,15 @@ fn bands_advise(
 ) -> Result<(), ApiError> {
     let source = routwatch::incidents::Source::load();
     let window_secs = window.unwrap_or(routwatch::advisor::WINDOW_SECS);
-    let smear = window_smear(&source.signal, routwatch::record::now_unix(), window_secs);
+    let now = routwatch::record::now_unix();
+    // The same window rule as compare: rank the gaps inside the advice window,
+    // and say nothing when there are fewer than two reads to rank.
+    let smear = routwatch::incidents::smear_in_window(
+        &source.signal.iter().map(|r| r.at_unix).collect::<Vec<_>>(),
+        now.saturating_sub(window_secs),
+        now,
+    )
+    .unwrap_or(0);
 
     let scans = match scans_path.as_deref() {
         Some(path) => {
@@ -4018,7 +4014,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
         }
         KeyCode::Char('s') => app.settings_open = true,
-        KeyCode::Char(c @ '1'..='9') => {
+        // '0' is the tenth tab: the arm must take it, or the key dies here
+        // before `tab_from_key` sees it.
+        KeyCode::Char(c @ '0'..='9') => {
             if let Some(tab) = ui::tab_from_key(c) {
                 // A digit always reaches its section, even from Lite/Dense.
                 app.select_tab(tab);
@@ -4653,6 +4651,23 @@ mod key_tests {
     use routwatch::ui::tab_from_key;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::channel;
+
+    /// The handler is the only place a digit is turned into a tab: if the arm
+    /// stops at '9', the bar can print `0 Align` while the key does nothing.
+    #[test]
+    fn the_tenth_tab_key_selects_the_tenth_tab() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        assert_eq!(app.tab, Tab::Dashboard);
+        handle_key(&mut app, key(KeyCode::Char('0')), &tx);
+        assert_eq!(app.tab, Tab::Align, "0 must reach the tenth tab");
+        handle_key(&mut app, key(KeyCode::Char('1')), &tx);
+        assert_eq!(
+            app.tab,
+            Tab::Dashboard,
+            "and the digits still read in order"
+        );
+    }
 
     #[test]
     fn the_feed_key_owns_j_k_space_and_esc_only_while_it_is_open() {

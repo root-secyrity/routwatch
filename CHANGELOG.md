@@ -4,6 +4,20 @@ Newest first. Each section lists what changed, in the words the release uses.
 
 ## Unreleased
 
+- **A tenth tab, Align, reads the average instead of one sample**: `0` opens it. The big
+  number is the 15 s moving average of the SINR reads, in its state colour, with an arrow
+  that moves only past 3.6 dB (three measured standard deviations of the spread on this
+  link), the session peak with the cell it was reached in (cleared when the PCI changes and
+  said so on screen), a one row strip of the last 30 s whose right edge is the newest read,
+  RSRP as a constraint, RSRQ as cell load, and TM and CQI as context. Nothing on it claims
+  to be instant or real-time: the measured cadence is 939 ms at the median and 1748 ms at
+  the 95th percentile, so a window holds reads, not seconds. No sweep shape is claimed.
+- **The incident smear is ranked inside its window, and a pause cannot widen it**: the
+  figure `compare` and `bands advise` quote is now the 95th percentile of the gaps between
+  the reads inside their own window, taken from a sorted copy, instead of the widest gap in
+  the log read in file order. A log whose rows were not stamped in order no longer reports
+  a smear of hours, and a window with fewer than two reads reports no smear rather than a
+  number the rows do not support.
 - **The observation log records a serving-cell change**: one `cell` row when the key
   changes, held over two reads, with the key before and after, the band and the TAC the
   read reported, and no verdict on the signal. It opens no incident and no cause, and

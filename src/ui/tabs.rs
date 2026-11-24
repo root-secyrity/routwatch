@@ -77,8 +77,291 @@ pub fn body(f: &mut Frame, area: Rect, app: &App) {
             crate::app::Tab::Device => device_tab(f, area, app),
             crate::app::Tab::Dns => dns_tab(f, area, app),
             crate::app::Tab::Signal => gauges(f, area, app),
+            crate::app::Tab::Align => align_body(f, area, app),
         },
     }
+}
+
+// ---------------------------------------------------------------- align tab
+
+/// What the strip to the left of the newest read covers. SIGNAL MAP keeps a
+/// four minute window because a trend needs one; this tab asks about the last
+/// half minute, which is the span the 15 s average is read against.
+const ALIGN_STRIP_SECS: u64 = 30;
+
+/// Below this the tab cannot hold a five row face plus its four facts, and a
+/// squeezed version would be a worse lie than the size notice.
+const ALIGN_MIN_W: u16 = 60;
+const ALIGN_MIN_H: u16 = 12;
+
+/// The alignment tab: one number, its direction, the session peak, the last
+/// half minute as a strip, and the readings that constrain it. Everything here
+/// is read from the same snapshot the other tabs print, and the average comes
+/// from the cache (one build per radio read), never from the frame clock.
+pub fn align_body(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let Some(s) = &app.snap else {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "align · waiting for the first radio read",
+                Style::default().fg(t.dim),
+            ))
+            .block(panel("ALIGN".into(), t)),
+            area,
+        );
+        return;
+    };
+    if area.width < ALIGN_MIN_W || area.height < ALIGN_MIN_H {
+        f.render_widget(
+            Paragraph::new("terminal too small for align - press V")
+                .block(panel("ALIGN".into(), t)),
+            area,
+        );
+        return;
+    }
+    let sig = &s.signal;
+    let view = app.align_view();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let dim = Style::default().fg(t.dim);
+
+    let colour = view
+        .average
+        .map(|v| t.sinr_color(v as f32))
+        .unwrap_or(t.dim);
+    let face = match view.average {
+        Some(v) => big_digits(&format!("{v:.1}")),
+        None => big_digits("--"),
+    };
+    let facts = [
+        String::new(),
+        "15 s average · dB".to_string(),
+        view.average
+            .map(|v| crate::theme::step_word(t.sinr_step(v as f32)).to_string())
+            .unwrap_or_else(|| "no read in the window".to_string()),
+        view.average
+            .map(|_| format!("{} {}", view.direction.arrow(), view.direction.as_str()))
+            .unwrap_or_default(),
+        format!("deadband {:.1} dB", crate::align::SINR_DEADBAND_DB),
+    ];
+    for (i, row) in face.iter().enumerate() {
+        let mut spans = vec![Span::styled(
+            format!("  {row}  "),
+            Style::default().fg(colour),
+        )];
+        if i == 1 {
+            spans.push(Span::styled(facts[i].clone(), dim));
+        } else if i == 2 {
+            spans.push(Span::styled(facts[i].clone(), Style::default().fg(colour)));
+        } else if i == 3 {
+            spans.push(Span::styled(
+                facts[i].clone(),
+                Style::default().fg(t.accent),
+            ));
+        } else {
+            spans.push(Span::styled(facts[i].clone(), dim));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(Span::styled(
+        match (view.average, view.previous) {
+            (Some(_), Some(p)) => format!("  the 15 s before read {p:.1} dB"),
+            (Some(_), None) => "  no 15 s before this one to compare".to_string(),
+            _ => String::new(),
+        },
+        dim,
+    )));
+    lines.push(Line::from(Span::styled(
+        match view.peak {
+            Some(p) => format!(
+                "  peak {:.1} dB · pci {} · {} back",
+                p.sinr_db,
+                p.pci.map_or("-".to_string(), |v| v.to_string()),
+                age_text(view.newest_ms, p.at_ms),
+            ),
+            None => "  no peak held yet".to_string(),
+        },
+        dim,
+    )));
+    match view.cleared_at {
+        Some(at) => lines.push(Line::from(Span::styled(
+            format!(
+                "  peak cleared at the cell change, {} back",
+                age_text(view.newest_ms, at)
+            ),
+            Style::default().fg(t.warn),
+        ))),
+        None => lines.push(Line::from("")),
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("  last 30 s  ", dim),
+        Span::styled("the newest read sits at the right edge", dim),
+    ]));
+    let cols = area.width.saturating_sub(2) as usize;
+    let strip = align_strip(app, cols);
+    let opts = crate::ui::chart::ChartOpts {
+        ascii: false,
+        baseline: false,
+    };
+    let (lo, hi) = crate::theme::SINR_DOMAIN;
+    for line in crate::ui::chart::spark_lines_scaled(
+        &strip,
+        cols,
+        1,
+        t.accent,
+        f64::from(lo),
+        f64::from(hi),
+        opts,
+    ) {
+        lines.push(line);
+    }
+
+    lines.push(Line::from(""));
+    let (word, word_colour) = match sig.rsrp_dbm {
+        Some(v) if t.rsrp_step(v) >= 1 => ("enough", t.ok),
+        Some(_) => ("weak", t.danger),
+        None => ("-", t.dim),
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  constraint  RSRP ", dim),
+        Span::styled(
+            opt_f(sig.rsrp_dbm, "dBm"),
+            Style::default().fg(t.rsrp_color(sig.rsrp_dbm.unwrap_or(0.0))),
+        ),
+        Span::styled(" · ", dim),
+        Span::styled(word, Style::default().fg(word_colour)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  cell load   RSRQ ", dim),
+        Span::styled(
+            opt_f(sig.rsrq_db, "dB"),
+            Style::default().fg(t.rsrq_color(sig.rsrq_db.unwrap_or(0.0))),
+        ),
+        Span::styled(" · ", dim),
+        Span::styled(
+            sig.rsrq_db
+                .map(|v| crate::theme::step_word(t.rsrq_step(v)).to_string())
+                .unwrap_or_else(|| "-".into()),
+            dim,
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  context     ", dim),
+        Span::styled(sig.tm.clone().unwrap_or_else(|| "-".into()), dim),
+        Span::styled(" · CQI ", dim),
+        Span::styled(cqi_label(sig.cqi), dim),
+        Span::styled(" · ", dim),
+        Span::styled(cell_line(sig), dim),
+    ]));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(panel(format!("ALIGN · {}", cell_line(sig)), t))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// How long before the newest read a stamp sat, in the words a column has room
+/// for. No wall clock is consulted: the tab's clock is the newest radio read.
+fn age_text(newest_ms: u64, at_ms: u64) -> String {
+    let secs = newest_ms.saturating_sub(at_ms) / 1000;
+    if secs < 60 {
+        format!("{secs} s")
+    } else {
+        format!("{} m {:02} s", secs / 60, secs % 60)
+    }
+}
+
+/// The cell the readings belong to: the downlink carrier, its PCI and its band.
+/// The composite the firmware reports is handed to the one parser that already
+/// owns it, so this line cannot disagree with the signal log about a cell.
+fn cell_line(sig: &crate::model::Signal) -> String {
+    let (dl, _) = sig
+        .earfcn
+        .as_deref()
+        .map(crate::signal_history::parse_earfcn)
+        .unwrap_or((None, None));
+    format!(
+        "earfcn_dl {} · pci {} · band {}",
+        dl.map_or("-".to_string(), |v| v.to_string()),
+        sig.pci.map_or("-".to_string(), |v| v.to_string()),
+        sig.band.clone().unwrap_or_else(|| "-".into()),
+    )
+}
+
+/// The last half minute as the strip's own resolution: a braille cell holds two
+/// samples side by side, so the window is split into twice the columns the panel
+/// has. A read holds its column until the next one arrives, the same rule the
+/// plots use, and the columns before the oldest read stay NaN: a gap is not a
+/// reading at the floor.
+fn align_strip(app: &App, cols: usize) -> std::collections::VecDeque<f64> {
+    use crate::ui::chart::slot_of;
+    let slots = cols * 2;
+    let mut out = std::collections::VecDeque::from(vec![f64::NAN; slots]);
+    if slots == 0 || app.align_samples.is_empty() {
+        return out;
+    }
+    let window_ms = ALIGN_STRIP_SECS * 1000;
+    let newest = app
+        .align_samples
+        .back()
+        .map(|s| s.at_ms)
+        .unwrap_or_default();
+    let mut landed = vec![f64::NAN; slots];
+    for s in &app.align_samples {
+        if s.at_ms > newest {
+            continue;
+        }
+        let age_ms = newest - s.at_ms;
+        if age_ms >= window_ms {
+            continue;
+        }
+        let slot = slot_of(window_ms - age_ms - 1, window_ms, slots);
+        if landed[slot].is_nan() || s.sinr_db > landed[slot] {
+            landed[slot] = s.sinr_db;
+        }
+    }
+    let mut held = f64::NAN;
+    for (slot, value) in landed.iter().enumerate() {
+        if !value.is_nan() {
+            held = *value;
+        }
+        out[slot] = held;
+    }
+    out
+}
+
+/// A five row block face for the one number the tab leads with. The face has
+/// only the glyphs this line can print; anything else is a blank column, which
+/// is honest about a face this small rather than drawing a wrong digit.
+fn big_digits(text: &str) -> Vec<String> {
+    let mut rows = vec![String::new(); 5];
+    for (i, c) in text.chars().enumerate() {
+        let glyph = match c {
+            '0' => ["█████", "█   █", "█   █", "█   █", "█████"],
+            '1' => ["   █ ", "  ██ ", "   █ ", "   █ ", "  ███"],
+            '2' => ["█████", "    █", "█████", "█    ", "█████"],
+            '3' => ["█████", "    █", " ████", "    █", "█████"],
+            '4' => ["█   █", "█   █", "█████", "    █", "    █"],
+            '5' => ["█████", "█    ", "█████", "    █", "█████"],
+            '6' => ["█████", "█    ", "█████", "█   █", "█████"],
+            '7' => ["█████", "    █", "   █ ", "  █  ", "  █  "],
+            '8' => ["█████", "█   █", "█████", "█   █", "█████"],
+            '9' => ["█████", "█   █", "█████", "    █", "█████"],
+            '-' => ["     ", "     ", "█████", "     ", "     "],
+            '.' => ["     ", "     ", "     ", "     ", "  █  "],
+            _ => ["     ", "     ", "     ", "     ", "     "],
+        };
+        for (r, part) in glyph.iter().enumerate() {
+            if i > 0 {
+                rows[r].push(' ');
+            }
+            rows[r].push_str(part);
+        }
+    }
+    rows
 }
 
 // ---------------------------------------------------------------- dashboard
@@ -3563,7 +3846,9 @@ pub fn dense(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cqi_label, graphs_panel, split, throughput_panel, visible_rows};
+    use super::{
+        align_body, big_digits, cqi_label, graphs_panel, split, throughput_panel, visible_rows,
+    };
     use crate::app::{App, Tab};
     use crate::theme::{GraphStyle, Theme};
 
@@ -4129,5 +4414,112 @@ mod tests {
             "the record keeps its true age instead of hugging the right edge: ink starts at {lo}"
         );
         assert!(hi >= w as usize - 3, "the newest sample sits at now: {hi}");
+    }
+
+    // ------------------------------------------------------------- align tab
+
+    /// The tab over a synthetic session: `demo_history` fills the ring the tab
+    /// reads, and its newest read is the right edge of the strip.
+    fn align_screen(w: u16, h: u16, samples: usize) -> Vec<String> {
+        let mut app = fixture_app();
+        app.tab = Tab::Align;
+        app.demo_history(samples);
+        panel_rows(w, h, |f, a| align_body(f, a, &app))
+    }
+
+    fn braille_ink(line: &str) -> bool {
+        line.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+    }
+
+    #[test]
+    fn the_align_tab_leads_with_its_average_and_names_its_facts() {
+        let screen = align_screen(120, 34, 120).join("\n");
+        assert!(screen.contains("15 s average"), "{screen}");
+        assert!(screen.contains("deadband 3.6 dB"), "{screen}");
+        assert!(screen.contains("peak "), "{screen}");
+        assert!(screen.contains("constraint  RSRP"), "{screen}");
+        assert!(screen.contains("cell load   RSRQ"), "{screen}");
+        assert!(screen.contains("context"), "{screen}");
+        assert!(screen.contains("earfcn_dl"), "{screen}");
+        assert!(
+            screen.contains('\u{2588}'),
+            "the tab leads with a block face, not a table cell: {screen}"
+        );
+    }
+
+    #[test]
+    fn the_face_shows_the_engines_average() {
+        let mut app = fixture_app();
+        app.demo_history(120);
+        let view = app.align_view();
+        let face = big_digits(&format!(
+            "{:.1}",
+            view.average.expect("a window with reads")
+        ));
+        let rows = panel_rows(120, 34, |f, a| align_body(f, a, &app));
+        assert!(
+            rows.iter().any(|r| r.contains(&face[1])),
+            "second row of the face is on screen: {face:?}"
+        );
+    }
+
+    #[test]
+    fn the_face_is_five_rows_of_one_width() {
+        let rows = big_digits("12.3");
+        assert_eq!(rows.len(), 5);
+        for row in &rows {
+            assert_eq!(row.chars().count(), 4 * 5 + 3, "four glyphs and three gaps");
+        }
+    }
+
+    #[test]
+    fn the_align_tab_prints_no_instant_wording() {
+        let screen = align_screen(120, 34, 120).join("\n").to_lowercase();
+        for word in ["real-time", "realtime", "instant", "live", "right now"] {
+            assert!(!screen.contains(word), "`{word}` in the tab: {screen}");
+        }
+    }
+
+    #[test]
+    fn the_align_strip_ends_at_the_newest_read() {
+        let rows = align_screen(80, 24, 120);
+        let strip = rows
+            .iter()
+            .find(|r| braille_ink(r.as_str()))
+            .expect("a braille strip");
+        let cells: Vec<char> = strip.chars().collect();
+        let last = cells
+            .iter()
+            .rposition(|c| *c != ' ' && *c != '\u{2502}')
+            .expect("ink");
+        // The strip spans the panel's inner width, so the only cell after its
+        // last column is the border: the newest read is the strip's right edge.
+        assert!(
+            last + 2 >= cells.len(),
+            "the strip reaches its right edge: {strip}"
+        );
+    }
+
+    #[test]
+    fn a_tiny_terminal_gets_the_size_notice() {
+        let screen = align_screen(48, 10, 120).join("\n");
+        assert!(screen.contains("terminal too small for align"), "{screen}");
+    }
+
+    #[test]
+    fn without_a_first_read_the_tab_waits() {
+        let app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            crate::app::View::Full,
+            100,
+            2000,
+        );
+        let rows = panel_rows(80, 24, |f, a| align_body(f, a, &app));
+        let screen = rows.join("\n");
+        assert!(
+            screen.contains("waiting for the first radio read"),
+            "{screen}"
+        );
     }
 }
