@@ -21,7 +21,7 @@
 # Usage: scripts/gate-isolation.sh [extra cargo test args]
 set -uo pipefail
 
-logs=(signal-history.jsonl speed-history.jsonl events.jsonl privacy-baseline.json)
+logs=(signal-history.jsonl speed-history.jsonl events.jsonl privacy-baseline.json cells.json)
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/rw-isolation-XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
