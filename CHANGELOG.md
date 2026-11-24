@@ -2,6 +2,18 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
+## Unreleased
+
+- **`routwatch cells list`**: the serving cells this machine has read, newest first,
+  from `$XDG_DATA_HOME/routwatch/cells.json` (`0600`). A cell is keyed by downlink
+  ARFCN and PCI; a sample whose ARFCN did not parse becomes its own `earfcn_unknown`
+  record instead of a merge, and PCI alone is never a key. The store is capped at 64
+  cells, drops the least recently seen, is rewritten once a minute and immediately
+  when a cell is new, and carries no ranking, no best cell and no throughput
+  comparison: `--json` prints the records, `docs/headless.md` states the shape.
+  `docs/limits.md` states the key rule, the cap, the write cadence and why a
+  comparison is not offered yet.
+
 ## 0.9.3
 
 **The signal log remembers the cell, and the guard reads it back** (#74)

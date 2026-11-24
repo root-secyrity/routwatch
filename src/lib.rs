@@ -7,6 +7,7 @@ pub mod advisor;
 pub mod antenna;
 pub mod app;
 pub mod capabilities;
+pub mod cells;
 pub mod client_detail;
 pub mod completion;
 pub mod config;

@@ -138,6 +138,11 @@ enum Cmd {
         #[arg(long)]
         probe: bool,
     },
+    /// The serving cells this machine has read, newest first (no ranking)
+    Cells {
+        #[command(subcommand)]
+        action: CellsCmd,
+    },
     /// Fingerprint the settings, and diff them without storing a value
     Config {
         #[command(subcommand)]
@@ -456,6 +461,16 @@ enum SmsCmd {
 }
 
 #[derive(Subcommand)]
+enum CellsCmd {
+    /// Print the recorded cells, newest first (reads the file, no network)
+    List {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum BandsCmd {
     /// Advice from the logs: what the evidence supports, and what it cannot
     Advise {
@@ -632,6 +647,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Replay { .. })
             | Some(Cmd::Speedtest { .. })
             | Some(Cmd::History { .. })
+            | Some(Cmd::Cells { .. })
             | Some(Cmd::Antenna { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
     );
@@ -2103,6 +2119,24 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 println!("no signal rows yet: they are written by every command that collects");
             } else {
                 print!("{}", routwatch::signal_history::table(&rows));
+            }
+            Ok(())
+        }
+        Some(Cmd::Cells {
+            action: CellsCmd::List { json },
+        }) => {
+            let Some(p) = routwatch::cells::cells_path() else {
+                eprintln!("cells: this platform has no data directory, so no catalog is kept");
+                return Err(ApiError::Quiet(2));
+            };
+            let (records, warn) = routwatch::cells::read_records(&p);
+            if let Some(w) = &warn {
+                eprintln!("{w}");
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&records).unwrap());
+            } else {
+                print!("{}", routwatch::cells::cells_table(&records));
             }
             Ok(())
         }

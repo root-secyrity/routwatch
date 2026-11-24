@@ -1065,3 +1065,130 @@ fn a_report_names_an_incident_and_can_hide_its_detail() {
         stderr(&out)
     );
 }
+
+fn cells_file(home: &std::path::Path) -> PathBuf {
+    home.join("routwatch/cells.json")
+}
+
+fn cell_row(band: &str, pci: u16, earfcn: u32, last_seen: u64) -> routwatch::cells::CellRecord {
+    routwatch::cells::CellRecord {
+        band: band.to_string(),
+        pci,
+        earfcn_dl: Some(earfcn),
+        earfcn_ul: Some(earfcn + 18_000),
+        tac: Some(516),
+        first_seen: last_seen - 86_400,
+        last_seen,
+        rows: 7,
+        best_sinr: Some(9),
+        best_sinr_at: Some(last_seen - 10),
+        earfcn_unknown: false,
+    }
+}
+
+fn write_cells(home: &std::path::Path, records: &[routwatch::cells::CellRecord]) {
+    let p = cells_file(home);
+    std::fs::create_dir_all(p.parent().expect("parent")).expect("data dir");
+    std::fs::write(&p, serde_json::to_string_pretty(records).expect("json")).expect("cells");
+}
+
+#[test]
+fn cells_list_on_an_empty_home_prints_zero_unique() {
+    let home = temp_data_home("cells-empty");
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells", "list"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "Cells · 0 unique\n", "{}", stdout(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
+#[test]
+fn cells_list_prints_the_newest_cell_first() {
+    let home = temp_data_home("cells-order");
+    // The file is written oldest first on purpose: the order on screen must come
+    // from last_seen, not from the order the records happen to sit in.
+    write_cells(
+        &home,
+        &[
+            cell_row("B3", 395, 300, 1_700_000_000),
+            cell_row("B1", 481, 100, 1_700_090_000),
+        ],
+    );
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells", "list"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("Cells · 2 unique\n"), "{text}");
+    let b1 = text.find("B1").expect("B1 row");
+    let b3 = text.find("B3").expect("B3 row");
+    assert!(b1 < b3, "the newest last_seen comes first:\n{text}");
+    assert!(text.contains("481"), "{text}");
+    assert!(text.contains("9 dB"), "best_sinr is whole dB here: {text}");
+    assert!(
+        !text.contains("cap 64"),
+        "two cells are below the cap: {text}"
+    );
+}
+
+#[test]
+fn cells_list_json_round_trips_into_cellrecord() {
+    let home = temp_data_home("cells-json");
+    let rows = vec![
+        cell_row("B1", 481, 100, 1_700_090_000),
+        cell_row("B3", 395, 300, 1_700_000_000),
+    ];
+    write_cells(&home, &rows);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells", "list", "--json"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let parsed: Vec<routwatch::cells::CellRecord> =
+        serde_json::from_str(&stdout(&out)).expect("the output parses back into CellRecord");
+    assert_eq!(parsed, rows, "the JSON is the record, key for key");
+}
+
+#[test]
+fn cells_without_a_subcommand_is_a_usage_error() {
+    let home = temp_data_home("cells-usage");
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells"])
+        .output()
+        .expect("run");
+    // 3 is this project's usage failure (clap's 2 means a network error here).
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+}
+
+#[test]
+fn cells_list_never_opens_a_router_session() {
+    let home = temp_data_home("cells-offline");
+    write_cells(&home, &[cell_row("B1", 481, 100, 1_700_090_000)]);
+    // TEST-NET-1 answers nothing: a run that tried to log in would fail here.
+    let cfg = config_for("192.0.2.1");
+    let mut cmd = bin();
+    cmd.env("XDG_DATA_HOME", &*home)
+        .arg("--config")
+        .arg(&*cfg)
+        .args(["cells", "list"]);
+    let out = cmd.output().expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with("Cells · 1 unique\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}

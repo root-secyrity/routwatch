@@ -131,32 +131,51 @@ pub fn path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("routwatch").join("signal-history.jsonl"))
 }
 
-/// `2026-11-17 04:20` in the local zone, through the same libc path the usage
-/// panel uses, so there is no new dependency and no timezone guess. A host
-/// without `localtime_r` falls back to UTC.
-pub fn local_stamp(unix: u64) -> String {
+/// The local clock as six numbers: year, month, day, hour, minute, second.
+///
+/// One libc call site serves every stamp the project prints, so a log row and a
+/// catalog row cannot disagree about the zone. A host without `localtime_r` falls
+/// back to UTC.
+pub fn local_parts(unix: u64) -> (i64, u32, u32, u32, u32, u32) {
     #[cfg(unix)]
     unsafe {
         let t = unix as libc::time_t;
         let mut tm: libc::tm = std::mem::zeroed();
         if !libc::localtime_r(&t, &mut tm).is_null() {
-            return format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}",
+            return (
                 i64::from(tm.tm_year) + 1900,
-                tm.tm_mon + 1,
-                tm.tm_mday,
-                tm.tm_hour,
-                tm.tm_min
+                tm.tm_mon as u32 + 1,
+                tm.tm_mday as u32,
+                tm.tm_hour as u32,
+                tm.tm_min as u32,
+                tm.tm_sec as u32,
             );
         }
     }
     let (y, m, d) = crate::usage::civil_from_days((unix / 86_400) as i64);
     let s = unix % 86_400;
-    format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
-        s / 3600,
-        (s % 3600) / 60
+    (
+        y,
+        m,
+        d,
+        (s / 3600) as u32,
+        ((s % 3600) / 60) as u32,
+        (s % 60) as u32,
     )
+}
+
+/// `2026-11-17 04:20` in the local zone, through the same libc path the usage
+/// panel uses, so there is no new dependency and no timezone guess.
+pub fn local_stamp(unix: u64) -> String {
+    let (y, m, d, hh, mm, _) = local_parts(unix);
+    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}")
+}
+
+/// `2026-11-20T14:22:07`: the stamp a catalog row carries. Seconds matter here:
+/// two reads inside one minute are two different last-seen moments.
+pub fn local_iso(unix: u64) -> String {
+    let (y, m, d, hh, mm, ss) = local_parts(unix);
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}")
 }
 
 fn fig(v: Option<f32>, unit: &str) -> String {
