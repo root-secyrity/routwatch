@@ -2588,19 +2588,26 @@ mod tests {
 
     #[test]
     fn help_uses_the_room_a_wide_terminal_has() {
-        // The panel must use the width it is given: 52 columns cut 12 of 21 rows
-        // mid-word even on a 120 column terminal.
+        // The panel must use the width it is given: the short rows are what a
+        // narrow terminal sees, so a needle that only exists in the full text
+        // proves the room was used. 120 columns draw the list on 56 lines, so a
+        // 30 row terminal shows the first window and every needle has to come
+        // from inside it.
         let text = help_frame(120, 30, false);
         for needle in [
             "not through the router",
-            "back in the tick list",
-            "the ticked merge",
+            "capital P, from any section",
+            "t in settings does the same",
+            "w saves",
             "switch section from any view",
             "v / V",
-            "S / ,",
         ] {
             assert!(text.contains(needle), "help lost {needle:?}\n{text}");
         }
+        assert!(
+            text.contains("rows 1-"),
+            "the window must say where it is\n{text}"
+        );
     }
 
     #[test]
@@ -2703,10 +2710,12 @@ mod tests {
     /// order, directly above the keys it names.
     #[test]
     fn the_help_groups_the_keys_under_a_heading() {
-        let text = help_frame(120, 48, false);
+        // Wrapping makes the list taller than its 45 source rows, so the whole
+        // list needs the drawn height, not the row count.
+        let text = help_frame(120, 60, false);
         assert!(
             !text.contains("rows 1-"),
-            "48 rows hold all 45 lines, so nothing may be windowed\n{text}"
+            "a 120x60 frame holds the whole wrapped list, so nothing may be windowed\n{text}"
         );
         let lines: Vec<&str> = text.lines().collect();
         let mut at = 0usize;
@@ -2728,6 +2737,48 @@ mod tests {
             lines[net + 1].contains("download/upload test"),
             "the row under the network heading must be T: {:?}",
             lines[net + 1]
+        );
+    }
+
+    /// The complaint this round fixes: a description that did not fit was cut and
+    /// ended in an ellipsis. The narrowest panel fills the frame, so the frame is
+    /// the panel; at 34x60 the wrapped list is drawn whole, and only the last line
+    /// (the footer, one sentence rather than a description) may still be cut.
+    #[test]
+    fn the_help_never_cuts_a_description_it_can_wrap() {
+        let text = help_frame(34, 60, false);
+        assert!(
+            !text.contains("rows "),
+            "34x60 must hold the whole wrapped list\n{text}"
+        );
+        let panel: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with('│') && l.ends_with('│'))
+            .collect();
+        let body = &panel[..panel.len() - 1];
+        for line in body {
+            let drawn = line.trim_end_matches('│');
+            assert!(
+                !drawn.trim_end().ends_with('…'),
+                "a description was cut, not wrapped: {line:?}"
+            );
+        }
+    }
+
+    /// The height the wrapped list needs, measured from both sides: one row more
+    /// fits it, one row less windows it. This is what holds the count in the
+    /// panel-height arithmetic.
+    #[test]
+    fn the_panel_is_tall_enough_for_the_wrapped_list_at_120x56() {
+        let fits = help_frame(120, 56, false);
+        assert!(
+            !fits.contains("rows 1-"),
+            "56 rows must hold the whole wrapped list\n{fits}"
+        );
+        let short = help_frame(120, 55, false);
+        assert!(
+            short.contains("rows 1-"),
+            "one row less must window the list\n{short}"
         );
     }
 

@@ -3,8 +3,11 @@
 //!
 //! The table is the only place a key is described. `short` must fit a 34 column
 //! panel and is what a narrow terminal sees; `full` is used only when the room
-//! exists. The rows are grouped: a `Heading` names a section and the keys under
-//! it are that section's, so a row never has to say which section it belongs to.
+//! exists. The chosen text is wrapped, never cut: what does not fit the
+//! description column continues on the next line, indented under it, so a long
+//! description is read to its end instead of ending in an ellipsis. The rows are
+//! grouped: a `Heading` names a section and the keys under it are that section's,
+//! so a row never has to say which section it belongs to.
 //!
 //! Every key `handle_key` answers to should have a row here, but no one test
 //! holds the whole list together: `the_help_lists_the_speed_key` and
@@ -15,12 +18,25 @@
 //! and `the_help_groups_the_keys_under_a_heading` in `ui::tests`. A new key with
 //! no row here fails nothing today.
 //!
-//! The grouped list is taller than a normal terminal, so the overlay scrolls:
-//! `help_off` is the index of the first visible line into `rows()` (a heading
-//! counts as one line) and `help_cap` is how many content lines were actually
-//! shown. Both are read by the scroll handler in `src/main.rs`, and the renderer
-//! is the only thing that measures the capacity, so it records it back through
-//! the `Cell` it is handed.
+//! The grouped list is taller than a normal terminal, so the overlay scrolls.
+//! `help_off` is the index of the first visible SOURCE row into `rows()` (a
+//! heading is one row, and a key row that draws two lines is still one row) and
+//! `help_cap` is how many source rows were drawn. Both are read by the scroll
+//! handler in `src/main.rs`, and the renderer is the only thing that measures the
+//! capacity, so it records it back through the `Cell` it is handed.
+//!
+//! The panel is measured in DRAWN lines, the window moves in whole source rows: a
+//! row whose wrapped description does not fit is left for the next window rather
+//! than drawn in half.
+//!
+//! The wrapping is held by `a_help_row_wraps_instead_of_being_cut` and
+//! `a_wrapped_row_continues_under_the_description_column`, and the band by
+//! `a_heading_is_a_filled_bar_and_a_key_row_is_not`, all in this module;
+//! `the_help_never_cuts_a_description_it_can_wrap` and
+//! `the_panel_is_tall_enough_for_the_wrapped_list_at_120x56` in `ui::tests` hold the
+//! same facts through a rendered frame, and
+//! `inverse_reads_on_the_title_slot_in_every_palette` in `theme::tests` holds the
+//! band readable on every palette this build ships.
 
 use std::cell::Cell;
 
@@ -32,7 +48,7 @@ use ratatui::Frame;
 
 use crate::theme::Theme;
 
-use super::tabs::truncate;
+use super::tabs::{truncate, wrap_words};
 
 /// Column the keys are padded to. Longer key groups are cut, never allowed to
 /// run into their description.
@@ -56,8 +72,10 @@ pub enum HelpRow {
 /// group it. Global keys come first: a user who is lost needs `t`, `p`, `P` and
 /// `?` before anything else.
 ///
-/// Ten headings, 35 key rows, 45 lines: 49 rows of terminal show all of it and
-/// anything shorter scrolls.
+/// The list is grouped under a heading per section: 45 source rows in all. How
+/// many terminal lines that needs depends on the width, because a description is
+/// wrapped rather than cut, so the widest panel draws some rows on two lines. A
+/// terminal shorter than the drawn list scrolls.
 pub fn rows() -> Vec<HelpRow> {
     use HelpRow::{Heading, Key};
     vec![
@@ -291,11 +309,21 @@ pub fn draw(
     let inner = w.saturating_sub(2);
     let key_w = KEY_COL.min(inner.saturating_sub(10));
     let room = inner.saturating_sub(key_w + 2).max(4) as usize;
-    // `full` is used only when it genuinely fits, so no description is ever cut
-    // in the middle of a word without the ellipsis saying so.
+    // The room alone decides which of the two lengths is drawn; the text is
+    // wrapped, so `full` never has to be cut to fit.
     let use_full = room >= 66;
 
-    let want = all.len() as u16 + 3; // border, content, footer line
+    // The panel is measured in the lines the rows actually draw: a heading is one
+    // line, and a key row is as many lines as its wrapped description needs.
+    let drawn: Vec<usize> = all
+        .iter()
+        .map(|row| match row {
+            HelpRow::Heading(_) => 1,
+            HelpRow::Key(k) => row_lines(k, key_w, room, use_full, theme).len(),
+        })
+        .collect();
+
+    let want = drawn.iter().sum::<usize>() as u16 + 3; // border, content, footer line
     let h = want.min(area.height).max(area.height.min(5));
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
@@ -304,22 +332,45 @@ pub fn draw(
         height: h,
     };
 
-    // The window is measured in content lines, and a heading is one of them.
+    let total = all.len();
+    let mut off = (off as usize).min(total.saturating_sub(1));
     let body_cap = h.saturating_sub(3) as usize;
-    let windowed = all.len() > body_cap;
-    let shown = body_cap.saturating_sub(usize::from(windowed)).max(1);
+
+    // The window moves in whole source rows, and one line is reserved for the
+    // position line while rows are left over: a row whose description does not fit
+    // is left for the next window rather than drawn in half.
+    let mut shown = 0usize;
+    let mut used = 0usize;
+    for (i, lines) in drawn.iter().enumerate().skip(off) {
+        let reserve = usize::from(i + 1 < total);
+        if used + lines + reserve > body_cap {
+            break;
+        }
+        used += lines;
+        shown += 1;
+    }
+    // A window that lands on the last row is grown backwards while it still fits,
+    // so a reader who scrolls to the end sees a screenful and not the last row:
+    // the position line is still needed, so one line stays reserved.
+    while off + shown == total && off > 0 && used + 1 + drawn[off - 1] <= body_cap {
+        off -= 1;
+        used += drawn[off];
+        shown += 1;
+    }
+    shown = shown.max(1);
+    let end = off + shown;
+    // The position line belongs to any window that is not the whole list, at the
+    // top, in the middle, or resting on the last row.
+    let windowed = off > 0 || end < total;
     cap.set(shown as u16);
 
-    let total = all.len();
-    let off = (off as usize).min(total.saturating_sub(shown));
-    let end = (off + shown).min(total);
     let visible = &all[off..end];
 
-    let mut lines: Vec<Line> = Vec::with_capacity(shown + 1);
+    let mut lines: Vec<Line> = Vec::with_capacity(used + 2);
     for row in visible {
         match row {
             HelpRow::Heading(text) => lines.push(heading_line(text, inner, theme)),
-            HelpRow::Key(k) => lines.push(row_line(k, key_w, room, use_full, theme)),
+            HelpRow::Key(k) => lines.extend(row_lines(k, key_w, room, use_full, theme)),
         }
     }
     // A heading whose key rows all fell outside the window is not drawn: a
@@ -329,11 +380,9 @@ pub fn draw(
     }
 
     if windowed {
-        let last = if lines.len() < visible.len() {
-            end - 1
-        } else {
-            end
-        };
+        // The last source row whose lines were drawn: the trailing heading is
+        // counted out when it was popped, and the message speaks 1-based rows.
+        let last = if lines.len() < used { end - 1 } else { end };
         let msg = format!(
             " rows {}-{last} of {total} · j k / PgUp PgDn scroll",
             off + 1
@@ -364,25 +413,152 @@ pub fn draw(
     );
 }
 
+/// A section heading is a filled bar, not coloured text: two palette slots can
+/// resolve to the same colour in a terminal theme, so the band is what tells a
+/// reader where one section ends and the next begins. It is padded to `inner` so
+/// the fill runs the width of the panel.
 fn heading_line(text: &str, inner: u16, theme: &Theme) -> Line<'static> {
+    let label = format!(" {} ", truncate(text, inner.saturating_sub(2) as usize));
+    let fill = " ".repeat((inner as usize).saturating_sub(label.chars().count()));
     Line::from(Span::styled(
-        format!(" {}", truncate(text, inner.saturating_sub(1) as usize)),
+        format!("{label}{fill}"),
         Style::default()
-            .fg(theme.title)
+            .fg(theme.inverse)
+            .bg(theme.title)
             .add_modifier(Modifier::BOLD),
     ))
 }
 
-fn row_line(row: &KeyRow, key_w: u16, room: usize, use_full: bool, theme: &Theme) -> Line<'static> {
-    let keys = truncate(row.keys, key_w as usize);
+/// The lines one key row draws. The description is wrapped, never cut, so a long
+/// one continues on the next line indented under the description column; the keys
+/// cell is still cut to `key_w`, because a key group that ran into its description
+/// would read as one word.
+fn row_lines(
+    row: &KeyRow,
+    key_w: u16,
+    room: usize,
+    use_full: bool,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let text = if use_full { row.full } else { row.short };
-    Line::from(vec![
-        Span::styled(
-            format!(" {keys:<width$} ", width = key_w as usize),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(truncate(text, room), Style::default().fg(theme.fg)),
-    ])
+    let mut chunks = wrap_words(text, room);
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+    let keys = truncate(row.keys, key_w as usize);
+    let pad = " ".repeat(key_w as usize + 2);
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let lead = if i == 0 {
+                Span::styled(
+                    format!(" {keys:<width$} ", width = key_w as usize),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(pad.clone(), Style::default().fg(theme.fg))
+            };
+            Line::from(vec![
+                lead,
+                Span::styled(chunk, Style::default().fg(theme.fg)),
+            ])
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The room a 120 column panel gives a description, and the rooms an 80
+    /// column one and the narrowest panel give.
+    const WIDE: usize = 66;
+    const NARROW: usize = 18;
+
+    #[test]
+    fn a_help_row_wraps_instead_of_being_cut() {
+        // A description is read to its end: at the widest panel every row's text
+        // comes back whole when the chunks are put back together, and no chunk on
+        // any width is wider than the room it was wrapped to.
+        for row in key_rows() {
+            for text in [row.short, row.full] {
+                let chunks = wrap_words(text, WIDE);
+                assert!(!chunks.is_empty(), "{:?} wrapped to nothing", row.keys);
+                assert_eq!(chunks.join(" "), text, "{:?} lost text at {WIDE}", row.keys);
+            }
+            for room in [NARROW, 38, WIDE] {
+                let chunks = wrap_words(row.full, room);
+                assert!(!chunks.is_empty(), "{:?} wrapped to nothing", row.keys);
+                for chunk in &chunks {
+                    assert!(
+                        chunk.chars().count() <= room,
+                        "{:?} drew {} columns in a {room} column room",
+                        row.keys,
+                        chunk.chars().count()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_wrapped_row_continues_under_the_description_column() {
+        // The row the owner's screenshot cut: its description runs past one line,
+        // so the rest is drawn under the description column and the whole text is
+        // still there, with no ellipsis.
+        let theme = Theme::get("terminal");
+        let key_w = 12u16;
+        let row = key_rows()
+            .into_iter()
+            .find(|r| r.keys == "d" && r.full.len() > WIDE)
+            .expect("the delete row is longer than one description line");
+        let lines = row_lines(&row, key_w, WIDE, true, &theme);
+        assert!(lines.len() > 1, "the row must wrap, not cut");
+        let mut drawn = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let lead = line.spans[0].content.to_string();
+            if i == 0 {
+                assert_eq!(lead.chars().count(), key_w as usize + 2, "keys cell");
+            } else {
+                assert_eq!(lead, " ".repeat(key_w as usize + 2), "continuation indent");
+            }
+            drawn.push(line.spans[1].content.to_string());
+        }
+        assert_eq!(drawn.join(" "), row.full);
+        assert!(!drawn.join(" ").contains('…'), "a description is never cut");
+    }
+
+    #[test]
+    fn a_heading_is_a_filled_bar_and_a_key_row_is_not() {
+        let theme = Theme::get("terminal");
+        let inner = 80u16;
+        let head = heading_line("BANDS (Tab 2)", inner, &theme);
+        assert_eq!(head.spans.len(), 1, "a heading is one span");
+        let band = &head.spans[0];
+        assert_eq!(
+            band.style.bg,
+            Some(theme.title),
+            "the band is the title slot"
+        );
+        assert_eq!(
+            band.style.fg,
+            Some(theme.inverse),
+            "the label is drawn on the band"
+        );
+        assert_eq!(
+            band.content.chars().count(),
+            inner as usize,
+            "the band runs the width of the panel"
+        );
+        for row in key_rows() {
+            for line in row_lines(&row, 12, WIDE, true, &theme) {
+                for span in &line.spans {
+                    assert_eq!(span.style.bg, None, "a key row is not a band");
+                }
+            }
+        }
+    }
 }
