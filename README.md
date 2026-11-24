@@ -244,6 +244,12 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
   process closes its own session on every exit path, but a `SIGKILL` cannot run
   that, so a killed run leaves its session until the firmware frees it, which
   took 259 s after the last read on this machine.
+- **The cells catalog is a store, not a judgement**: `$XDG_DATA_HOME/routwatch/cells.json`
+  (`0600`, at most 64 cells) keeps one row per serving cell this machine read, keyed by
+  downlink ARFCN and PCI, and `routwatch cells list` prints them newest first. It never
+  ranks them, never picks a best cell and never compares throughput across cells: that
+  comparison has no measurement behind it yet, so the command prints what was seen and
+  nothing more. The rules are in [`docs/limits.md`](docs/limits.md).
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
   (`0600`, three days of rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`

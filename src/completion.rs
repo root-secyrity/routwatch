@@ -10,6 +10,7 @@ pub const SUBCOMMANDS: &[&str] = &[
     "snapshot",
     "privacy",
     "capabilities",
+    "cells",
     "config",
     "incidents",
     "report",

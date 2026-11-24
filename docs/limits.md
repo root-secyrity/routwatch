@@ -444,6 +444,37 @@ why each one is stated instead of hidden.
   palette and no setting exists for it yet; every shipped palette clears AA contrast
   against the background it is drawn on.
 
+- **The cells catalog stores, it does not judge**: `$XDG_DATA_HOME/routwatch/cells.json`
+  holds one record per serving cell that a radio read has seen, and `routwatch cells
+  list` prints them ordered by `last_seen`, newest first. That order is chronological,
+  not a ranking: there is no best cell, no quality score and no throughput comparison.
+  Measured over 80.55 hours: two serving cells, one read 1438 times and the other twice,
+  and the PCI changed inside that window. A second cell with a five minute window did
+  not occur, so the per-cell comparison has no measurement behind it and is not offered;
+  the round that adds it needs its own measured baseline.
+- **A cell is keyed by downlink ARFCN and PCI, never by PCI alone**: two carriers can
+  serve different frequencies with the same PCI, so PCI by itself names no cell. When
+  the earfcn text did not parse (or the firmware stayed silent), the record is keyed by
+  band and PCI and carries `earfcn_unknown`: it never merges into a keyed record and two
+  keyed records never merge into it. A test refuses the PCI-only key so the path cannot
+  come back.
+- **The catalog holds 64 cells and drops the least recently seen**: above that the
+  record with the oldest `last_seen` is evicted, and the list prints a tail line when the
+  stored set is at the cap. A cell that appears once and never again therefore leaves
+  before a cell the machine keeps reading, which is the intended order: this is a record
+  of what was served, not a survey.
+- **The catalog is written once a minute, and immediately when a cell is new**: a save
+  happens on the first radio read of each minute (the same pulse that writes a signal
+  row) and on the first appearance of a cell, so ten reads inside one minute cost one
+  write, not ten. The catalog counts its own writes, and a test pins ten samples to one
+  write.
+- **A sample with no signal figure records no cell**: when RSRP, RSRQ and SINR all
+  arrive empty the firmware answered no measurement, which is the offline path, so
+  nothing is written even if a PCI and a band arrived.
+- **`best_sinr` is a whole dB**: the record keeps `i32` because that is the shape this
+  round was specified with, while the signal log keeps the fraction. Reading a cell's
+  best SINR from the catalog therefore loses the decimal that the log still has.
+
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
 README's Safety list, and the guard that enforces them is in

@@ -56,7 +56,7 @@ build that must stay under 10 MiB, plus the same source in five containers
 (debian 12, ubuntu 22.04, ubuntu 24.04, fedora 41, alpine 3.20) to catch a libc
 or toolchain surprise early.
 
-`make test` currently runs 647 unit + 31 binary + 98 CLI tests (the CLI files are
+`make test` currently runs 647 unit + 31 binary + 103 CLI tests (the CLI files are
 published; the unit tests read `fixtures/`). That number is a promise:
 change it here, in the same PR that changes the count. It counts what passed:
 the library target lists one more than it runs because `src/speedtest.rs` carries
