@@ -3677,6 +3677,32 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
     }
 
+    // The help overlay owns the scroll keys while it is open, so j/k cannot move
+    // the selection behind it, and the page keys cannot page SMS under it.
+    // Every other key falls through: q quits, ? and Esc close it.
+    if app.help {
+        let page = app.help_cap.get().max(1) as i16;
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                scroll_help(app, 1);
+                return;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                scroll_help(app, -1);
+                return;
+            }
+            KeyCode::PageDown => {
+                scroll_help(app, page);
+                return;
+            }
+            KeyCode::PageUp => {
+                scroll_help(app, -page);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char('i') => {
@@ -3698,7 +3724,12 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
                 if app.settings_open { " · w saves" } else { "" }
             ));
         }
-        KeyCode::Char('?') => app.help = !app.help,
+        KeyCode::Char('?') => {
+            app.help = !app.help;
+            if app.help {
+                app.help_off = 0;
+            }
+        }
         // Esc closes the overlay first; the sections below get it afterwards.
         KeyCode::Esc if app.help => app.help = false,
         KeyCode::Char('v') => app.cycle_view(),
@@ -3942,6 +3973,22 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
         }
         _ => {}
     }
+}
+
+/// Scroll the help overlay by `delta` lines. The unit is a line of
+/// `ui::help::rows()`, where a heading counts as one, because that is the unit
+/// the renderer measured: clamping over the key rows alone would stop short by
+/// the heading lines and leave the last sections unreachable.
+fn scroll_help(app: &mut App, delta: i16) {
+    let total = routwatch::ui::help::rows().len() as u16;
+    let cap = app.help_cap.get().max(1);
+    let max = total.saturating_sub(cap);
+    let next = if delta >= 0 {
+        app.help_off.saturating_add(delta as u16)
+    } else {
+        app.help_off.saturating_sub(delta.unsigned_abs())
+    };
+    app.help_off = next.min(max);
 }
 
 /// Letters are matched case-insensitively: `v` must do what `V` does, like the
@@ -4500,6 +4547,71 @@ mod key_tests {
         assert!(!app.events_open);
     }
 
+    /// The overlay's window is a contract between the renderer and the keys: the
+    /// renderer records how many lines fit, and the keys move the window by that
+    /// many, so `j` must not leak to the selection behind it.
+    #[test]
+    fn the_help_overlay_owns_j_and_k_while_it_is_open() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        app.client_sel = 2;
+        app.dash_sel = 2;
+
+        handle_key(&mut app, key(KeyCode::Char('?')), &tx);
+        assert!(app.help, "? must open the help");
+        assert_eq!(app.help_off, 0, "a fresh open starts at the top");
+
+        app.help_cap.set(10);
+        handle_key(&mut app, key(KeyCode::Char('j')), &tx);
+        assert_eq!(app.help_off, 1, "j must scroll the help");
+        handle_key(&mut app, key(KeyCode::Down), &tx);
+        assert_eq!(app.help_off, 2, "Down must scroll the help");
+        handle_key(&mut app, key(KeyCode::PageDown), &tx);
+        assert_eq!(app.help_off, 12, "PgDn pages by the window height");
+        handle_key(&mut app, key(KeyCode::Char('k')), &tx);
+        assert_eq!(app.help_off, 11);
+        handle_key(&mut app, key(KeyCode::PageUp), &tx);
+        assert_eq!(app.help_off, 1);
+        assert_eq!(app.client_sel, 2, "j must not move the selection");
+        assert_eq!(app.dash_sel, 2, "j must not move the dashboard cursor");
+
+        // `?` closes it, and the next open starts at the top again.
+        handle_key(&mut app, key(KeyCode::Char('?')), &tx);
+        assert!(!app.help);
+        handle_key(&mut app, key(KeyCode::Char('?')), &tx);
+        assert!(app.help);
+        assert_eq!(app.help_off, 0);
+        handle_key(&mut app, key(KeyCode::Esc), &tx);
+        assert!(!app.help, "Esc must still close the help");
+    }
+
+    /// The window stops on the last line, so no key press is dead and the last
+    /// section is reachable at any height.
+    #[test]
+    fn the_help_window_stops_on_the_last_row() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        let total = routwatch::ui::help::rows().len() as u16;
+        app.help_cap.set(16);
+        handle_key(&mut app, key(KeyCode::Char('?')), &tx);
+
+        for _ in 0..40 {
+            handle_key(&mut app, key(KeyCode::PageDown), &tx);
+        }
+        assert_eq!(
+            app.help_off,
+            total - 16,
+            "the last page must stop on the last line"
+        );
+        handle_key(&mut app, key(KeyCode::Char('k')), &tx);
+        assert_eq!(app.help_off, total - 17);
+
+        for _ in 0..40 {
+            handle_key(&mut app, key(KeyCode::PageUp), &tx);
+        }
+        assert_eq!(app.help_off, 0, "the top is a floor, not an underflow");
+    }
+
     /// The first frame leaves before the startup reads: the boot draw sits above
     /// the first `usage::load` in this file, so the screen answers at once and
     /// the disk work happens behind it. A reorder puts the disk back in front of
@@ -4663,7 +4775,7 @@ mod key_tests {
             assert_eq!(app.graph, before, "g must no longer cycle a renderer");
         }
         // A key that does nothing is a lie: it goes from the help table too.
-        for row in routwatch::ui::help::rows() {
+        for row in routwatch::ui::help::key_rows() {
             let text = format!("{} {} {}", row.keys, row.short, row.full);
             // The settings row still names the `graph` setting, which a config
             // file can set to braille or ascii; what it may not do is offer a

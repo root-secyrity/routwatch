@@ -559,6 +559,12 @@ pub struct App {
     pub paused: bool,
     pub quit: bool,
     pub help: bool,
+    /// First visible line of the grouped help, counted in lines of
+    /// `ui::help::rows()` where a heading is one line.
+    pub help_off: u16,
+    /// Content lines the help panel could show. The renderer measures it and
+    /// records it here, so the scroll keys clamp against the real capacity.
+    pub help_cap: std::cell::Cell<u16>,
     pub client_sel: usize,
     pub error_log: VecDeque<String>,
     /// Incidents derived from the logs on disk. Read at start and on a slow
@@ -760,6 +766,8 @@ impl App {
             paused: false,
             quit: false,
             help: false,
+            help_off: 0,
+            help_cap: std::cell::Cell::new(1),
             client_sel: 0,
             error_log: VecDeque::new(),
             incidents: Vec::new(),
