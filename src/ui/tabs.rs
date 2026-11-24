@@ -436,7 +436,7 @@ fn signal_lines(app: &App) -> Vec<Line<'static>> {
             sig.ul_mcs
                 .map(|m| m.to_string())
                 .unwrap_or_else(|| "-".into()),
-            sig.cqi.map(|m| m.to_string()).unwrap_or_else(|| "-".into()),
+            cqi_label(sig.cqi),
             app.signal_quality()
         ),
         Style::default().fg(t.fg),
@@ -3067,10 +3067,7 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
                 .pci
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "-".into()),
-            s.signal
-                .cqi
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into()),
+            cqi_label(s.signal.cqi),
         )
     };
     facts.push(Span::styled(detail, Style::default().fg(t.dim)));
@@ -3109,6 +3106,18 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// CQI as the panels print it. Six or below carries the word `weak`: the LTE
+/// table spends those indices on QPSK and low-order 16QAM, which is what a link
+/// that cannot hold a wide modulation reports. Seven and above print the number
+/// alone, so the word means something when it appears.
+pub(crate) fn cqi_label(cqi: Option<u8>) -> String {
+    match cqi {
+        Some(v) if v <= 6 => format!("{v} weak"),
+        Some(v) => v.to_string(),
+        None => "-".into(),
+    }
+}
+
 /// The NR fields that are not main gauge metrics, as separate parts.
 fn nr_aux_parts(nr: &crate::model::Nr) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
@@ -3128,7 +3137,7 @@ fn nr_aux_parts(nr: &crate::model::Nr) -> Vec<String> {
         parts.push(format!("BLER {b:.1}%"));
     }
     if let Some(c) = nr.cqi {
-        parts.push(format!("CQI {c}"));
+        parts.push(format!("CQI {}", cqi_label(Some(c))));
     }
     if let Some(tx) = nr.txpower_dbm {
         parts.push(format!("TX {tx:.0} dBm"));
@@ -3530,7 +3539,7 @@ pub fn dense(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{graphs_panel, split, throughput_panel, visible_rows};
+    use super::{cqi_label, graphs_panel, split, throughput_panel, visible_rows};
     use crate::app::{App, Tab};
     use crate::theme::{GraphStyle, Theme};
 
@@ -3548,6 +3557,50 @@ mod tests {
         app.on_snapshot(snap, 432);
         app.tab = Tab::Network;
         app
+    }
+
+    // ------------------------------------------------------------ signal / CQI
+
+    #[test]
+    fn cqi_below_seven_is_marked_weak() {
+        assert_eq!(cqi_label(Some(0)), "0 weak");
+        assert_eq!(cqi_label(Some(6)), "6 weak");
+    }
+
+    #[test]
+    fn cqi_at_seven_or_above_is_plain() {
+        assert_eq!(cqi_label(Some(7)), "7");
+        assert_eq!(cqi_label(Some(15)), "15");
+        assert_eq!(cqi_label(None), "-");
+    }
+
+    #[test]
+    fn the_signal_panel_shows_tm_and_cqi_on_one_line() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        if let Some(snap) = app.snap.as_mut() {
+            snap.signal.cqi = Some(7);
+        }
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let line = screen
+            .lines()
+            .find(|l| l.contains("TM[4]"))
+            .unwrap_or_else(|| panic!("no line names the TM: {screen}"));
+        assert!(line.contains("CQI 7"), "the CQI shares the TM line: {line}");
+        assert!(
+            !line.contains("weak"),
+            "seven is not the weak side of the cut: {line}"
+        );
+
+        if let Some(snap) = app.snap.as_mut() {
+            snap.signal.cqi = Some(6);
+        }
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let line = screen
+            .lines()
+            .find(|l| l.contains("TM[4]"))
+            .unwrap_or_else(|| panic!("no line names the TM: {screen}"));
+        assert!(line.contains("CQI 6 weak"), "six is marked: {line}");
     }
 
     // ---------------------------------------------------------------- clients
