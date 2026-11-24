@@ -4,6 +4,16 @@ Newest first. Each section lists what changed, in the words the release uses.
 
 ## Unreleased
 
+- **Two events are ordered by their own stamps, and the smear ranks only a reading against
+  a change**: the incident caveat and `compare` used the signal smear to refuse an order
+  between two events, which are two rows the log already stamped. A pair inside the same
+  second now says so instead (the log records whole seconds), the smear ranks a reading
+  against a change only, and `bands advise` prints "smear not measurable" rather than
+  `0 ms` when its window holds fewer than two reads, with `smear_ms` `null` in its JSON.
+- **The drift guard counts sampled minutes, not a span**: today must hold six hours of
+  distinct sampled minutes on the judged cell, so a day with two reads seven hours apart
+  is two minutes of coverage and the guard stays collecting. It names the span beside the
+  samples instead of trusting the gap between the first and last row.
 - **A tenth tab, Align, reads the average instead of one sample**: `0` opens it. The big
   number is the 15 s moving average of the SINR reads, in its state colour, with an arrow
   that moves only past 3.6 dB (three measured standard deviations of the spread on this
