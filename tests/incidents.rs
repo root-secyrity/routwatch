@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use routwatch::incidents::{detect, smear_between, smear_ms, Confidence, Kind, WINDOW_SECS};
+use routwatch::incidents::{detect, smear_in_window, Confidence, Kind, WINDOW_SECS};
 
 struct TempDir(PathBuf);
 
@@ -103,14 +103,14 @@ fn a_gap_past_the_window_splits_the_incident() {
 }
 
 #[test]
-fn two_faults_inside_the_smear_stay_unordered() {
+fn two_faults_in_the_same_second_stay_unordered() {
     let dir = TempDir::new();
     let events = dir.path("events.jsonl");
     write(
         &events,
         &[
             event_line(1000, "read", "failed"),
-            event_line(1001, "wan", "down"),
+            event_line(1000, "wan", "down"),
         ],
     );
     let src =
@@ -123,24 +123,53 @@ fn two_faults_inside_the_smear_stay_unordered() {
     }
 }
 
+/// The signal log sizes a smear, and a smear orders an event against a reading.
+/// It never orders (or unorders) two events: those carry their own stamps.
 #[test]
-fn a_wider_gap_in_the_signal_log_widens_the_refusal() {
+fn a_signal_gap_never_enters_an_event_pair() {
     let dir = TempDir::new();
     let events = dir.path("events.jsonl");
     let signal = dir.path("signal.jsonl");
-    write(&events, &[event_line(1000, "wan", "down")]);
-    // A five second gap between two rows: the smear cannot be narrower than what
-    // the log itself shows.
+    write(
+        &events,
+        &[
+            event_line(1000, "read", "failed"),
+            event_line(1000, "wan", "down"),
+        ],
+    );
     write(&signal, &[signal_line(500), signal_line(505)]);
     let src = routwatch::incidents::Source::load_from(&events, &signal, &dir.path("none"));
-    assert_eq!(smear_ms(&src), 5000);
-    // The smear that matters is the one bracketing the pair, and here the log does
-    // not reach the event at 1000 s at all.
-    assert_eq!(
-        smear_between(&[500_000, 505_000], 500_000, 505_000),
-        Some(5000)
+    // The whole log is a window too: two rows five seconds apart.
+    let at: Vec<u64> = src.signal.iter().map(|r| r.at_unix).collect();
+    assert_eq!(smear_in_window(&at, 0, u64::MAX), Some(5000));
+    let list = detect(&src);
+    assert_eq!(list.len(), 2);
+    for inc in &list {
+        let caveat = inc
+            .caveat
+            .as_deref()
+            .expect("the same second is still open");
+        assert!(caveat.contains("same stamp"), "{caveat}");
+        assert!(
+            !caveat.contains("5000"),
+            "the signal gap is not the reason: {caveat}"
+        );
+    }
+
+    // Forty seconds apart, with the same five second signal gap: ordered.
+    write(
+        &events,
+        &[
+            event_line(1000, "read", "failed"),
+            event_line(1040, "wan", "down"),
+        ],
     );
-    assert_eq!(smear_between(&[500_000, 505_000], 500_000, 1_000_000), None);
+    let src = routwatch::incidents::Source::load_from(&events, &signal, &dir.path("none"));
+    let list = detect(&src);
+    assert_eq!(list.len(), 2);
+    for inc in &list {
+        assert!(inc.caveat.is_none(), "{:?}", inc.caveat);
+    }
 }
 
 #[test]

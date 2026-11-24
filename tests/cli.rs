@@ -474,6 +474,136 @@ fn temp_data_home(name: &str) -> TempDataHome {
     TempDataHome(d)
 }
 
+/// A usage ledger written by hand, so the budget report has a fixed month to
+/// read. The bytes are the shape `usage.rs` persists; nothing here is measured.
+fn write_ledger(home: &std::path::Path, body: &str) {
+    let dir = home.join("routwatch");
+    std::fs::create_dir_all(&dir).expect("ledger dir");
+    let path = dir.join("usage.json");
+    std::fs::write(&path, body).expect("write ledger");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod dir");
+}
+
+/// One month of the reference ledger: 2 GB used over a two hour window that
+/// was watched the whole time, so a rate exists and the coverage is measured.
+const LEDGER_TWO_HOURS: u64 = 1_790_000_000;
+
+fn ledger_body(used: u64, reset_at: u64, last_at: u64) -> String {
+    format!(
+        r#"{{"version":1,"base_bytes":1000000000,"reset_at":{reset_at},"source":0,"cycle_start":20780,"last_at":{last_at},"last_dl":0,"last_ul":0,"last_total":{},"thr_80":false,"thr_95":false,"days":[],"gaps":[]}}"#,
+        1_000_000_000 + used
+    )
+}
+
+#[test]
+fn the_budget_command_reports_the_ledger() {
+    let home = temp_data_home("budget-text");
+    let base = LEDGER_TWO_HOURS;
+    write_ledger(&home, &ledger_body(2_000_000_000, base, base + 7200));
+    let cfg = config("budget-text", 2000);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .args(["--config", cfg.to_str().expect("path"), "budget"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("Budget · 100 GB"), "{}", text);
+    assert!(text.contains("used 1.9 GB of 100 GB"), "{}", text);
+    assert!(text.contains("rate "), "{}", text);
+    assert!(text.contains("/day"), "{}", text);
+    assert!(text.contains("coverage measured"), "{}", text);
+    assert!(text.contains("watched of"), "{}", text);
+}
+
+#[test]
+fn the_budget_command_needs_no_config() {
+    let home = temp_data_home("budget-nocfg");
+    let base = LEDGER_TWO_HOURS;
+    write_ledger(&home, &ledger_body(2_000_000_000, base, base + 7200));
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["budget"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    // The default must say it is a default: a limit read from nowhere is not
+    // the configured limit and must not look like it.
+    assert!(text.contains("default: no config file"), "{}", text);
+    assert!(text.contains("Budget · 100 GB"), "{}", text);
+}
+
+#[derive(serde::Deserialize)]
+struct BudgetJson {
+    used_bytes: u64,
+    budget_gb: u64,
+    budget_bytes: u64,
+    percent: f64,
+    window_secs: u64,
+    watched_secs: u64,
+    coverage: String,
+    per_day_bytes: Option<u64>,
+    days_left: Option<u32>,
+    over: bool,
+    as_of: String,
+    budget_default: bool,
+}
+
+#[test]
+fn the_budget_command_json_parses() {
+    let home = temp_data_home("budget-json");
+    let base = LEDGER_TWO_HOURS;
+    write_ledger(&home, &ledger_body(2_000_000_000, base, base + 7200));
+    let cfg = config("budget-json", 2000);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .args(["--config", cfg.to_str().expect("path"), "budget", "--json"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let r: BudgetJson = serde_json::from_str(&stdout(&out)).expect("the twelve keys parse");
+    assert_eq!(r.used_bytes, 2_000_000_000);
+    assert_eq!(r.budget_gb, 100);
+    assert_eq!(r.budget_bytes, 100 * 1024 * 1024 * 1024);
+    assert_eq!(r.window_secs, 7200);
+    assert_eq!(r.watched_secs, 7200);
+    assert_eq!(r.coverage, "measured");
+    assert_eq!(r.per_day_bytes, Some(24_000_000_000));
+    assert_eq!(r.days_left, Some(5));
+    assert!(!r.over);
+    assert!(!r.budget_default);
+    assert!(r.percent > 1.8 && r.percent < 1.9, "{}", r.percent);
+    assert!(!r.as_of.is_empty());
+}
+
+#[test]
+fn the_budget_command_opens_no_session() {
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let home = temp_data_home("budget-offline");
+    let base = LEDGER_TWO_HOURS;
+    write_ledger(&home, &ledger_body(2_000_000_000, base, base + 7200));
+    let cfg = config_for(&addr.to_string());
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .args(["--config", cfg.to_str().expect("path"), "budget", "--json"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    // The ledger is on disk and the report is arithmetic over it, so nothing
+    // waited on the router socket when the command returned.
+    assert!(
+        listener.accept().is_err(),
+        "budget opened a session to {addr}"
+    );
+}
+
 #[test]
 fn history_lists_without_a_config_or_a_network() {
     let home = temp_data_home("hist");
@@ -1064,4 +1194,403 @@ fn a_report_names_an_incident_and_can_hide_its_detail() {
         "{}",
         stderr(&out)
     );
+}
+
+fn cells_file(home: &std::path::Path) -> PathBuf {
+    home.join("routwatch/cells.json")
+}
+
+fn cell_row(band: &str, pci: u16, earfcn: u32, last_seen: u64) -> routwatch::cells::CellRecord {
+    routwatch::cells::CellRecord {
+        band: band.to_string(),
+        pci,
+        earfcn_dl: Some(earfcn),
+        earfcn_ul: Some(earfcn + 18_000),
+        tac: Some(516),
+        first_seen: last_seen - 86_400,
+        last_seen,
+        rows: 7,
+        best_sinr: Some(9),
+        best_sinr_at: Some(last_seen - 10),
+        earfcn_unknown: false,
+    }
+}
+
+fn write_cells(home: &std::path::Path, records: &[routwatch::cells::CellRecord]) {
+    let p = cells_file(home);
+    std::fs::create_dir_all(p.parent().expect("parent")).expect("data dir");
+    std::fs::write(&p, serde_json::to_string_pretty(records).expect("json")).expect("cells");
+}
+
+#[test]
+fn cells_list_on_an_empty_home_prints_zero_unique() {
+    let home = temp_data_home("cells-empty");
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells", "list"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "Cells · 0 unique\n", "{}", stdout(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
+#[test]
+fn cells_list_prints_the_newest_cell_first() {
+    let home = temp_data_home("cells-order");
+    // The file is written oldest first on purpose: the order on screen must come
+    // from last_seen, not from the order the records happen to sit in.
+    write_cells(
+        &home,
+        &[
+            cell_row("B3", 395, 300, 1_700_000_000),
+            cell_row("B1", 481, 100, 1_700_090_000),
+        ],
+    );
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells", "list"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("Cells · 2 unique\n"), "{text}");
+    let b1 = text.find("B1").expect("B1 row");
+    let b3 = text.find("B3").expect("B3 row");
+    assert!(b1 < b3, "the newest last_seen comes first:\n{text}");
+    assert!(text.contains("481"), "{text}");
+    assert!(text.contains("9 dB"), "best_sinr is whole dB here: {text}");
+    assert!(
+        !text.contains("cap 64"),
+        "two cells are below the cap: {text}"
+    );
+}
+
+#[test]
+fn cells_list_json_round_trips_into_cellrecord() {
+    let home = temp_data_home("cells-json");
+    let rows = vec![
+        cell_row("B1", 481, 100, 1_700_090_000),
+        cell_row("B3", 395, 300, 1_700_000_000),
+    ];
+    write_cells(&home, &rows);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells", "list", "--json"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let parsed: Vec<routwatch::cells::CellRecord> =
+        serde_json::from_str(&stdout(&out)).expect("the output parses back into CellRecord");
+    assert_eq!(parsed, rows, "the JSON is the record, key for key");
+}
+
+#[test]
+fn cells_without_a_subcommand_is_a_usage_error() {
+    let home = temp_data_home("cells-usage");
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells"])
+        .output()
+        .expect("run");
+    // 3 is this project's usage failure (clap's 2 means a network error here).
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+}
+
+#[test]
+fn cells_list_never_opens_a_router_session() {
+    let home = temp_data_home("cells-offline");
+    write_cells(&home, &[cell_row("B1", 481, 100, 1_700_090_000)]);
+    // TEST-NET-1 answers nothing: a run that tried to log in would fail here.
+    let cfg = config_for("192.0.2.1");
+    let mut cmd = bin();
+    cmd.env("XDG_DATA_HOME", &*home)
+        .arg("--config")
+        .arg(&*cfg)
+        .args(["cells", "list"]);
+    let out = cmd.output().expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with("Cells · 1 unique\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
+/// An event log written by hand, in the file's own line-delimited shape, so the
+/// reader is tested without a collection run.
+fn write_change_log(home: &std::path::Path, rows: &[routwatch::events::ObsEvent]) {
+    let dir = home.join("routwatch");
+    std::fs::create_dir_all(&dir).expect("events dir");
+    let path = dir.join("events.jsonl");
+    let mut body = String::new();
+    for r in rows {
+        body.push_str(&serde_json::to_string(r).expect("json"));
+        body.push('\n');
+    }
+    std::fs::write(&path, body).expect("events");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+}
+
+fn a_cell_row(at: u64) -> routwatch::events::ObsEvent {
+    routwatch::events::ObsEvent::new(
+        routwatch::events::EventKind::Cell,
+        "signal",
+        at,
+        "changed",
+        Some("earfcn_dl 100 pci 481 -> earfcn_dl 300 pci 395 band B3 tac 516 held 2".into()),
+    )
+}
+
+#[test]
+fn cells_changes_prints_the_log_without_a_session() {
+    let home = temp_data_home("cells-changes");
+    write_change_log(
+        &home,
+        &[
+            a_cell_row(1_700_000_000),
+            routwatch::events::ObsEvent::new(
+                routwatch::events::EventKind::Tm,
+                "signal",
+                1_700_000_500,
+                "changed",
+                Some("earfcn_dl 100 pci 481 tm TM3 -> TM4".into()),
+            ),
+        ],
+    );
+    // TEST-NET-1 answers nothing: a run that tried to log in would fail here.
+    let cfg = config_for("192.0.2.1");
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .arg("--config")
+        .arg(&*cfg)
+        .args(["cells", "changes"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("Cell changes · 1\n"), "{text}");
+    // The id is the log's own time, so a later command can name this row.
+    assert!(text.contains("cell-1700000000"), "{text}");
+    assert!(
+        !text.contains("TM3"),
+        "a tm row is not a cell change: {text}"
+    );
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
+#[test]
+fn cells_changes_json_is_a_documented_array() {
+    let home = temp_data_home("cells-changes-json");
+    write_change_log(
+        &home,
+        &[a_cell_row(1_700_000_000), a_cell_row(1_700_090_000)],
+    );
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells", "changes", "--json"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&out)).expect("json array");
+    assert_eq!(rows.len(), 2);
+    // The newest row first, and the six keys the docs name.
+    assert_eq!(rows[0]["id"], "cell-1700090000");
+    for key in ["id", "at_unix", "at", "tier", "outcome", "detail"] {
+        assert!(rows[0].get(key).is_some(), "missing {key} in {}", rows[0]);
+    }
+}
+
+/// One row per 60 s slot, so a window of 600 s holds ten of them.
+fn a_signal_row(at: u64, sinr: f32) -> routwatch::signal_history::Row {
+    routwatch::signal_history::Row {
+        v: 1,
+        at_unix: at,
+        net_type: None,
+        band: Some("B3".into()),
+        nr_band: None,
+        rsrp_dbm: Some(-100.0),
+        rsrq_db: None,
+        sinr_db: Some(sinr),
+        pci: Some(481),
+        endc: None,
+        earfcn_dl: Some(100),
+        earfcn_ul: None,
+        tm: None,
+    }
+}
+
+fn write_signal_log(home: &std::path::Path, rows: &[routwatch::signal_history::Row]) {
+    let dir = home.join("routwatch");
+    std::fs::create_dir_all(&dir).expect("signal dir");
+    let mut body = String::new();
+    for r in rows {
+        body.push_str(&serde_json::to_string(r).expect("json"));
+        body.push('\n');
+    }
+    std::fs::write(dir.join("signal-history.jsonl"), body).expect("signal log");
+}
+
+/// Ten rows inside each 600 s side, all on one cell, SINR 10 rising to 15.
+fn a_signal_step(home: &std::path::Path, t0: u64) {
+    let mut rows = Vec::new();
+    for i in 0..10u64 {
+        rows.push(a_signal_row(t0 - 600 + i * 60, 10.0));
+        rows.push(a_signal_row(t0 + 60 + i * 60, 15.0));
+    }
+    write_signal_log(home, &rows);
+}
+
+#[test]
+fn the_compare_command_prints_a_segment() {
+    let home = temp_data_home("compare-segment");
+    let t0 = 1_700_003_000u64;
+    write_change_log(&home, &[a_cell_row(t0)]);
+    a_signal_step(&home, t0);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args([
+            "compare",
+            "--around",
+            &format!("cell-{t0}"),
+            "--window",
+            "600",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.starts_with(&format!("compare cell-{t0} · cell at ")),
+        "{text}"
+    );
+    assert!(text.contains("segment 1 · earfcn_dl 100 pci 481"), "{text}");
+    assert!(text.contains("sinr +5.0 dB"), "{text}");
+    assert!(text.contains("class: improved"), "{text}");
+    assert!(text.contains("10 rows"), "{text}");
+}
+
+#[test]
+fn the_compare_json_names_the_segments() {
+    let home = temp_data_home("compare-json");
+    let t0 = 1_700_004_000u64;
+    write_change_log(&home, &[a_cell_row(t0)]);
+    a_signal_step(&home, t0);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args([
+            "compare",
+            "--around",
+            &format!("cell-{t0}"),
+            "--window",
+            "600",
+            "--json",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    assert_eq!(v["event_id"], format!("cell-{t0}"));
+    assert_eq!(v["window_secs"], 600);
+    assert_eq!(v["segments"][0]["before"]["rows"], 10);
+    assert_eq!(v["segments"][0]["class"], "improved");
+}
+
+#[test]
+fn an_unknown_event_id_exits_with_usage() {
+    let home = temp_data_home("compare-unknown");
+    write_change_log(&home, &[a_cell_row(1_700_005_000)]);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["compare", "--around", "cell-1700000000"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("is not in the current event log"), "{err}");
+}
+
+#[test]
+fn the_compare_command_opens_no_session() {
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let home = temp_data_home("compare-offline");
+    let t0 = 1_700_006_000u64;
+    write_change_log(&home, &[a_cell_row(t0)]);
+    a_signal_step(&home, t0);
+    let cfg = config_for(&addr.to_string());
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .args([
+            "--config",
+            cfg.to_str().expect("path"),
+            "compare",
+            "--around",
+            &format!("cell-{t0}"),
+            "--window",
+            "600",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        listener.accept().is_err(),
+        "compare opened a session to {addr}"
+    );
+}
+
+#[test]
+fn a_compare_with_no_speed_log_says_so() {
+    let home = temp_data_home("compare-no-speed");
+    let t0 = 1_700_007_000u64;
+    write_change_log(&home, &[a_cell_row(t0)]);
+    a_signal_step(&home, t0);
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args([
+            "compare",
+            "--around",
+            &format!("cell-{t0}"),
+            "--window",
+            "600",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("download -"), "{text}");
+    assert!(text.contains("missing: speed"), "{text}");
+}
+
+#[test]
+fn cells_changes_window_keeps_the_tail_of_the_log() {
+    let home = temp_data_home("cells-changes-window");
+    write_change_log(
+        &home,
+        &[a_cell_row(1_700_000_000), a_cell_row(1_700_090_000)],
+    );
+    let out = bin()
+        .env("XDG_DATA_HOME", &*home)
+        .env("XDG_CONFIG_HOME", NO_CONFIG)
+        .args(["cells", "changes", "--window", "3600"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("Cell changes · 1\n"), "{text}");
+    assert!(text.contains("cell-1700090000"), "{text}");
 }

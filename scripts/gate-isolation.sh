@@ -18,12 +18,39 @@
 #      the reason printed, while the app is live: the TUI appends one signal row
 #      a minute, which would move the file under the comparison.
 #
+# One run at a time. Two concurrent runs share the cargo target directory and
+# hand each other the same data homes, so one run's write lands in the other
+# run's fingerprint and the gate reports a leak nobody made. The lock sits
+# outside the repository on purpose: an untracked file inside it would fail the
+# clean-tree gate. It is a directory because mkdir is atomic, and it holds the
+# owner's pid so a run killed by a signal does not lock the gate for good.
+#
+# Part C is skipped only when the caller says so. A skip that still exits 0 is a
+# gate that never ran, so the default is to fail and name the reason.
+#
 # Usage: scripts/gate-isolation.sh [extra cargo test args]
 set -uo pipefail
 
-logs=(signal-history.jsonl speed-history.jsonl events.jsonl privacy-baseline.json)
+logs=(signal-history.jsonl speed-history.jsonl events.jsonl privacy-baseline.json cells.json)
+tmp=""
+lock="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/routwatch-gate-isolation.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+  owner="$(cat "$lock/pid" 2>/dev/null)"
+  if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+    echo "isolation: another run holds $lock (pid $owner); refusing to share the data homes"
+    exit 1
+  fi
+  # The holder is gone: killed, or a machine that rebooted with the lock in
+  # place. Take it over rather than leave the gate unrunnable.
+  rm -rf "$lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    echo "isolation: cannot take over $lock"
+    exit 1
+  fi
+fi
+printf '%s\n' "$$" >"$lock/pid"
+trap 'rm -rf "$tmp" "$lock"' EXIT
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/rw-isolation-XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
 
 fingerprint() {
   local dir="$1" out="$2"
@@ -77,10 +104,15 @@ echo "isolation: an empty data home stayed empty"
 # ---- C. real
 data="${XDG_DATA_HOME:-$HOME/.local/share}/routwatch"
 if pgrep -x routwatch >/dev/null 2>&1; then
-  echo "isolation: part C skipped: routwatch is running (pid $(pgrep -x routwatch | tr '\n' ' '))"
+  if [ "${ROUTWATCH_ISOLATION_ALLOW_LIVE:-0}" = "1" ]; then
+    echo "isolation: part C skipped on request: routwatch is running (pid $(pgrep -x routwatch | tr '\n' ' '))"
+    echo "isolation:   ROUTWATCH_ISOLATION_ALLOW_LIVE=1 was set, so this run does not claim the real-directory check."
+    exit 0
+  fi
+  echo "isolation: part C cannot run: routwatch is running (pid $(pgrep -x routwatch | tr '\n' ' '))"
   echo "isolation:   it appends one signal row a minute, so the comparison cannot be trusted."
-  echo "isolation:   Close it and run this gate again for the real-directory check."
-  exit 0
+  echo "isolation:   Close it and run again, or set ROUTWATCH_ISOLATION_ALLOW_LIVE=1 to skip it knowingly."
+  exit 1
 fi
 fingerprint "$data" "$tmp/real-before"
 echo "→ cargo test --locked $* (real data home)"

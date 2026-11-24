@@ -2,6 +2,81 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
+## 0.10.0
+
+**The log remembers the cells, ranks its own smear, and a tenth tab reads the average**
+
+- **Two events are ordered by their own stamps, and the smear ranks only a reading against
+  a change**: the incident caveat and `compare` used the signal smear to refuse an order
+  between two events, which are two rows the log already stamped. A pair inside the same
+  second now says so instead (the log records whole seconds), the smear ranks a reading
+  against a change only, and `bands advise` prints "smear not measurable" rather than
+  `0 ms` when its window holds fewer than two reads, with `smear_ms` `null` in its JSON.
+- **The drift guard counts sampled minutes, not a span**: today must hold six hours of
+  distinct sampled minutes on the judged cell, so a day with two reads seven hours apart
+  is two minutes of coverage and the guard stays collecting. It names the span beside the
+  samples instead of trusting the gap between the first and last row.
+- **A tenth tab, Align, reads the average instead of one sample**: `0` opens it. The big
+  number is the 15 s moving average of the SINR reads, in its state colour, with an arrow
+  that moves only past 3.6 dB (three measured standard deviations of the spread on this
+  link), the session peak with the cell it was reached in (cleared when the PCI changes and
+  said so on screen), a one row strip of the last 30 s whose right edge is the newest read,
+  RSRP as a constraint, RSRQ as cell load, and TM and CQI as context. Nothing on it claims
+  to be instant or real-time: the measured cadence is 939 ms at the median and 1748 ms at
+  the 95th percentile, so a window holds reads, not seconds. No sweep shape is claimed.
+- **The incident smear is ranked inside its window, and a pause cannot widen it**: the
+  figure `compare` and `bands advise` quote is now the 95th percentile of the gaps between
+  the reads inside their own window, taken from a sorted copy, instead of the widest gap in
+  the log read in file order. A log whose rows were not stamped in order no longer reports
+  a smear of hours, and a window with fewer than two reads reports no smear rather than a
+  number the rows do not support.
+- **The observation log records a serving-cell change**: one `cell` row when the key
+  changes, held over two reads, with the key before and after, the band and the TAC the
+  read reported, and no verdict on the signal. It opens no incident and no cause, and
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` does not mute it: the switch keeps a file small, it does
+  not lose the timeline. `routwatch cells changes [--json] [--window SECS]` prints them.
+- **`routwatch compare --around ID` puts one cell beside itself**: two windows of 1800 s
+  from the local signal, speed and event logs, with the median and the 10th percentile, a
+  class past three measured standard deviations of noise, `insufficient` instead of a delta
+  when a side has under 10 rows or under half its window covered, and the download
+  difference only when both sides hold two speed reads. A key change inside the window
+  splits it, so two cells are never held against each other, and nothing is read from MCS.
+
+- **`routwatch budget [--json]`**: what this cycle spent, the limit, the pace the
+  ledger measured and how much of the window that pace was divided by, read from
+  the local ledger alone: no config file, no router session. With no config the
+  100 GB default is labelled a default (`budget_default`), so it cannot pass for a
+  configured limit. The Traffic panel prints the same two figures when the screen
+  has the room for them and keeps its reset row when it does not.
+- **The budget crossing is reported at 80% and 95%**: one `budget` row per
+  crossing, once per cycle, with the bytes, the limit and the coverage; the flags
+  are persisted so a restart does not repeat a row, and every restart of the
+  baseline clears them. The pace is projected from the watched part of the window
+  and says so (`measured`, `thin`, `insufficient`) instead of dividing by a window
+  that was partly unobserved.
+- **A weak CQI is marked where the CQI is already printed**: `CQI 6 weak` and
+  below, the number alone from 7, on all three lines that carry a CQI. The label
+  is a reading, never a cause.
+- **A transmission-mode change is a row in the observation log**: the TUI worker
+  writes it once the new value has been read twice in a row, and a read that names
+  a different cell resets the baseline instead of reporting one.
+- **`ROUTWATCH_DISABLE_SIGNAL_LOG=1` now silences the cells catalog too**: one
+  switch for both background records of the same read.
+- **`scripts/gate-isolation.sh` holds one run at a time**: concurrent runs shared
+  the data homes and the fingerprints, so a second run now exits with one line and
+  the lock carries its owner's pid. Part C no longer exits 0 with a skipped line
+  while the app is live; a skip must be asked for with
+  `ROUTWATCH_ISOLATION_ALLOW_LIVE=1`.
+- **`routwatch cells list`**: the serving cells this machine has read, newest first,
+  from `$XDG_DATA_HOME/routwatch/cells.json` (`0600`). A cell is keyed by downlink
+  ARFCN and PCI; a sample whose ARFCN did not parse becomes its own `earfcn_unknown`
+  record instead of a merge, and PCI alone is never a key. The store is capped at 64
+  cells, drops the least recently seen, is rewritten once a minute and immediately
+  when a cell is new, and carries no ranking, no best cell and no throughput
+  comparison: `--json` prints the records, `docs/headless.md` states the shape.
+  `docs/limits.md` states the key rule, the cap, the write cadence and why a
+  comparison is not offered yet.
+
 ## 0.9.3
 
 **The signal log remembers the cell, and the guard reads it back** (#74)

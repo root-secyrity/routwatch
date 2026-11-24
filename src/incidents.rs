@@ -172,59 +172,122 @@ impl Source {
     }
 }
 
-/// The widest gap the signal log itself shows, in milliseconds. Zero means the
-/// log holds fewer than two samples, so it brackets nothing on its own.
-pub fn smear_ms(src: &Source) -> u64 {
-    let mut worst = 0;
-    let mut prev: Option<u64> = None;
-    for row in &src.signal {
-        if let Some(p) = prev {
-            worst = worst.max(row.at_unix.saturating_sub(p) * 1000);
-        }
-        prev = Some(row.at_unix);
-    }
-    worst
-}
-
-/// The smear that covers two moments: the widest gap between the signal samples
-/// that bracket them. `None` means the samples do not reach both moments, so
-/// their order is unknown. Every argument is milliseconds, and `samples` must be
-/// sorted oldest first.
-pub fn smear_between(samples: &[u64], a: u64, b: u64) -> Option<u64> {
-    let lo = a.min(b);
-    let hi = a.max(b);
-    let last_before = samples.iter().rposition(|s| *s <= lo)?;
-    let first_after = samples.iter().position(|s| *s >= hi)?;
-    if first_after < last_before {
+/// The 95th percentile of a set of gaps, in milliseconds. `None` when there is
+/// nothing to rank. Sorts in place: the caller hands over a scratch vector.
+pub fn gap_p95(gaps: &mut [u64]) -> Option<u64> {
+    if gaps.is_empty() {
         return None;
     }
-    let mut worst = 0;
-    for pair in samples[last_before..=first_after].windows(2) {
-        worst = worst.max(pair[1] - pair[0]);
-    }
-    Some(worst)
+    gaps.sort_unstable();
+    Some(gaps[(gaps.len() * 95) / 100])
 }
 
-/// The sentence an incident carries when a second kind sits inside the smear of
-/// the pair. It always names the samples it was read from.
-fn caveat_for(kind: Kind, at_ms: u64, others: &[(Kind, u64)], samples: &[u64]) -> Option<String> {
-    for (other, at) in others.iter().filter(|(k, _)| *k != kind) {
-        let title = other.title();
-        match smear_between(samples, at_ms, *at) {
-            Some(smear) if at.abs_diff(at_ms) <= smear => {
-                return Some(format!(
-                    "a {title} happened within {smear} ms of this window; that is the widest \
-                     gap between the signal samples around both moments, so their order is not \
+/// The smear that covers a window: the 95th percentile gap between the samples
+/// inside it, in milliseconds, read off a sorted copy so a log written out of
+/// order measures the same. `None` when the window holds fewer than two samples
+/// or no positive gap, because zero would claim the order of a pair inside a
+/// hole is settled. `samples` is unix seconds and may arrive in any order.
+pub fn smear_in_window(samples: &[u64], since: u64, now: u64) -> Option<u64> {
+    let mut at: Vec<u64> = samples
+        .iter()
+        .copied()
+        .filter(|t| *t >= since && *t <= now)
+        .collect();
+    at.sort_unstable();
+    let mut gaps: Vec<u64> = at
+        .windows(2)
+        .map(|w| w[1].saturating_sub(w[0]) * 1000)
+        .filter(|g| *g > 0)
+        .collect();
+    gap_p95(&mut gaps)
+}
+
+/// Which two things are being ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairSide {
+    /// Two log events. Each carries its own stamp.
+    TwoEvents,
+    /// An event and a signal reading. The reading has no stamp of its own; the
+    /// signal samples around it bound how closely the log can place it.
+    EventAndReading,
+}
+
+/// What the log can say about the order of one pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairOrder {
+    /// The stamps settle it.
+    Known,
+    /// Both sides carry the same stamp: the log records whole seconds, so either
+    /// could have come first inside that second.
+    SameStamp,
+    /// An event and a reading no further apart than the measured smear: the
+    /// reading sits between two samples, so its side of the event cannot be read.
+    InsideSmear,
+    /// An event and a reading with no rankable gap in the window: there is no
+    /// number to compare against, and zero would claim the order it cannot know.
+    NoReads,
+}
+
+/// Order one pair. This is the only definition of "which came first": two
+/// events are ordered by their own stamps and the signal smear never enters that
+/// pair; an event against a reading is ordered only outside the smear of the
+/// window, and a window without two reads settles nothing. Every distance is
+/// whole milliseconds: dividing by 1000 would truncate a 2860 ms smear to 2 s
+/// and flip the verdict at the boundary.
+pub fn classify_pair(side: PairSide, a_ms: u64, b_ms: u64, smear_ms: Option<u64>) -> PairOrder {
+    if a_ms == b_ms {
+        return PairOrder::SameStamp;
+    }
+    match side {
+        PairSide::TwoEvents => PairOrder::Known,
+        PairSide::EventAndReading => match smear_ms {
+            None => PairOrder::NoReads,
+            // The boundary counts as inside: a pair exactly as far apart as the
+            // smear is not ordered by a log that cannot resolve better.
+            Some(smear) if a_ms.abs_diff(b_ms) <= smear => PairOrder::InsideSmear,
+            Some(_) => PairOrder::Known,
+        },
+    }
+}
+
+/// The clause an incident adds about a partner it cannot order. `None` when the
+/// pair is ordered. It names no cause in every branch, and the InsideSmear
+/// branch prints the measured smear instead of a constant.
+pub fn order_note(order: PairOrder, smear_ms: Option<u64>) -> Option<String> {
+    match order {
+        PairOrder::Known => None,
+        PairOrder::SameStamp => Some(
+            "carries the same stamp; the log records whole seconds, so the order is not \
+             resolvable and this incident names no cause"
+                .to_string(),
+        ),
+        PairOrder::InsideSmear => Some(match smear_ms {
+            Some(ms) => format!(
+                "falls inside the measured smear of {ms} ms, so the order is not resolvable and \
+                 this incident names no cause"
+            ),
+            // InsideSmear is only returned when the smear is known; the wording
+            // never prints a zero it did not measure.
+            None => "sits beside a change whose smear is not measurable, so the order is not \
                      resolvable and this incident names no cause"
-                ));
-            }
-            Some(_) => continue,
-            None => {
-                return Some(format!(
-                    "a {title} happened near this window and the signal log does not bracket \
-                     both moments, so their order is unknown and this incident names no cause"
-                ));
-            }
+                .to_string(),
+        }),
+        PairOrder::NoReads => Some(
+            "sits in a window with fewer than two reads, so no gap can rank the pair, and this \
+             incident names no cause"
+                .to_string(),
+        ),
+    }
+}
+
+/// The sentence an incident carries when a second kind cannot be ordered against
+/// it. Every partner here is an event or a speed row, so each carries its own
+/// stamp and only the same second leaves the order open.
+fn caveat_for(kind: Kind, at_ms: u64, others: &[(Kind, u64)]) -> Option<String> {
+    for (other, at) in others.iter().filter(|(k, _)| *k != kind) {
+        let order = classify_pair(PairSide::TwoEvents, at_ms, *at, None);
+        if let Some(note) = order_note(order, None) {
+            return Some(format!("a {} event {note}", other.title()));
         }
     }
     None
@@ -232,8 +295,6 @@ fn caveat_for(kind: Kind, at_ms: u64, others: &[(Kind, u64)], samples: &[u64]) -
 
 /// Group the logs into incidents. Pure: same input, same output.
 pub fn detect(src: &Source) -> Vec<Incident> {
-    let mut samples: Vec<u64> = src.signal.iter().map(|r| r.at_unix * 1000).collect();
-    samples.sort_unstable();
     let mut rows: Vec<(Kind, u64, String)> = Vec::new();
     for e in &src.events {
         let Some(kind) = Kind::parse(&e.kind) else {
@@ -297,7 +358,7 @@ pub fn detect(src: &Source) -> Vec<Incident> {
         )
         .collect();
     for inc in out.iter_mut() {
-        inc.caveat = caveat_for(inc.kind, inc.start_unix * 1000, &others, &samples);
+        inc.caveat = caveat_for(inc.kind, inc.start_unix * 1000, &others);
     }
     out
 }
@@ -362,6 +423,69 @@ mod tests {
         assert!(detect(&src(vec![ev(EventKind::Wan, "up", 100)])).is_empty());
     }
 
+    /// The log is written by one thread but read by a command that may sort it
+    /// first: the smear is a measurement of the window, so order must not move
+    /// it.
+    #[test]
+    fn a_mixed_order_log_measures_the_same_as_a_sorted_one() {
+        let sorted = [0, 10, 20, 30];
+        let mixed = [20, 0, 30, 10];
+        assert_eq!(
+            smear_in_window(&mixed, 0, 30),
+            smear_in_window(&sorted, 0, 30)
+        );
+        assert_eq!(smear_in_window(&sorted, 0, 30), Some(10_000));
+    }
+
+    /// The overnight hole in the real log is 16 hours wide: an event read inside
+    /// the day must not inherit it.
+    #[test]
+    fn a_gap_outside_the_window_does_not_enter() {
+        let samples = [0, 57_600, 57_660];
+        assert_eq!(
+            smear_in_window(&samples, 57_600, 57_660),
+            Some(60_000),
+            "the 16 hour hole sits before the window"
+        );
+    }
+
+    /// The max is what made every event look unresolved: a 58 000 s overnight gap
+    /// outranked every real cadence gap. One outlier must not win the rank.
+    #[test]
+    fn the_rank_is_the_95th_percentile_not_the_widest_gap() {
+        let mut samples: Vec<u64> = (0..100).map(|i| i * 10).collect();
+        samples.push(1_990);
+        let smear = smear_in_window(&samples, 0, 1_990).expect("a hundred gaps");
+        assert_eq!(smear, 10_000, "99 short gaps outrank the one 1000 s gap");
+    }
+
+    #[test]
+    fn one_sample_or_none_is_unmeasurable() {
+        assert_eq!(smear_in_window(&[], 0, 100), None);
+        assert_eq!(smear_in_window(&[50], 0, 100), None);
+        assert_eq!(
+            smear_in_window(&[50, 50], 0, 100),
+            None,
+            "two rows in the same second bound nothing"
+        );
+        assert_eq!(smear_in_window(&[200, 300], 0, 100), None, "both outside");
+    }
+
+    /// A cell change is context for everything read after it, never a fault: the
+    /// log can carry one and the incident list still comes back empty.
+    #[test]
+    fn a_cell_change_alone_opens_no_incident() {
+        assert_eq!(Kind::parse("cell"), None);
+        let loaded = src(vec![ObsEvent::new(
+            EventKind::Cell,
+            "signal",
+            100,
+            "changed",
+            Some("earfcn_dl 100 pci 481 -> earfcn_dl 300 pci 395 band B3 tac 516 held 2".into()),
+        )]);
+        assert!(detect(&loaded).is_empty());
+    }
+
     #[test]
     fn the_same_fault_twice_in_the_window_is_one_incident() {
         let out = detect(&src(vec![
@@ -392,75 +516,100 @@ mod tests {
     }
 
     #[test]
-    fn a_pair_inside_the_smear_is_never_ordered() {
+    fn two_kinds_in_the_same_second_are_not_ordered() {
         let out = detect(&src(vec![
             ev(EventKind::ReadFail, "failed", 1000),
-            ev(EventKind::Wan, "down", 1001),
+            ev(EventKind::Wan, "down", 1000),
         ]));
         assert_eq!(out.len(), 2, "two kinds are two incidents");
         for inc in &out {
-            let caveat = inc.caveat.as_deref().expect("the smear must be stated");
+            let caveat = inc
+                .caveat
+                .as_deref()
+                .expect("the same stamp must be stated");
+            assert!(caveat.contains("same stamp"), "{caveat}");
             assert!(caveat.contains("no cause"), "{caveat}");
             assert!(!caveat.contains("caused"));
         }
     }
 
+    /// Two events carry their own stamps, so one second apart is ordered. The
+    /// signal log is empty here on purpose: a log with no reads used to turn this
+    /// pair into "the samples do not bracket both moments".
     #[test]
-    fn the_same_gap_with_500ms_samples_is_ordered() {
-        let smear = smear_between(&[100_000, 100_500, 101_000], 100_000, 101_000);
-        assert_eq!(smear, Some(500), "the widest bracketing gap, in ms");
-        let caveat = caveat_for(
-            Kind::Read,
-            100_000,
-            &[(Kind::Wan, 101_000)],
-            &[100_000, 100_500, 101_000],
-        );
-        assert!(
-            caveat.is_none(),
-            "a thousand ms apart is wider than a 500 ms gap, so the order holds"
-        );
+    fn two_events_a_second_apart_are_ordered() {
+        let out = detect(&src(vec![
+            ev(EventKind::ReadFail, "failed", 1000),
+            ev(EventKind::Wan, "down", 1001),
+        ]));
+        assert_eq!(out.len(), 2);
+        for inc in &out {
+            assert!(
+                inc.caveat.is_none(),
+                "stamps a second apart settle the order: {:?}",
+                inc.caveat
+            );
+        }
     }
 
     #[test]
-    fn the_same_gap_with_3000ms_samples_is_unknown() {
-        let caveat = caveat_for(
-            Kind::Read,
-            100_000,
-            &[(Kind::Wan, 101_000)],
-            &[100_000, 103_000],
-        )
-        .expect("a 1000 ms pair inside a 3000 ms gap cannot be ordered");
-        assert!(caveat.contains("within 3000 ms"), "{caveat}");
-        assert!(caveat.contains("no cause"), "{caveat}");
-    }
-
-    #[test]
-    fn missing_samples_mean_no_cause() {
-        let caveat = caveat_for(Kind::Read, 100_000, &[(Kind::Wan, 101_000)], &[])
-            .expect("an unbracketed pair still states the limit");
-        assert!(caveat.contains("does not bracket"), "{caveat}");
-        assert!(caveat.contains("no cause"), "{caveat}");
-        assert_eq!(smear_between(&[], 1, 2), None, "no sample reaches the pair");
+    fn the_classifier_orders_each_side_by_its_own_rule() {
+        // Two events: their stamps settle it, whatever the smear says.
         assert_eq!(
-            smear_between(&[100_000], 100_000, 101_000),
-            None,
-            "one sample brackets one moment only"
+            classify_pair(PairSide::TwoEvents, 100_000, 130_000, Some(61_000)),
+            PairOrder::Known
+        );
+        assert_eq!(
+            classify_pair(PairSide::TwoEvents, 100_000, 100_000, Some(61_000)),
+            PairOrder::SameStamp
+        );
+        // An event against a reading: inside the smear is open, outside is not.
+        assert_eq!(
+            classify_pair(PairSide::EventAndReading, 100_000, 130_000, Some(61_000)),
+            PairOrder::InsideSmear
+        );
+        assert_eq!(
+            classify_pair(PairSide::EventAndReading, 100_000, 220_000, Some(61_000)),
+            PairOrder::Known
         );
     }
 
     #[test]
-    fn the_printed_smear_is_the_measured_one() {
-        let caveat = caveat_for(
-            Kind::Read,
-            100_000,
-            &[(Kind::Wan, 101_000)],
-            &[100_000, 102_740],
-        )
-        .expect("the pair is inside the gap");
-        assert!(caveat.contains("within 2740 ms"), "{caveat}");
+    fn the_smear_boundary_counts_as_inside() {
+        assert_eq!(
+            classify_pair(PairSide::EventAndReading, 0, 61_000, Some(61_000)),
+            PairOrder::InsideSmear,
+            "a pair exactly as far apart as the smear is not ordered"
+        );
+        assert_eq!(
+            classify_pair(PairSide::EventAndReading, 0, 61_001, Some(61_000)),
+            PairOrder::Known
+        );
+    }
+
+    #[test]
+    fn a_window_without_two_reads_settles_nothing() {
+        assert_eq!(
+            classify_pair(PairSide::EventAndReading, 0, 61_000, None),
+            PairOrder::NoReads
+        );
+        let note = order_note(PairOrder::NoReads, None).expect("a limit must be stated");
+        assert!(note.contains("fewer than two reads"), "{note}");
         assert!(
-            !caveat.contains("2860"),
-            "no constant may stand in for the samples: {caveat}"
+            !note.chars().any(|c| c.is_ascii_digit()),
+            "no invented number: {note}"
+        );
+    }
+
+    #[test]
+    fn the_same_second_note_carries_no_smear_number() {
+        let caveat = caveat_for(Kind::Read, 100_000, &[(Kind::Wan, 100_000)])
+            .expect("the same stamp leaves the order open");
+        assert!(caveat.contains("whole seconds"), "{caveat}");
+        assert!(caveat.contains("no cause"), "{caveat}");
+        assert!(
+            !caveat.contains("2860") && !caveat.contains(" ms"),
+            "two events name no smear: {caveat}"
         );
     }
 
@@ -486,7 +635,7 @@ mod tests {
     #[test]
     fn a_speed_row_inside_a_window_is_evidence_not_a_cause() {
         let mut entry = history::Entry::blank();
-        entry.started_unix = 1002;
+        entry.started_unix = 1000;
         entry.status = history::Status::Partial;
         let src = Source {
             events: vec![ev(EventKind::Wan, "down", 1000)],
@@ -500,7 +649,10 @@ mod tests {
             .find(|i| i.kind == Kind::Speed)
             .expect("the unfinished test must appear");
         assert_eq!(speed.evidence, 1);
-        assert!(speed.caveat.is_some(), "two kinds inside the smear");
+        assert!(
+            speed.caveat.as_deref().unwrap_or("").contains("same stamp"),
+            "two rows in one second cannot be ordered"
+        );
         assert!(!speed.caveat.as_deref().unwrap().contains("because"));
     }
 

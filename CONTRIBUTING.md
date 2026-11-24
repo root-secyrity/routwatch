@@ -56,12 +56,16 @@ build that must stay under 10 MiB, plus the same source in five containers
 (debian 12, ubuntu 22.04, ubuntu 24.04, fedora 41, alpine 3.20) to catch a libc
 or toolchain surprise early.
 
-`make test` currently runs 633 unit + 31 binary + 97 CLI tests (the CLI files are
+`make test` currently runs 716 unit + 32 binary + 117 CLI tests (the CLI files are
 published; the unit tests read `fixtures/`). That number is a promise:
 change it here, in the same PR that changes the count. It counts what passed:
 the library target lists one more than it runs because `src/speedtest.rs` carries
 one `#[ignore]`d live test, and `tests/live_probe.rs` carries nine, so the CLI
 figure excludes them.
+
+One test suite at a time: two concurrent runs share the `target/` directory and the
+data home a suite settles on, which is why `scripts/gate-isolation.sh` says so at
+its top. Run them in sequence when you gate a round.
 
 ## What CI cannot check
 

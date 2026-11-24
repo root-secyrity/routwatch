@@ -25,7 +25,7 @@ identifiers are placeholders. The other eight sections are in
 
 | Route | Command |
 |---|---|
-| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.9.3/routwatch-0.9.3-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.9.3-1-x86_64.pkg.tar.zst` |
+| Arch package, no build | `curl -LO https://github.com/root-secyrity/routwatch/releases/download/v0.10.0/routwatch-0.10.0-1-x86_64.pkg.tar.zst && sudo pacman -U routwatch-0.10.0-1-x86_64.pkg.tar.zst` |
 | Static musl binary | [routwatch-x86_64-linux-musl](https://github.com/root-secyrity/routwatch/releases/latest/download/routwatch-x86_64-linux-musl) - links nothing, runs on Arch, Debian, Ubuntu, Fedora, Alpine, Raspberry Pi OS |
 | Any distro, from source | `git clone https://github.com/root-secyrity/routwatch.git && cd routwatch && sudo make install` |
 | Windows 10/11, via WSL2 | no separate build: install the static binary inside WSL ([details](docs/platforms.md#windows)) |
@@ -220,6 +220,10 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
 
 - **5G per-field metrics can be empty** on some firmware: the signal panel shows
   the bars and says which `nr` fields did arrive rather than inventing dBm.
+- **The Align tab averages reads, not time**: the tenth tab (`0`) shows a 15 s SINR
+  average, its direction past a 3.6 dB deadband, and a session peak that clears when the
+  serving cell changes. It is a reading, not a sweep: what a rotating antenna does to that
+  average is unmeasured, so nothing on the tab is labelled as one.
 - **The budget starts at a baseline**: `budget_gb` is compared against traffic
   since a baseline that `b` resets and the billing cycle moves. The router's own
   month counter is used when the firmware answers it; otherwise the lifetime
@@ -244,12 +248,33 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
   process closes its own session on every exit path, but a `SIGKILL` cannot run
   that, so a killed run leaves its session until the firmware frees it, which
   took 259 s after the last read on this machine.
+- **The cells catalog is a store, not a judgement**: `$XDG_DATA_HOME/routwatch/cells.json`
+  (`0600`, at most 64 cells) keeps one row per serving cell this machine read, keyed by
+  downlink ARFCN and PCI, and `routwatch cells list` prints them newest first. It never
+  ranks them, never picks a best cell and never compares throughput across cells: that
+  comparison has no measurement behind it yet, so the command prints what was seen and
+  nothing more. The rules are in [`docs/limits.md`](docs/limits.md).
+- **A cell change is logged, and can be compared with itself**: when the serving cell
+  changes, the observation log gets one `cell` row after the new key is read twice in a
+  row, and `routwatch cells changes` prints those rows. `routwatch compare --around ID`
+  then compares that one cell with itself on either side of the event, over the signal log
+  and the speed log already on disk: no router, no network, no cross-cell difference. It
+  prints medians and a 10th percentile, calls a move real only past three measured
+  standard deviations, and says `insufficient` instead of guessing when a side is thin.
+  The observation log keeps recording when `ROUTWATCH_DISABLE_SIGNAL_LOG=1` mutes the
+  minute log.
+- **The month's burn can be read without the screen**: `routwatch budget` reads
+  the local usage ledger and prints what the cycle used, the limit, the pace the
+  ledger measured and how much of the window it was divided by; `--json` is the
+  same figures for a script. It needs no config file and opens no router session,
+  and it states the coverage instead of implying the rate is exact.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
   (`0600`, three days of rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`
-  turns the log off. The same rows feed `routwatch antenna worth`, which says whether
-  the cell is limited by how much arrives or by how clean it arrives, and the drift
-  guard, which says when today is worse than this cell's own last days.
+  turns the log off, and the cells catalog below with it. The same rows feed
+  `routwatch antenna worth`, which says whether the cell is limited by how much
+  arrives or by how clean it arrives, and the drift guard, which says when today
+  is worse than this cell's own last days.
 
 The rest, including the `100006` band-write code, the small-terminal order and the
 retired graph styles, are stated in [`docs/limits.md`](docs/limits.md). Nothing there

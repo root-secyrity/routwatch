@@ -968,6 +968,7 @@ mod tests {
     /// router's own counters, not a guess.
     #[test]
     fn collect_reads_the_month_counters() {
+        let _home = crate::test_env::isolate_data_home("mock-quota");
         let (mock, mut client) = signed_in(Profile::Quota);
         let snap = headless::collect(&mut client, mock.addr()).expect("collect");
         let q = snap.quota.expect("the mock answers month_statistics");
@@ -980,6 +981,7 @@ mod tests {
     /// as a real counter.
     #[test]
     fn the_default_profile_reports_no_quota() {
+        let _home = crate::test_env::isolate_data_home("mock-no-quota");
         let (mock, mut client) = signed_in(Profile::H122373);
         let snap = headless::collect(&mut client, mock.addr()).expect("collect");
         assert!(snap.quota.is_none());
@@ -994,6 +996,7 @@ mod tests {
     /// recorded gap is the month counter, which this firmware does not have.
     #[test]
     fn a_full_profile_produces_a_complete_snapshot() {
+        let _home = crate::test_env::isolate_data_home("mock-full");
         let (mock, mut client) = signed_in(Profile::H122373);
         let snap = headless::collect(&mut client, mock.addr()).expect("collect");
 
@@ -1008,6 +1011,7 @@ mod tests {
     /// with no explanation is drawn as "0 clients".
     #[test]
     fn a_hidden_client_list_is_recorded_not_zeroed() {
+        let _home = crate::test_env::isolate_data_home("mock-no-host-list");
         let (mock, mut client) = signed_in(Profile::NoHostList);
         let snap = headless::collect(&mut client, mock.addr()).expect("collect");
 

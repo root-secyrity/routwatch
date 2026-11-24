@@ -198,13 +198,16 @@ pub fn collect_traced(
     // Best effort, and silent on purpose: a log that cannot be written must not
     // fail a `status` the user asked for. `ROUTWATCH_DISABLE_SIGNAL_LOG` is the
     // switch a script that reads every second needs.
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     if std::env::var_os("ROUTWATCH_DISABLE_SIGNAL_LOG").is_none() {
         if let Some(path) = signal_history::path() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            let _ = signal_history::record_if_due(&snap, now, &path);
+            let _ = signal_history::record_if_due(&snap, at, &path);
         }
+        // Inside the switch on purpose: a script that reads every second asked
+        // for no background record of its reads, and the catalog is one.
+        crate::cells::record_cell(&snap, at);
     }
     Ok(snap)
 }
@@ -250,6 +253,9 @@ pub fn collect_tier(
                 if let Some(path) = signal_history::path() {
                     let _ = signal_history::record_if_due(snap, at, &path);
                 }
+                // The switch covers both records: the minute row and the cell
+                // catalog that same read would leave behind.
+                crate::cells::record_cell(snap, at);
             }
         }
         Tier::Clients => {

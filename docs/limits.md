@@ -79,6 +79,11 @@ why each one is stated instead of hidden.
   and says which `nr` fields did arrive (`nrearfcn`, bandwidths, rank, BLER, CQI,
   TX power) rather than inventing dBm; it switches to the full gauges the moment
   any one of `nrrsrp`, `nrrsrq` or `nrsinr` carries a value.
+- **A weak CQI is a reading, not a cause**: the signal panel prints `CQI 6 weak`
+  and below, the number alone at 7 and above, and `-` when the firmware sends
+  none (127 means none and is dropped at parse). The cut is a fixed 6 and is not
+  tuned per model: both sides carry the number, so a wrong cut would mislabel a
+  value but never hide it, and the label never states why the value is low.
 - **The budget counts from a baseline, and says where its number came from**: the
   bar compares your `budget_gb` against traffic measured since the baseline
   (`b` moves it, and it moves itself at the start of each billing cycle read from
@@ -88,6 +93,33 @@ why each one is stated instead of hidden.
   counter clear. The per-day ledger behind the usage table only counts while
   routwatch runs, gaps over five minutes are marked rather than spread, and the
   panel prints how many days it covers.
+- **The budget report is arithmetic over the ledger, and says how much of the
+  window was watched**: `routwatch budget` reads `$XDG_DATA_HOME/routwatch/usage.json`
+  once, opens no router session and needs no config file; with no config the
+  100 GB default is printed as a default so it cannot pass for a configured
+  limit. The pace divides the bytes this cycle used by the seconds the ledger
+  actually watched, and the window is the cycle clipped by the gaps the ledger
+  marked, so coverage is stated rather than assumed: `measured` at nine tenths of
+  the window, `thin` from half, `insufficient` below that and for a zero window.
+  No pace is printed under `insufficient` or under ten watched minutes, because a
+  rate from that little is a guess with a unit. The Traffic panel prints the same
+  two facts, and only on a screen tall enough to keep its reset row.
+- **A crossing is reported once per cycle**: the observation log gains one
+  `budget` row when the cycle first reaches 80% of `budget_gb` and one at 95%,
+  with the bytes used, the limit and the coverage in the row. Both flags are
+  persisted, so a restart does not repeat a crossing it already reported, and
+  every path that moves the baseline (reset, cycle rollover, source change,
+  counter clear) clears them so the next cycle can report again. A preview frame
+  and a one-shot command write no such row: they carry no ledger path and are
+  read-only by design.
+- **The pace baseline survives a restart but not a downgrade**: the source total
+  the last sample read is persisted with the rest of the ledger and refreshed on
+  the same cycle as the sample time, so after a crash the first read works from a
+  baseline one cycle old and its `used` figure can be stale by that much. An
+  older build loads the same file, does not know the field and drops it on its
+  next save, so going back to 0.9.3 and forward again restarts the pace from a
+  zero baseline. The contract version stays 1 on purpose: the file must keep
+  reading in both directions, and a lost baseline is the stated cost of that.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown in a `0700`
   directory, with IMEI, serial, WAN IP, MACs and SSIDs hidden - these files get
   pasted in public. `report_identity`, `--report-identity` or `i` in the settings
@@ -244,7 +276,9 @@ why each one is stated instead of hidden.
   "no sample", not as "the link was down". The lock is tried three times, 5 ms apart,
   before the sample is skipped: a trim takes 131 ms and is not chased, while a holder
   that lasts only milliseconds is gone by the second attempt.
-  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the log off for scripts that read every second.
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the log off for scripts that read every second,
+  and turns the cells catalog off with it: both are background records of the same read,
+  so one switch silences both.
 
 - **The signal log keeps three days and trims itself by rewriting**: the cap is 4320
   rows, one row a minute, because the drift guard compares today against two complete
@@ -263,9 +297,12 @@ why each one is stated instead of hidden.
 - **The drift guard cannot judge before two complete v2 days**: it compares
   today's best SINR on one cell against the median of the previous days' best,
   and it needs at least 60 rows a day, so a day the router was off is skipped with
-  a note. Below six hours of today's rows it is still collecting and says so, in
-  place of a verdict. The alert threshold is 4 dB: three days of this H122-373
-  measured a daily spread of 3 dB (2026-11-22, 80.55 h on one cell, SINR std
+  a note. Today must hold six hours of sampled minutes: each distinct minute of that
+  cell counts once, never the span between its first and last row, because a day with
+  two reads seven hours apart is two minutes of coverage. Below that it is still
+  collecting and says so, naming the span beside the samples, in place of a verdict.
+  The alert threshold is 4 dB: three days of this H122-373 measured a daily spread of
+  3 dB (2026-11-22, 80.55 h on one cell, SINR std
   1.20 dB), and an alert that fires inside weather is an alert nobody reads. Rows
   without an earfcn and a pci are v1 rows: they are counted and never judged. A
   pci change inside one earfcn is another cell, so it is reported as a change and
@@ -290,6 +327,11 @@ why each one is stated instead of hidden.
   hour writes one row. A refused or busy read is a row; a retry that succeeded is
   not. The address a renew produced is deliberately not a field: the log is not a
   place a WAN IP may live.
+  A transmission-mode change on a cell that stayed is a row too, and only the
+  TUI worker writes it: the row is a comparison with the previous read, and a
+  one-shot `status` or `snapshot` keeps no previous read. The new value must be
+  read twice in a row before it counts, and a read that names a different cell
+  resets the baseline instead of reporting one.
 
 - **The screen is polled, never pushed**: measured 2026-11-19 on the H122-373
   (WEBUI 11.0.2.21), seven stream candidates (`websocket`, `ws`, `events`,
@@ -416,7 +458,9 @@ why each one is stated instead of hidden.
   not attributed to either band, and a figure beside a band is associated with it,
   never caused by it. The derived smear is the 95th percentile gap between the samples
   inside the window, not the widest gap in the log: a pause of hours is absence of
-  observation, and letting it mute the day would hide every real change.
+  observation, and letting it mute the day would hide every real change. A window with
+  fewer than two reads has no smear, and `smear_ms` is then `null` with the window line
+  saying so, because a zero there would read as an order the rows never settled.
 - **Band advice has four confidence levels and no write path**: `insufficient`, `low`,
   `medium`, `high`, from the rows and the measured scans, and the weakest link sets the
   whole advice. `bands advise` prints the command that would add evidence, switches
@@ -443,6 +487,97 @@ why each one is stated instead of hidden.
   reader without colour loses nothing. `terminal` defers the slot to the user's
   palette and no setting exists for it yet; every shipped palette clears AA contrast
   against the background it is drawn on.
+
+- **The cells catalog stores, it does not judge**: `$XDG_DATA_HOME/routwatch/cells.json`
+  holds one record per serving cell that a radio read has seen, and `routwatch cells
+  list` prints them ordered by `last_seen`, newest first. That order is chronological,
+  not a ranking: there is no best cell, no quality score and no throughput comparison.
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` stops the catalog as well, so a script that mutes the
+  minute log leaves no cell file either.
+  Measured over 80.55 hours: two serving cells, one read 1438 times and the other twice,
+  and the PCI changed inside that window. A second cell with a five minute window did
+  not occur, so the per-cell comparison has no measurement behind it and is not offered;
+  the round that adds it needs its own measured baseline.
+- **A cell is keyed by downlink ARFCN and PCI, never by PCI alone**: two carriers can
+  serve different frequencies with the same PCI, so PCI by itself names no cell. When
+  the earfcn text did not parse (or the firmware stayed silent), the record is keyed by
+  band and PCI and carries `earfcn_unknown`: it never merges into a keyed record and two
+  keyed records never merge into it. A test refuses the PCI-only key so the path cannot
+  come back.
+- **The catalog holds 64 cells and drops the least recently seen**: above that the
+  record with the oldest `last_seen` is evicted, and the list prints a tail line when the
+  stored set is at the cap. A cell that appears once and never again therefore leaves
+  before a cell the machine keeps reading, which is the intended order: this is a record
+  of what was served, not a survey.
+- **The catalog is written once a minute, and immediately when a cell is new**: a save
+  happens on the first radio read of each minute (the same pulse that writes a signal
+  row) and on the first appearance of a cell, so ten reads inside one minute cost one
+  write, not ten. The catalog counts its own writes, and a test pins ten samples to one
+  write.
+- **A sample with no signal figure records no cell**: when RSRP, RSRQ and SINR all
+  arrive empty the firmware answered no measurement, which is the offline path, so
+  nothing is written even if a PCI and a band arrived.
+- **`best_sinr` is a whole dB**: the record keeps `i32` because that is the shape this
+  round was specified with, while the signal log keeps the fraction. Reading a cell's
+  best SINR from the catalog therefore loses the decimal that the log still has.
+- **A cell change is a row, and it is context, not a fault**: when the serving cell key
+  changes, the worker writes one `cell` row to the observation log with the key before,
+  the key after, the band and the TAC the read reported, and `held 2`, because the new
+  key must be read twice in a row before it counts. The first read of a cell is a
+  baseline, not a change, and the row is the same key rule as the catalog: downlink
+  ARFCN and PCI, or band and PCI when the ARFCN did not parse, never PCI alone. The row
+  says which cell was being served and when; it names no cause, opens no incident and
+  carries no RSRP or SINR verdict, and a cell change that lands with a transmission-mode
+  change writes the cell row only. `routwatch cells changes` prints the rows.
+- **The signal-log switch does not silence the event log**: `ROUTWATCH_DISABLE_SIGNAL_LOG=1`
+  stops the minute signal log and the cells catalog. The observation log keeps recording,
+  because it is the record of what happened, not a measurement series, and a switch meant
+  to keep a file small is not a licence to lose the timeline. A test sets the variable and
+  shows the cell row still written.
+- **`compare` compares one cell with itself**: `routwatch compare --around ID` takes an
+  event id and two windows of 1800 s, and every stretch between the event is compared with
+  its own other side, never across two cells: a key change inside the window splits it, and
+  the two halves of a split are not held against each other. A cost, not a promise.
+- **A thin side is insufficient, not zero**: a side with fewer than 10 rows, or whose rows
+  cover less than half the window (a row is one 60 s sample, so coverage is
+  `rows * 60 / window`), prints `insufficient` with no delta at all. Coverage of exactly
+  0.5 counts as enough.
+- **The noise thresholds are three measured standard deviations**: SINR moves by 3.6 dB
+  (3 x 1.202 dB) and RSRP by 0.7 dB (3 x 0.223 dB) before a step is called real, and a
+  smaller move is `within noise`. Both spreads were measured on 2026-11-22 over 14.4
+  minutes of a still link on the H122-373 (200 samples, `routwatch record --interval 2`),
+  and they are declared once, in `src/compare.rs`. The median and the 10th percentile are printed,
+  never the mean, because one bad sample should not move a verdict. A SINR rise with an
+  RSRP fall is `mixed`, with no single verdict.
+- **Download is compared only when both sides have two reads**: one speed row per side
+  states no difference, and the transfer is never inferred from MCS (r -0.161 over the same
+  still link, so MCS and SINR did not move together). Two events are ordered by their own
+  stamps, and the smear never enters that pair: it ranks a reading against a change, and
+  applying it to two events refused an order the log already holds. Two events inside the
+  same second print that their order is not resolved, because the log records whole
+  seconds and the pairs share the one stamp it kept. The smear itself is the 95th
+  percentile of the gaps between the reads inside the compared window, taken from a
+  sorted copy of it: a pause of hours outside the window cannot enter, and one lost
+  read inside it cannot widen the figure to a day. A window with fewer than two reads has
+  no smear at all, and the note then says the order cannot be resolved instead of printing
+  a gap.
+- **The Align tab averages reads, not time**: the 15 s window holds the radio reads that
+  arrived in it, so a slower poll means fewer reads in the same window and a poll slower
+  than 15 s leaves it empty rather than repeating the last value. The measured cadence on
+  the H122-373 is 939 ms at the median and 1748 ms at the 95th percentile, so a window
+  usually holds between eight and sixteen reads. The right edge of the strip is the newest
+  read, never the wall clock, and the tab prints no "instant" or "real-time" figure because
+  no reading is one.
+- **The Align tab's arrow moves only past the measured noise**: a change smaller than
+  3.6 dB against the previous 15 s window reads `steady`, the same three-sigma bar
+  `compare` uses. The peak is the best rolling 15 s average of the current serving cell,
+  not a record, and a PCI change clears it and says so on screen.
+- **CQI is marked weak at six or below**: those indices are QPSK and low-order 16QAM on the
+  LTE table. The firmware's 127, which means the metric is absent, is dropped by the parser
+  before the screen sees it, so the word `weak` always means a measured low index.
+- **What a rotating antenna does to the average is unmeasured**: no sweep was recorded on
+  this link, so the tab shows the average and its direction and labels no shape as a sweep.
+  A sweep reading would need its own round and its own figures.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the

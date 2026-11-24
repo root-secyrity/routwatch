@@ -29,7 +29,7 @@ use ratatui::Terminal;
 /// help cannot advertise a shorter list than the tool answers to;
 /// `the_tab_help_names_every_section_it_accepts` holds the two together.
 const TAB_HELP: &str =
-    "Start on a tab: dashboard, bands, traffic, network, clients, sms, device, dns, signal";
+    "Start on a tab: dashboard, bands, traffic, network, clients, sms, device, dns, signal, align";
 
 /// Printed whenever the firmware's own `dhcpsdns_display` flag says the LAN DHCP
 /// DNS page does not exist: a write there is ignored, so the CLI says so up front.
@@ -137,6 +137,29 @@ enum Cmd {
         /// Read every probe endpoint now and update the matrix (read-only)
         #[arg(long)]
         probe: bool,
+    },
+    /// The serving cells this machine has read, newest first (no ranking)
+    Cells {
+        #[command(subcommand)]
+        action: CellsCmd,
+    },
+    /// Compare one cell with itself before and after a logged event (no network)
+    Compare {
+        /// The event id, `KIND-UNIXTIME`, as `cells changes` prints it
+        #[arg(long, value_name = "ID")]
+        around: String,
+        /// Seconds on each side of the event (default 1800)
+        #[arg(long, value_name = "SECS")]
+        window: Option<u64>,
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print this machine's ledger against the month budget (no network)
+    Budget {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Fingerprint the settings, and diff them without storing a value
     Config {
@@ -456,6 +479,25 @@ enum SmsCmd {
 }
 
 #[derive(Subcommand)]
+enum CellsCmd {
+    /// Print the recorded cells, newest first (reads the file, no network)
+    List {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the logged cell changes, newest first (reads the log, no network)
+    Changes {
+        /// Machine-readable JSON
+        #[arg(long)]
+        json: bool,
+        /// Keep the last SECS of the log, counted back from its newest row
+        #[arg(long, value_name = "SECS")]
+        window: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
 enum BandsCmd {
     /// Advice from the logs: what the evidence supports, and what it cannot
     Advise {
@@ -632,6 +674,9 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Replay { .. })
             | Some(Cmd::Speedtest { .. })
             | Some(Cmd::History { .. })
+            | Some(Cmd::Cells { .. })
+            | Some(Cmd::Compare { .. })
+            | Some(Cmd::Budget { .. })
             | Some(Cmd::Antenna { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
     );
@@ -2106,6 +2151,117 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             }
             Ok(())
         }
+        Some(Cmd::Cells {
+            action: CellsCmd::List { json },
+        }) => {
+            let Some(p) = routwatch::cells::cells_path() else {
+                eprintln!("cells: this platform has no data directory, so no catalog is kept");
+                return Err(ApiError::Quiet(2));
+            };
+            let (records, warn) = routwatch::cells::read_records(&p);
+            if let Some(w) = &warn {
+                eprintln!("{w}");
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&records).unwrap());
+            } else {
+                print!("{}", routwatch::cells::cells_table(&records));
+            }
+            Ok(())
+        }
+        Some(Cmd::Cells {
+            action: CellsCmd::Changes { json, window },
+        }) => {
+            let Some(p) = routwatch::events::path() else {
+                eprintln!("cells changes: this platform has no data directory, so no log is kept");
+                return Err(ApiError::Quiet(2));
+            };
+            let loaded = routwatch::events::load(&p);
+            if loaded.damaged > 0 {
+                eprintln!(
+                    "{}: {} damaged line(s) skipped",
+                    p.display(),
+                    loaded.damaged
+                );
+            }
+            let rows = routwatch::cells::change_rows(&loaded, window);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+            } else {
+                print!("{}", routwatch::cells::changes_table(&rows));
+            }
+            Ok(())
+        }
+        Some(Cmd::Compare {
+            around,
+            window,
+            json,
+        }) => {
+            // Three local logs and nothing else: no client is built, so the
+            // router is never asked.
+            let mut src = routwatch::incidents::Source::load();
+            // The window maths and the smear both read time forward; the loader
+            // keeps file order, which a log written by hand may not.
+            src.signal.sort_by_key(|r| r.at_unix);
+            let Some(event) = src
+                .events
+                .iter()
+                .find(|e| format!("{}-{}", e.kind, e.at_unix) == around)
+            else {
+                eprintln!(
+                    "compare: {around} is not in the current event log (it keeps its last {} rows)",
+                    routwatch::events::KEEP
+                );
+                return Err(ApiError::Usage(
+                    "compare: no such event in the log".to_string(),
+                ));
+            };
+            let neighbours: Vec<u64> = src
+                .events
+                .iter()
+                .filter(|e| e.at_unix != event.at_unix)
+                .map(|e| e.at_unix)
+                .collect();
+            let window_secs = window.unwrap_or(routwatch::compare::WINDOW_SECS);
+            // The smear is read off the window around the event, never off the
+            // whole log: an overnight hole outside it must not mute the day.
+            let smear_ms = routwatch::incidents::smear_in_window(
+                &src.signal.iter().map(|r| r.at_unix).collect::<Vec<_>>(),
+                event.at_unix.saturating_sub(window_secs),
+                event.at_unix.saturating_add(window_secs),
+            );
+            let input = routwatch::compare::CompareInput {
+                event,
+                signal: &src.signal,
+                speed: &src.speed,
+                neighbours: &neighbours,
+                window_secs,
+                smear_ms,
+            };
+            let c = routwatch::compare::compare(&input);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&c).unwrap());
+            } else {
+                print!("{}", routwatch::compare::summary(&c));
+            }
+            Ok(())
+        }
+        Some(Cmd::Budget { json }) => {
+            // The ledger and the config file only: no client is built, so the
+            // router is never asked and nothing is written.
+            let cfg_path = config::config_path(ui_opts.config_path.clone())?;
+            let report = routwatch::usage::budget_report(
+                &routwatch::usage::load(&routwatch::usage::path()),
+                cfg.app.budget_gb,
+                !cfg_path.exists(),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                print!("{}", routwatch::usage::burn_text(&report));
+            }
+            Ok(())
+        }
         Some(Cmd::Ping { host, count, json }) => {
             let output = std::process::Command::new("ping")
                 .args(worker::ping_args(count, &host))
@@ -2684,25 +2840,6 @@ fn sms_delete_cmd(
     Ok(())
 }
 
-/// The smear the advice uses: the 95th percentile gap between the samples
-/// inside the window, not the widest gap in the whole log. An overnight pause
-/// is absence of observation, and letting it mute a whole day of readings would
-/// hide every real change instead of protecting them.
-fn window_smear(rows: &[routwatch::signal_history::Row], now: u64, window_secs: u64) -> u64 {
-    let since = now.saturating_sub(window_secs);
-    let mut gaps: Vec<u64> = rows
-        .windows(2)
-        .filter(|w| w[1].at_unix >= since && w[1].at_unix <= now)
-        .map(|w| w[1].at_unix.saturating_sub(w[0].at_unix) * 1000)
-        .filter(|ms| *ms > 0)
-        .collect();
-    if gaps.is_empty() {
-        return 0;
-    }
-    gaps.sort_unstable();
-    gaps[(gaps.len() * 95) / 100]
-}
-
 /// Band advice from the logs. Reads only: the one request it makes is the
 /// advertised list, and a router that does not answer narrows the advice
 /// instead of stopping it.
@@ -2716,7 +2853,14 @@ fn bands_advise(
 ) -> Result<(), ApiError> {
     let source = routwatch::incidents::Source::load();
     let window_secs = window.unwrap_or(routwatch::advisor::WINDOW_SECS);
-    let smear = window_smear(&source.signal, routwatch::record::now_unix(), window_secs);
+    let now = routwatch::record::now_unix();
+    // The same window rule as compare: rank the gaps inside the advice window,
+    // and say nothing when there are fewer than two reads to rank.
+    let smear = routwatch::incidents::smear_in_window(
+        &source.signal.iter().map(|r| r.at_unix).collect::<Vec<_>>(),
+        now.saturating_sub(window_secs),
+        now,
+    );
 
     let scans = match scans_path.as_deref() {
         Some(path) => {
@@ -2792,10 +2936,17 @@ fn bands_advise(
     }
 
     let mhz = |band: &str| -> String { band.to_string() };
-    println!(
-        "window: last {} s, {} rows used, smear {} ms",
-        advice.window_secs, advice.rows_used, advice.smear_ms
-    );
+    match advice.smear_ms {
+        Some(ms) => println!(
+            "window: last {} s, {} rows used, smear {} ms",
+            advice.window_secs, advice.rows_used, ms
+        ),
+        None => println!(
+            "window: last {} s, {} rows used, smear not measurable: fewer than two reads inside \
+             the window",
+            advice.window_secs, advice.rows_used
+        ),
+    }
     println!(
         "confidence: {} (served {}, sets {})",
         advice.confidence.as_str(),
@@ -3869,7 +4020,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
         }
         KeyCode::Char('s') => app.settings_open = true,
-        KeyCode::Char(c @ '1'..='9') => {
+        // '0' is the tenth tab: the arm must take it, or the key dies here
+        // before `tab_from_key` sees it.
+        KeyCode::Char(c @ '0'..='9') => {
             if let Some(tab) = ui::tab_from_key(c) {
                 // A digit always reaches its section, even from Lite/Dense.
                 app.select_tab(tab);
@@ -4504,6 +4657,23 @@ mod key_tests {
     use routwatch::ui::tab_from_key;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::channel;
+
+    /// The handler is the only place a digit is turned into a tab: if the arm
+    /// stops at '9', the bar can print `0 Align` while the key does nothing.
+    #[test]
+    fn the_tenth_tab_key_selects_the_tenth_tab() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        assert_eq!(app.tab, Tab::Dashboard);
+        handle_key(&mut app, key(KeyCode::Char('0')), &tx);
+        assert_eq!(app.tab, Tab::Align, "0 must reach the tenth tab");
+        handle_key(&mut app, key(KeyCode::Char('1')), &tx);
+        assert_eq!(
+            app.tab,
+            Tab::Dashboard,
+            "and the digits still read in order"
+        );
+    }
 
     #[test]
     fn the_feed_key_owns_j_k_space_and_esc_only_while_it_is_open() {

@@ -77,8 +77,291 @@ pub fn body(f: &mut Frame, area: Rect, app: &App) {
             crate::app::Tab::Device => device_tab(f, area, app),
             crate::app::Tab::Dns => dns_tab(f, area, app),
             crate::app::Tab::Signal => gauges(f, area, app),
+            crate::app::Tab::Align => align_body(f, area, app),
         },
     }
+}
+
+// ---------------------------------------------------------------- align tab
+
+/// What the strip to the left of the newest read covers. SIGNAL MAP keeps a
+/// four minute window because a trend needs one; this tab asks about the last
+/// half minute, which is the span the 15 s average is read against.
+const ALIGN_STRIP_SECS: u64 = 30;
+
+/// Below this the tab cannot hold a five row face plus its four facts, and a
+/// squeezed version would be a worse lie than the size notice.
+const ALIGN_MIN_W: u16 = 60;
+const ALIGN_MIN_H: u16 = 12;
+
+/// The alignment tab: one number, its direction, the session peak, the last
+/// half minute as a strip, and the readings that constrain it. Everything here
+/// is read from the same snapshot the other tabs print, and the average comes
+/// from the cache (one build per radio read), never from the frame clock.
+pub fn align_body(f: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
+    let Some(s) = &app.snap else {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "align · waiting for the first radio read",
+                Style::default().fg(t.dim),
+            ))
+            .block(panel("ALIGN".into(), t)),
+            area,
+        );
+        return;
+    };
+    if area.width < ALIGN_MIN_W || area.height < ALIGN_MIN_H {
+        f.render_widget(
+            Paragraph::new("terminal too small for align - press V")
+                .block(panel("ALIGN".into(), t)),
+            area,
+        );
+        return;
+    }
+    let sig = &s.signal;
+    let view = app.align_view();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let dim = Style::default().fg(t.dim);
+
+    let colour = view
+        .average
+        .map(|v| t.sinr_color(v as f32))
+        .unwrap_or(t.dim);
+    let face = match view.average {
+        Some(v) => big_digits(&format!("{v:.1}")),
+        None => big_digits("--"),
+    };
+    let facts = [
+        String::new(),
+        "15 s average · dB".to_string(),
+        view.average
+            .map(|v| crate::theme::step_word(t.sinr_step(v as f32)).to_string())
+            .unwrap_or_else(|| "no read in the window".to_string()),
+        view.average
+            .map(|_| format!("{} {}", view.direction.arrow(), view.direction.as_str()))
+            .unwrap_or_default(),
+        format!("deadband {:.1} dB", crate::align::SINR_DEADBAND_DB),
+    ];
+    for (i, row) in face.iter().enumerate() {
+        let mut spans = vec![Span::styled(
+            format!("  {row}  "),
+            Style::default().fg(colour),
+        )];
+        if i == 1 {
+            spans.push(Span::styled(facts[i].clone(), dim));
+        } else if i == 2 {
+            spans.push(Span::styled(facts[i].clone(), Style::default().fg(colour)));
+        } else if i == 3 {
+            spans.push(Span::styled(
+                facts[i].clone(),
+                Style::default().fg(t.accent),
+            ));
+        } else {
+            spans.push(Span::styled(facts[i].clone(), dim));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(Span::styled(
+        match (view.average, view.previous) {
+            (Some(_), Some(p)) => format!("  the 15 s before read {p:.1} dB"),
+            (Some(_), None) => "  no 15 s before this one to compare".to_string(),
+            _ => String::new(),
+        },
+        dim,
+    )));
+    lines.push(Line::from(Span::styled(
+        match view.peak {
+            Some(p) => format!(
+                "  peak {:.1} dB · pci {} · {} back",
+                p.sinr_db,
+                p.pci.map_or("-".to_string(), |v| v.to_string()),
+                age_text(view.newest_ms, p.at_ms),
+            ),
+            None => "  no peak held yet".to_string(),
+        },
+        dim,
+    )));
+    match view.cleared_at {
+        Some(at) => lines.push(Line::from(Span::styled(
+            format!(
+                "  peak cleared at the cell change, {} back",
+                age_text(view.newest_ms, at)
+            ),
+            Style::default().fg(t.warn),
+        ))),
+        None => lines.push(Line::from("")),
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("  last 30 s  ", dim),
+        Span::styled("the newest read sits at the right edge", dim),
+    ]));
+    let cols = area.width.saturating_sub(2) as usize;
+    let strip = align_strip(app, cols);
+    let opts = crate::ui::chart::ChartOpts {
+        ascii: false,
+        baseline: false,
+    };
+    let (lo, hi) = crate::theme::SINR_DOMAIN;
+    for line in crate::ui::chart::spark_lines_scaled(
+        &strip,
+        cols,
+        1,
+        t.accent,
+        f64::from(lo),
+        f64::from(hi),
+        opts,
+    ) {
+        lines.push(line);
+    }
+
+    lines.push(Line::from(""));
+    let (word, word_colour) = match sig.rsrp_dbm {
+        Some(v) if t.rsrp_step(v) >= 1 => ("enough", t.ok),
+        Some(_) => ("weak", t.danger),
+        None => ("-", t.dim),
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  constraint  RSRP ", dim),
+        Span::styled(
+            opt_f(sig.rsrp_dbm, "dBm"),
+            Style::default().fg(t.rsrp_color(sig.rsrp_dbm.unwrap_or(0.0))),
+        ),
+        Span::styled(" · ", dim),
+        Span::styled(word, Style::default().fg(word_colour)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  cell load   RSRQ ", dim),
+        Span::styled(
+            opt_f(sig.rsrq_db, "dB"),
+            Style::default().fg(t.rsrq_color(sig.rsrq_db.unwrap_or(0.0))),
+        ),
+        Span::styled(" · ", dim),
+        Span::styled(
+            sig.rsrq_db
+                .map(|v| crate::theme::step_word(t.rsrq_step(v)).to_string())
+                .unwrap_or_else(|| "-".into()),
+            dim,
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  context     ", dim),
+        Span::styled(sig.tm.clone().unwrap_or_else(|| "-".into()), dim),
+        Span::styled(" · CQI ", dim),
+        Span::styled(cqi_label(sig.cqi), dim),
+        Span::styled(" · ", dim),
+        Span::styled(cell_line(sig), dim),
+    ]));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(panel(format!("ALIGN · {}", cell_line(sig)), t))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// How long before the newest read a stamp sat, in the words a column has room
+/// for. No wall clock is consulted: the tab's clock is the newest radio read.
+fn age_text(newest_ms: u64, at_ms: u64) -> String {
+    let secs = newest_ms.saturating_sub(at_ms) / 1000;
+    if secs < 60 {
+        format!("{secs} s")
+    } else {
+        format!("{} m {:02} s", secs / 60, secs % 60)
+    }
+}
+
+/// The cell the readings belong to: the downlink carrier, its PCI and its band.
+/// The composite the firmware reports is handed to the one parser that already
+/// owns it, so this line cannot disagree with the signal log about a cell.
+fn cell_line(sig: &crate::model::Signal) -> String {
+    let (dl, _) = sig
+        .earfcn
+        .as_deref()
+        .map(crate::signal_history::parse_earfcn)
+        .unwrap_or((None, None));
+    format!(
+        "earfcn_dl {} · pci {} · band {}",
+        dl.map_or("-".to_string(), |v| v.to_string()),
+        sig.pci.map_or("-".to_string(), |v| v.to_string()),
+        sig.band.clone().unwrap_or_else(|| "-".into()),
+    )
+}
+
+/// The last half minute as the strip's own resolution: a braille cell holds two
+/// samples side by side, so the window is split into twice the columns the panel
+/// has. A read holds its column until the next one arrives, the same rule the
+/// plots use, and the columns before the oldest read stay NaN: a gap is not a
+/// reading at the floor.
+fn align_strip(app: &App, cols: usize) -> std::collections::VecDeque<f64> {
+    use crate::ui::chart::slot_of;
+    let slots = cols * 2;
+    let mut out = std::collections::VecDeque::from(vec![f64::NAN; slots]);
+    if slots == 0 || app.align_samples.is_empty() {
+        return out;
+    }
+    let window_ms = ALIGN_STRIP_SECS * 1000;
+    let newest = app
+        .align_samples
+        .back()
+        .map(|s| s.at_ms)
+        .unwrap_or_default();
+    let mut landed = vec![f64::NAN; slots];
+    for s in &app.align_samples {
+        if s.at_ms > newest {
+            continue;
+        }
+        let age_ms = newest - s.at_ms;
+        if age_ms >= window_ms {
+            continue;
+        }
+        let slot = slot_of(window_ms - age_ms - 1, window_ms, slots);
+        if landed[slot].is_nan() || s.sinr_db > landed[slot] {
+            landed[slot] = s.sinr_db;
+        }
+    }
+    let mut held = f64::NAN;
+    for (slot, value) in landed.iter().enumerate() {
+        if !value.is_nan() {
+            held = *value;
+        }
+        out[slot] = held;
+    }
+    out
+}
+
+/// A five row block face for the one number the tab leads with. The face has
+/// only the glyphs this line can print; anything else is a blank column, which
+/// is honest about a face this small rather than drawing a wrong digit.
+fn big_digits(text: &str) -> Vec<String> {
+    let mut rows = vec![String::new(); 5];
+    for (i, c) in text.chars().enumerate() {
+        let glyph = match c {
+            '0' => ["█████", "█   █", "█   █", "█   █", "█████"],
+            '1' => ["   █ ", "  ██ ", "   █ ", "   █ ", "  ███"],
+            '2' => ["█████", "    █", "█████", "█    ", "█████"],
+            '3' => ["█████", "    █", " ████", "    █", "█████"],
+            '4' => ["█   █", "█   █", "█████", "    █", "    █"],
+            '5' => ["█████", "█    ", "█████", "    █", "█████"],
+            '6' => ["█████", "█    ", "█████", "█   █", "█████"],
+            '7' => ["█████", "    █", "   █ ", "  █  ", "  █  "],
+            '8' => ["█████", "█   █", "█████", "█   █", "█████"],
+            '9' => ["█████", "█   █", "█████", "    █", "█████"],
+            '-' => ["     ", "     ", "█████", "     ", "     "],
+            '.' => ["     ", "     ", "     ", "     ", "  █  "],
+            _ => ["     ", "     ", "     ", "     ", "     "],
+        };
+        for (r, part) in glyph.iter().enumerate() {
+            if i > 0 {
+                rows[r].push(' ');
+            }
+            rows[r].push_str(part);
+        }
+    }
+    rows
 }
 
 // ---------------------------------------------------------------- dashboard
@@ -436,7 +719,7 @@ fn signal_lines(app: &App) -> Vec<Line<'static>> {
             sig.ul_mcs
                 .map(|m| m.to_string())
                 .unwrap_or_else(|| "-".into()),
-            sig.cqi.map(|m| m.to_string()).unwrap_or_else(|| "-".into()),
+            cqi_label(sig.cqi),
             app.signal_quality()
         ),
         Style::default().fg(t.fg),
@@ -1464,11 +1747,13 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
     // The table gets a panel of its own; below 24 rows the stats panel keeps
     // every fact and names the missing table instead of clipping a row.
     let tall = area.height >= 24;
+    // The stats box is exactly full at ten rows: eight lines, the last of them
+    // the reset row. The rate and the coverage need two more, so a screen with
+    // the room for them gets a box of twelve and a shorter one keeps its reset.
+    let room = area.height >= 26;
     let (top, usage_area, dns_area) = if tall {
         let [a, b, c] = Layout::vertical([
-            // Nine would leave seven inner rows for eight lines and clip the
-            // reset row the test pins; ten gives it eight.
-            Constraint::Length(10),
+            Constraint::Length(if room { 12 } else { 10 }),
             Constraint::Min(7),
             Constraint::Length(7),
         ])
@@ -1548,20 +1833,42 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
             t.dim,
         ),
         bar(frac, (top.width.saturating_sub(24)) as usize, colour, t.dim),
-        Line::from(Span::styled(
-            // At zero the baseline is set by the first sample; printing a date
-            // there would say 1970.
-            if app.usage.reset_at == 0 {
-                "baseline starts with the first sample · b resets the baseline".to_string()
-            } else {
-                format!(
-                    "reset {} · b resets the baseline · auto at cycle start",
-                    crate::usage::date_label(app.usage.reset_at)
-                )
-            },
-            Style::default().fg(t.dim),
-        )),
     ];
+    if room {
+        // Two facts and no verdict: the pace the ledger measured, and how much
+        // of the window that pace was divided by.
+        let budget_bytes = (app.budget_gb * 1024.0 * 1024.0 * 1024.0) as u64;
+        let p = crate::usage::projection(&app.usage, s.generated_at, used, budget_bytes);
+        let rate = match p.per_day {
+            Some(r) => match p.days_left {
+                Some(d) => format!("rate {} /day · {d} days left", crate::usage::gib(r)),
+                None => format!("rate {} /day", crate::usage::gib(r)),
+            },
+            None => "rate - · too little of the window was watched".to_string(),
+        };
+        lines.push(Line::from(Span::styled(rate, Style::default().fg(t.value))));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "coverage {} · {}",
+                crate::usage::coverage_word(p.coverage),
+                crate::usage::watched_of(p.watched_secs, p.window_secs)
+            ),
+            Style::default().fg(t.dim),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        // At zero the baseline is set by the first sample; printing a date
+        // there would say 1970.
+        if app.usage.reset_at == 0 {
+            "baseline starts with the first sample · b resets the baseline".to_string()
+        } else {
+            format!(
+                "reset {} · b resets the baseline · auto at cycle start",
+                crate::usage::date_label(app.usage.reset_at)
+            )
+        },
+        Style::default().fg(t.dim),
+    )));
     if !tall {
         lines.push(Line::from(Span::styled(
             "usage table needs 24 rows",
@@ -3067,10 +3374,7 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
                 .pci
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "-".into()),
-            s.signal
-                .cqi
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into()),
+            cqi_label(s.signal.cqi),
         )
     };
     facts.push(Span::styled(detail, Style::default().fg(t.dim)));
@@ -3109,6 +3413,18 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// CQI as the panels print it. Six or below carries the word `weak`: the LTE
+/// table spends those indices on QPSK and low-order 16QAM, which is what a link
+/// that cannot hold a wide modulation reports. Seven and above print the number
+/// alone, so the word means something when it appears.
+pub(crate) fn cqi_label(cqi: Option<u8>) -> String {
+    match cqi {
+        Some(v) if v <= 6 => format!("{v} weak"),
+        Some(v) => v.to_string(),
+        None => "-".into(),
+    }
+}
+
 /// The NR fields that are not main gauge metrics, as separate parts.
 fn nr_aux_parts(nr: &crate::model::Nr) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
@@ -3128,7 +3444,7 @@ fn nr_aux_parts(nr: &crate::model::Nr) -> Vec<String> {
         parts.push(format!("BLER {b:.1}%"));
     }
     if let Some(c) = nr.cqi {
-        parts.push(format!("CQI {c}"));
+        parts.push(format!("CQI {}", cqi_label(Some(c))));
     }
     if let Some(tx) = nr.txpower_dbm {
         parts.push(format!("TX {tx:.0} dBm"));
@@ -3530,7 +3846,9 @@ pub fn dense(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{graphs_panel, split, throughput_panel, visible_rows};
+    use super::{
+        align_body, big_digits, cqi_label, graphs_panel, split, throughput_panel, visible_rows,
+    };
     use crate::app::{App, Tab};
     use crate::theme::{GraphStyle, Theme};
 
@@ -3548,6 +3866,141 @@ mod tests {
         app.on_snapshot(snap, 432);
         app.tab = Tab::Network;
         app
+    }
+
+    // ------------------------------------------------------------- traffic
+
+    /// The lines the panel prints between the budget row and the reset row.
+    fn burn_lines(screen: &str) -> Vec<&str> {
+        let rows: Vec<&str> = screen.lines().collect();
+        let budget = rows
+            .iter()
+            .position(|l| l.contains("budget"))
+            .unwrap_or_else(|| panic!("no budget row: {screen}"));
+        let reset = rows
+            .iter()
+            .position(|l| l.contains("reset ") || l.contains("baseline starts"))
+            .unwrap_or_else(|| panic!("no reset row: {screen}"));
+        assert!(reset > budget, "the reset row closes the box: {screen}");
+        rows[budget + 1..reset]
+            .iter()
+            .filter(|l| l.contains("rate ") || l.contains("coverage "))
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn the_panel_shows_burn_and_coverage() {
+        let mut app = fixture_app();
+        app.tab = Tab::Traffic;
+
+        // A cycle that has not started has no window, and the panel says that
+        // instead of printing "0m watched of 0m" as if it were measured.
+        let cold = crate::ui::render_to_string(&app, 120, 34);
+        let cold_burn = burn_lines(&cold);
+        assert_eq!(cold_burn.len(), 2, "{cold_burn:?}");
+        assert!(cold_burn[0].contains("rate - "), "{:?}", cold_burn[0]);
+        assert!(cold_burn[1].contains("no window yet"), "{:?}", cold_burn[1]);
+
+        let now = app.snap.as_ref().expect("snapshot").generated_at;
+        // Two days of a baseline watched the whole time, 2 GB used: a rate
+        // exists and it was measured over the whole window.
+        app.usage.base_bytes = 0;
+        app.usage.reset_at = now.saturating_sub(2 * 86_400);
+        app.usage.last_at = now;
+        app.usage.last_total = 2_000_000_000;
+
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let burn = burn_lines(&screen);
+        assert_eq!(burn.len(), 2, "two lines and no more: {burn:?}");
+        let rate = burn[0];
+        let coverage = burn[1];
+        assert!(rate.contains("/day"), "the pace carries its unit: {rate}");
+        assert!(rate.contains("days left"), "{rate}");
+        assert!(coverage.contains("coverage measured"), "{coverage}");
+        assert!(coverage.contains("2.0d watched of 2.0d"), "{coverage}");
+        // A number is not a verdict: neither line names a judgement.
+        for word in ["good", "bad", "fine", "low", "high", "healthy"] {
+            assert!(
+                !rate.contains(word) && !coverage.contains(word),
+                "{word}: {burn:?}"
+            );
+        }
+
+        // A window that was entirely a gap has no pace to print, and the line
+        // says why instead of inventing one.
+        app.usage.gaps = vec![crate::usage::Gap {
+            from: app.usage.reset_at,
+            to: now,
+        }];
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let burn = burn_lines(&screen);
+        assert_eq!(burn.len(), 2, "{burn:?}");
+        assert!(burn[0].contains("rate - "), "{:?}", burn[0]);
+        assert!(
+            !burn[0].contains("/day"),
+            "no pace from no window: {:?}",
+            burn[0]
+        );
+        assert!(burn[1].contains("coverage insufficient"), "{:?}", burn[1]);
+    }
+
+    #[test]
+    fn a_short_panel_keeps_its_reset_row() {
+        let mut app = fixture_app();
+        app.tab = Tab::Traffic;
+        // 24 rows is the tallest screen that still gets the ten row box, and
+        // the reset row is its last line rather than the line it clips.
+        let screen = crate::ui::render_to_string(&app, 120, 24);
+        assert!(
+            screen.contains("reset ") || screen.contains("baseline starts"),
+            "the reset row survived the short screen: {screen}"
+        );
+        assert!(burn_lines(&screen).is_empty(), "no room, no burn lines");
+    }
+
+    // ------------------------------------------------------------ signal / CQI
+
+    #[test]
+    fn cqi_below_seven_is_marked_weak() {
+        assert_eq!(cqi_label(Some(0)), "0 weak");
+        assert_eq!(cqi_label(Some(6)), "6 weak");
+    }
+
+    #[test]
+    fn cqi_at_seven_or_above_is_plain() {
+        assert_eq!(cqi_label(Some(7)), "7");
+        assert_eq!(cqi_label(Some(15)), "15");
+        assert_eq!(cqi_label(None), "-");
+    }
+
+    #[test]
+    fn the_signal_panel_shows_tm_and_cqi_on_one_line() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        if let Some(snap) = app.snap.as_mut() {
+            snap.signal.cqi = Some(7);
+        }
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let line = screen
+            .lines()
+            .find(|l| l.contains("TM[4]"))
+            .unwrap_or_else(|| panic!("no line names the TM: {screen}"));
+        assert!(line.contains("CQI 7"), "the CQI shares the TM line: {line}");
+        assert!(
+            !line.contains("weak"),
+            "seven is not the weak side of the cut: {line}"
+        );
+
+        if let Some(snap) = app.snap.as_mut() {
+            snap.signal.cqi = Some(6);
+        }
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let line = screen
+            .lines()
+            .find(|l| l.contains("TM[4]"))
+            .unwrap_or_else(|| panic!("no line names the TM: {screen}"));
+        assert!(line.contains("CQI 6 weak"), "six is marked: {line}");
     }
 
     // ---------------------------------------------------------------- clients
@@ -3961,5 +4414,112 @@ mod tests {
             "the record keeps its true age instead of hugging the right edge: ink starts at {lo}"
         );
         assert!(hi >= w as usize - 3, "the newest sample sits at now: {hi}");
+    }
+
+    // ------------------------------------------------------------- align tab
+
+    /// The tab over a synthetic session: `demo_history` fills the ring the tab
+    /// reads, and its newest read is the right edge of the strip.
+    fn align_screen(w: u16, h: u16, samples: usize) -> Vec<String> {
+        let mut app = fixture_app();
+        app.tab = Tab::Align;
+        app.demo_history(samples);
+        panel_rows(w, h, |f, a| align_body(f, a, &app))
+    }
+
+    fn braille_ink(line: &str) -> bool {
+        line.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+    }
+
+    #[test]
+    fn the_align_tab_leads_with_its_average_and_names_its_facts() {
+        let screen = align_screen(120, 34, 120).join("\n");
+        assert!(screen.contains("15 s average"), "{screen}");
+        assert!(screen.contains("deadband 3.6 dB"), "{screen}");
+        assert!(screen.contains("peak "), "{screen}");
+        assert!(screen.contains("constraint  RSRP"), "{screen}");
+        assert!(screen.contains("cell load   RSRQ"), "{screen}");
+        assert!(screen.contains("context"), "{screen}");
+        assert!(screen.contains("earfcn_dl"), "{screen}");
+        assert!(
+            screen.contains('\u{2588}'),
+            "the tab leads with a block face, not a table cell: {screen}"
+        );
+    }
+
+    #[test]
+    fn the_face_shows_the_engines_average() {
+        let mut app = fixture_app();
+        app.demo_history(120);
+        let view = app.align_view();
+        let face = big_digits(&format!(
+            "{:.1}",
+            view.average.expect("a window with reads")
+        ));
+        let rows = panel_rows(120, 34, |f, a| align_body(f, a, &app));
+        assert!(
+            rows.iter().any(|r| r.contains(&face[1])),
+            "second row of the face is on screen: {face:?}"
+        );
+    }
+
+    #[test]
+    fn the_face_is_five_rows_of_one_width() {
+        let rows = big_digits("12.3");
+        assert_eq!(rows.len(), 5);
+        for row in &rows {
+            assert_eq!(row.chars().count(), 4 * 5 + 3, "four glyphs and three gaps");
+        }
+    }
+
+    #[test]
+    fn the_align_tab_prints_no_instant_wording() {
+        let screen = align_screen(120, 34, 120).join("\n").to_lowercase();
+        for word in ["real-time", "realtime", "instant", "live", "right now"] {
+            assert!(!screen.contains(word), "`{word}` in the tab: {screen}");
+        }
+    }
+
+    #[test]
+    fn the_align_strip_ends_at_the_newest_read() {
+        let rows = align_screen(80, 24, 120);
+        let strip = rows
+            .iter()
+            .find(|r| braille_ink(r.as_str()))
+            .expect("a braille strip");
+        let cells: Vec<char> = strip.chars().collect();
+        let last = cells
+            .iter()
+            .rposition(|c| *c != ' ' && *c != '\u{2502}')
+            .expect("ink");
+        // The strip spans the panel's inner width, so the only cell after its
+        // last column is the border: the newest read is the strip's right edge.
+        assert!(
+            last + 2 >= cells.len(),
+            "the strip reaches its right edge: {strip}"
+        );
+    }
+
+    #[test]
+    fn a_tiny_terminal_gets_the_size_notice() {
+        let screen = align_screen(48, 10, 120).join("\n");
+        assert!(screen.contains("terminal too small for align"), "{screen}");
+    }
+
+    #[test]
+    fn without_a_first_read_the_tab_waits() {
+        let app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            crate::app::View::Full,
+            100,
+            2000,
+        );
+        let rows = panel_rows(80, 24, |f, a| align_body(f, a, &app));
+        let screen = rows.join("\n");
+        assert!(
+            screen.contains("waiting for the first radio read"),
+            "{screen}"
+        );
     }
 }
