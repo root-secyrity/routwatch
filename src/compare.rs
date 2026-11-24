@@ -360,6 +360,85 @@ pub fn compare(input: &CompareInput<'_>) -> Comparison {
     }
 }
 
+/// The text report: what the window held, what moved, and what stayed unknown.
+/// A missing figure prints as a dash, never as a zero.
+pub fn summary(c: &Comparison) -> String {
+    let mut out = format!(
+        "compare {} · {} at {}\n",
+        c.event_id,
+        c.event_kind,
+        crate::signal_history::local_iso(c.event_at_unix)
+    );
+    out.push_str(&format!(
+        "window {} s each side · smear {} ms\n",
+        c.window_secs, c.smear_ms
+    ));
+    if let Some(d) = &c.event_detail {
+        out.push_str(&format!("detail: {d}\n"));
+    }
+    if c.segments.is_empty() {
+        out.push_str("no signal row inside the window: nothing to compare\n");
+    }
+    for (i, s) in c.segments.iter().enumerate() {
+        out.push_str(&format!("\nsegment {} · {}\n", i + 1, s.cell));
+        for (name, side) in [("before", &s.before), ("after", &s.after)] {
+            out.push_str(&format!(
+                "  {:<6} {} rows · covered {:.2} · sinr {} (p10 {}) · rsrp {} · download {}\n",
+                name,
+                side.rows,
+                side.coverage,
+                db(side.sinr_median),
+                db(side.sinr_p10),
+                dbm(side.rsrp_median),
+                mbps(side.download_median_mbps),
+            ));
+        }
+        out.push_str(&format!(
+            "  sinr {} · rsrp {} · download {}\n",
+            delta(s.sinr_delta_db, "dB"),
+            delta(s.rsrp_delta_db, "dBm"),
+            delta_f(s.download_delta_mbps, "Mbps"),
+        ));
+        out.push_str(&format!(
+            "  class: {} · confidence: {}\n",
+            s.class.sentence(),
+            s.confidence.as_str()
+        ));
+    }
+    if !c.notes.is_empty() {
+        out.push_str(&format!("\nnote: {}\n", c.notes.join("\nnote: ")));
+    }
+    if !c.missing.is_empty() {
+        out.push_str(&format!("\nmissing: {}\n", c.missing.join("\nmissing: ")));
+    }
+    out
+}
+
+fn db(v: Option<f32>) -> String {
+    v.map(|x| format!("{x:.1} dB"))
+        .unwrap_or_else(|| "-".into())
+}
+
+fn dbm(v: Option<f32>) -> String {
+    v.map(|x| format!("{x:.1} dBm"))
+        .unwrap_or_else(|| "-".into())
+}
+
+fn mbps(v: Option<f64>) -> String {
+    v.map(|x| format!("{x:.1} Mbps"))
+        .unwrap_or_else(|| "-".into())
+}
+
+fn delta(v: Option<f32>, unit: &str) -> String {
+    v.map(|x| format!("{x:+.1} {unit}"))
+        .unwrap_or_else(|| "-".into())
+}
+
+fn delta_f(v: Option<f64>, unit: &str) -> String {
+    v.map(|x| format!("{x:+.1} {unit}"))
+        .unwrap_or_else(|| "-".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
