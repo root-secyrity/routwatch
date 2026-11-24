@@ -14,6 +14,8 @@ config.toml
 
 # internal, not published
 /DOCK/
+# agent plans and recons are local work notes, not project files
+/.hermes/plans/
 # The live test files and the CLI tests are the exception, and they are
 # published: a guard that lives on one machine guards nothing. This firmware has
 # no push channel and no second session to measure against, so a reader without
