@@ -1642,7 +1642,10 @@ impl App {
         // The alignment tab reads the same synthetic session, one sample a
         // second, stamped backwards from now so the 15 s window has a shape.
         self.align_samples.clear();
-        let now = self.started.elapsed().as_millis() as u64;
+        // The synthetic clock has to reach back far enough to hold the samples
+        // it is about to place: a preview starts its stopwatch at zero, and
+        // subtracting from zero would stamp every sample at the same instant.
+        let now = (self.started.elapsed().as_millis() as u64).max(samples as u64 * 1000);
         let pci = self.snap.as_ref().and_then(|s| s.signal.pci);
         for i in 0..samples.min(HISTORY) {
             let phase = i as f64 * 0.17;
@@ -1662,7 +1665,14 @@ impl App {
             .last_sample_at
             .map(|at| at.saturating_duration_since(self.started).as_nanos())
             .unwrap_or(0);
-        let now_ms = self.started.elapsed().as_millis() as u64;
+        // The tab's clock is the newest radio read, not the frame clock: the
+        // average is over reads, and a slow poll must not turn a full window
+        // into an empty one. SIGNAL MAP's right edge means the same thing.
+        let now_ms = self
+            .align_samples
+            .back()
+            .map(|s| s.at_ms)
+            .unwrap_or_else(|| self.started.elapsed().as_millis() as u64);
         self.align_cache
             .borrow_mut()
             .get_or_build(key, &self.align_samples, now_ms)

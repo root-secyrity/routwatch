@@ -78,6 +78,9 @@ pub struct AlignView {
     /// When the peak was cleared because the serving cell changed, so the tab
     /// can say it instead of showing a number that quietly restarted.
     pub cleared_at: Option<u64>,
+    /// The stamp the view was built at, so a renderer can say how far back a
+    /// peak sits without reading a clock of its own.
+    pub newest_ms: u64,
 }
 
 /// The mean SINR of the reads no more than `window_ms` old as of `now_ms`, or
@@ -153,6 +156,7 @@ pub fn align_engine(samples: &[AlignSample], now_ms: u64) -> AlignView {
         direction,
         peak,
         cleared_at: (seg_start > 0).then(|| sorted[seg_start].at_ms),
+        newest_ms: now_ms,
     }
 }
 
