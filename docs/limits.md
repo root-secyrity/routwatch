@@ -292,6 +292,11 @@ why each one is stated instead of hidden.
   hour writes one row. A refused or busy read is a row; a retry that succeeded is
   not. The address a renew produced is deliberately not a field: the log is not a
   place a WAN IP may live.
+  A transmission-mode change on a cell that stayed is a row too, and only the
+  TUI worker writes it: the row is a comparison with the previous read, and a
+  one-shot `status` or `snapshot` keeps no previous read. The new value must be
+  read twice in a row before it counts, and a read that names a different cell
+  resets the baseline instead of reporting one.
 
 - **The screen is polled, never pushed**: measured 2026-11-19 on the H122-373
   (WEBUI 11.0.2.21), seven stream candidates (`websocket`, `ws`, `events`,
