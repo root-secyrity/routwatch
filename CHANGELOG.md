@@ -2,7 +2,9 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
-## Unreleased
+## 0.10.0
+
+**The log remembers the cells, ranks its own smear, and a tenth tab reads the average**
 
 - **Two events are ordered by their own stamps, and the smear ranks only a reading against
   a change**: the incident caveat and `compare` used the signal smear to refuse an order
