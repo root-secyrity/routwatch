@@ -598,12 +598,19 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+/// The narrowest bar that shows every short label whole: the labels plus the
+/// separators between them, measured by the test beside the renderer.
+const TABBAR_SHORT_MIN: u16 = 85;
+/// The narrowest bar that shows every full title and the view name beside it.
+const TABBAR_FULL_MIN: u16 = 116;
+
 fn draw_tabbar(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    // Nine abbreviated labels need 76 columns (measured): below that, show
-    // where you are and how to move instead of a clipped list of nine.
-    if area.width < 76 {
+    // The short bar is as wide as its own labels plus separators, measured in
+    // `the_tab_bar_fits_its_two_thresholds`; below that, show where you are and
+    // how to move instead of a clipped list.
+    if area.width < TABBAR_SHORT_MIN {
         let index = app.tab.index() + 1;
         let label = format!(
             " {index}/{} {} · Tab next ",
@@ -622,12 +629,13 @@ fn draw_tabbar(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
-    // Nine full titles need ~96 columns; below that, abbreviate instead of clipping.
-    let narrow = area.width < 96;
+    // The full bar adds the view name, and the longest view name is `gauges`;
+    // below the measured width, abbreviate instead of clipping.
+    let narrow = area.width < TABBAR_FULL_MIN;
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let active = *tab == app.tab;
         let name = if narrow { tab.short() } else { tab.title() };
-        let label = format!(" {i} {name} ", i = i + 1);
+        let label = format!(" {} {name} ", tab.key());
         let style = if active {
             Style::default()
                 .fg(active_text_colour(t))
@@ -1083,11 +1091,10 @@ pub fn active_text_colour(theme: &Theme) -> ratatui::style::Color {
     theme.inverse
 }
 
+/// The digit a tab answers to. One mapping for the handler and the bar: the
+/// label prints `Tab::key`, so a key the bar shows is a key the handler takes.
 pub fn tab_from_key(c: char) -> Option<Tab> {
-    match c {
-        '1'..='9' => Some(Tab::from_index((c as u8 - b'1') as usize)),
-        _ => None,
-    }
+    Tab::from_key(c)
 }
 
 pub fn view_note(app: &App) -> String {
@@ -1357,7 +1364,9 @@ mod tests {
     #[test]
     fn dashboard_renders_expected_fields() {
         let app = fixture_app();
-        let text = render_to_string(&app, 100, 30);
+        // 120 columns is where the bar still prints full titles; below the
+        // measured threshold it abbreviates, so a title check reads here.
+        let text = render_to_string(&app, 120, 34);
         assert!(text.contains("routwatch"), "header missing\n{text}");
         assert!(text.contains("RSRP"));
         assert!(text.contains("-95"), "frozen fixture shows RSRP -95");
@@ -1371,7 +1380,7 @@ mod tests {
         let mut app = fixture_app();
         for tab in Tab::ALL {
             app.tab = tab;
-            let text = render_to_string(&app, 100, 30);
+            let text = render_to_string(&app, 120, 34);
             assert!(text.contains("routwatch"), "header missing on {:?}", tab);
             assert!(
                 text.to_lowercase().contains(&tab.title().to_lowercase()),
@@ -2814,7 +2823,7 @@ mod tests {
         let mut app = fixture_app();
         app.help = true;
         let text = render_to_string(&app, 100, 40);
-        assert!(text.contains("1..9 / Tab"), "help is stale:\n{text}");
+        assert!(text.contains("0..9 / Tab"), "help is stale:\n{text}");
         let mut seen: Vec<&'static str> = Vec::new();
         for row in crate::ui::help::rows() {
             if let crate::ui::help::HelpRow::Heading(t) = row {
@@ -2971,13 +2980,95 @@ mod tests {
         );
     }
 
+    /// Both bar thresholds are the width of the bar itself: the labels plus the
+    /// separators, and the view name in the full case. A tab count that grows
+    /// past them clips a name, so the numbers live in a test, not in a comment.
+    #[test]
+    fn the_tab_bar_fits_its_two_thresholds() {
+        let mut app = fixture_app();
+        let seps = Tab::ALL.len() - 1;
+        let short: usize = Tab::ALL
+            .iter()
+            .map(|t| format!(" {} {} ", t.key(), t.short()).chars().count())
+            .sum::<usize>()
+            + seps;
+        let longest_view = ["full", "gauges", "lite", "dense"]
+            .iter()
+            .map(|n| n.len())
+            .max()
+            .unwrap();
+        let full: usize = Tab::ALL
+            .iter()
+            .map(|t| format!(" {} {} ", t.key(), t.title()).chars().count())
+            .sum::<usize>()
+            + seps
+            + 3
+            + longest_view;
+        assert_eq!(
+            short, TABBAR_SHORT_MIN as usize,
+            "the short bar measures itself"
+        );
+        assert_eq!(
+            full, TABBAR_FULL_MIN as usize,
+            "the full bar carries the view"
+        );
+
+        // Exactly at each threshold every name is drawn whole.
+        let bar = render_to_string(&app, TABBAR_SHORT_MIN, 24)
+            .lines()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        for t in Tab::ALL {
+            assert!(
+                bar.contains(&format!("{} {}", t.key(), t.short())),
+                "{t:?} clipped at the short threshold: {bar}"
+            );
+        }
+        let one_short = render_to_string(&app, TABBAR_SHORT_MIN - 1, 24)
+            .lines()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        assert!(
+            one_short.contains("Tab next"),
+            "one column short falls back to the badge: {one_short}"
+        );
+
+        app.select_tab(Tab::Align);
+        let bar = render_to_string(&app, TABBAR_FULL_MIN, 34)
+            .lines()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        for t in Tab::ALL {
+            assert!(
+                bar.contains(&format!("{} {}", t.key(), t.title())),
+                "{t:?} clipped at the full threshold: {bar}"
+            );
+        }
+        assert!(bar.contains("full"), "the view name fits too: {bar}");
+        let one_short = render_to_string(&app, TABBAR_FULL_MIN - 1, 34)
+            .lines()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        assert!(
+            one_short.contains(" Dash "),
+            "one column short of the full bar abbreviates: {one_short}"
+        );
+    }
+
     #[test]
     fn tab_keys_map_to_tabs() {
         assert_eq!(tab_from_key('1'), Some(Tab::Dashboard));
         assert_eq!(tab_from_key('7'), Some(Tab::Device));
         assert_eq!(tab_from_key('8'), Some(Tab::Dns));
         assert_eq!(tab_from_key('9'), Some(Tab::Signal));
-        assert_eq!(tab_from_key('0'), None);
+        // The tenth tab answers to 0: the bar prints the key it takes.
+        assert_eq!(tab_from_key('0'), Some(Tab::Align));
+        assert_eq!(Tab::Align.key(), '0');
+        assert_eq!(Tab::Dashboard.key(), '1');
     }
 
     /// A DNS panel that draws a writable setting a firmware does not have is the

@@ -29,7 +29,7 @@ use ratatui::Terminal;
 /// help cannot advertise a shorter list than the tool answers to;
 /// `the_tab_help_names_every_section_it_accepts` holds the two together.
 const TAB_HELP: &str =
-    "Start on a tab: dashboard, bands, traffic, network, clients, sms, device, dns, signal";
+    "Start on a tab: dashboard, bands, traffic, network, clients, sms, device, dns, signal, align";
 
 /// Printed whenever the firmware's own `dhcpsdns_display` flag says the LAN DHCP
 /// DNS page does not exist: a write there is ignored, so the CLI says so up front.
@@ -4014,7 +4014,9 @@ fn handle_key(app: &mut App, k: KeyEvent, tx: &Sender<WorkerCmd>) {
             let _ = tx.send(WorkerCmd::SetInterval(app.refresh_ms));
         }
         KeyCode::Char('s') => app.settings_open = true,
-        KeyCode::Char(c @ '1'..='9') => {
+        // '0' is the tenth tab: the arm must take it, or the key dies here
+        // before `tab_from_key` sees it.
+        KeyCode::Char(c @ '0'..='9') => {
             if let Some(tab) = ui::tab_from_key(c) {
                 // A digit always reaches its section, even from Lite/Dense.
                 app.select_tab(tab);
@@ -4649,6 +4651,23 @@ mod key_tests {
     use routwatch::ui::tab_from_key;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::channel;
+
+    /// The handler is the only place a digit is turned into a tab: if the arm
+    /// stops at '9', the bar can print `0 Align` while the key does nothing.
+    #[test]
+    fn the_tenth_tab_key_selects_the_tenth_tab() {
+        let (tx, _rx) = channel();
+        let mut app = bare_app();
+        assert_eq!(app.tab, Tab::Dashboard);
+        handle_key(&mut app, key(KeyCode::Char('0')), &tx);
+        assert_eq!(app.tab, Tab::Align, "0 must reach the tenth tab");
+        handle_key(&mut app, key(KeyCode::Char('1')), &tx);
+        assert_eq!(
+            app.tab,
+            Tab::Dashboard,
+            "and the digits still read in order"
+        );
+    }
 
     #[test]
     fn the_feed_key_owns_j_k_space_and_esc_only_while_it_is_open() {

@@ -77,11 +77,18 @@ pub fn body(f: &mut Frame, area: Rect, app: &App) {
             crate::app::Tab::Device => device_tab(f, area, app),
             crate::app::Tab::Dns => dns_tab(f, area, app),
             crate::app::Tab::Signal => gauges(f, area, app),
+            crate::app::Tab::Align => align_body(f, area, app),
         },
     }
 }
 
 // ---------------------------------------------------------------- dashboard
+
+/// The alignment tab before the engine has a sample to draw.
+pub fn align_body(f: &mut Frame, area: Rect, app: &App) {
+    let _ = app;
+    f.render_widget(Paragraph::new("Align · no radio read yet"), area);
+}
 
 /// The dashboard lives in its own module: seven regions, one time window, and
 /// one clock shared by the two plots. This entry point only decides nothing.

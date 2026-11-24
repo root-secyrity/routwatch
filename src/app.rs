@@ -44,10 +44,12 @@ pub enum Tab {
     Dns,
     /// The signal-gauge dashboard, reachable as a tab (9) and as the `gauges` view.
     Signal,
+    /// The alignment tab: a 15 s SINR average, its direction and the session peak.
+    Align,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Dashboard,
         Tab::Bands,
         Tab::Traffic,
@@ -57,6 +59,7 @@ impl Tab {
         Tab::Device,
         Tab::Dns,
         Tab::Signal,
+        Tab::Align,
     ];
 
     pub fn title(&self) -> &'static str {
@@ -70,10 +73,11 @@ impl Tab {
             Tab::Device => "Device",
             Tab::Dns => "DNS",
             Tab::Signal => "Signal",
+            Tab::Align => "Align",
         }
     }
 
-    /// Short label for narrow terminals, where nine full titles do not fit.
+    /// Short label for narrow terminals, where the full titles do not fit.
     pub fn short(&self) -> &'static str {
         match self {
             Tab::Dashboard => "Dash",
@@ -85,6 +89,7 @@ impl Tab {
             Tab::Device => "Dev",
             Tab::Dns => "DNS",
             Tab::Signal => "Sig",
+            Tab::Align => "Align",
         }
     }
 
@@ -105,6 +110,25 @@ impl Tab {
             Tab::Device => "x dump json · b restart · W renew · R extras",
             Tab::Dns => "j/k choose · Enter apply · d type · D auto · e report",
             Tab::Signal => "v view · e report",
+            // No key of its own: the tab is read, not driven.
+            Tab::Align => "r refresh · P pause",
+        }
+    }
+
+    /// The digit that reaches this tab: 1..9 for the first nine, 0 for the
+    /// tenth. The bar prints it, so the label and the key never disagree.
+    pub fn key(&self) -> char {
+        match self.index() {
+            0..=8 => (b'1' + self.index() as u8) as char,
+            _ => '0',
+        }
+    }
+
+    pub fn from_key(c: char) -> Option<Tab> {
+        match c {
+            '1'..='9' => Some(Tab::from_index((c as u8 - b'1') as usize)),
+            '0' if Tab::ALL.len() > 9 => Some(Tab::from_index(9)),
+            _ => None,
         }
     }
 
@@ -2803,7 +2827,9 @@ mod tests {
     #[test]
     fn tabs_cycle_both_ways() {
         assert_eq!(Tab::Dashboard.next(), Tab::Bands);
-        assert_eq!(Tab::Dashboard.prev(), Tab::Signal);
+        // The tenth tab closes the ring: Dashboard's previous is now Align.
+        assert_eq!(Tab::Dashboard.prev(), Tab::Align);
+        assert_eq!(Tab::Align.next(), Tab::Dashboard);
         assert_eq!(Tab::parse("traffic"), Some(Tab::Traffic));
         assert_eq!(Tab::parse("Bands"), Some(Tab::Bands));
         assert_eq!(Tab::parse("nope"), None);

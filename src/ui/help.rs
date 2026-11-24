@@ -81,7 +81,7 @@ pub fn rows() -> Vec<HelpRow> {
     vec![
         Heading("GLOBAL KEYS"),
         Key(KeyRow {
-            keys: "1..9 / Tab",
+            keys: "0..9 / Tab",
             short: "switch section",
             full: "switch section from any view",
         }),
