@@ -58,7 +58,7 @@ impl Confidence {
         }
     }
 
-    fn of_rows(rows: usize, min_rows: usize) -> Confidence {
+    pub(crate) fn of_rows(rows: usize, min_rows: usize) -> Confidence {
         if rows >= HIGH_ROWS {
             Confidence::High
         } else if rows >= MEDIUM_ROWS {
@@ -82,7 +82,7 @@ impl Confidence {
         }
     }
 
-    fn min(self, other: Confidence) -> Confidence {
+    pub(crate) fn min(self, other: Confidence) -> Confidence {
         if self <= other {
             self
         } else {
