@@ -43,6 +43,14 @@ Newest first. Each section lists what changed, in the words the release uses.
   the Clients section with that client still selected, `s` sorts and names the order
   (this footer does not print the active key), `f` narrows the table to one band, and
   `j`/`k` move the dashboard's own cursor. `Shift+S` and `,` still open settings.
+- **The `?` overlay is grouped by section, and it scrolls**: the keys are filed under
+  headings (GLOBAL KEYS, SETTINGS, then one per section that answers a key of its own,
+  through DNS), and a window shorter than the list names the lines it shows
+  (`rows 1-15 of 45`), so the last sections are reached by scrolling rather than by
+  resizing the terminal. `j` `k` and `PgUp`/`PgDn` move the
+  window while it is open, so they no longer move the selection behind it; `?` and
+  `Esc` still close it, and opening starts at the top. A heading whose rows all fell
+  outside the window is not drawn.
 
 ## 0.9.2
 

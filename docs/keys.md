@@ -5,10 +5,11 @@ This file answers: what does each key do, and where does it work?
 Letters are matched case-free (`v` and `V` are the same key) except where the
 table names `Shift`. Every section prints the keys that work there in the status
 bar, and `?` opens the same list inside the tool; this file is the long form.
-The list is kept by hand. Two tests read single rows
-(`the_help_lists_the_speed_key`, `the_renew_row_is_in_the_help_and_the_device_hint`)
-and the retired-key test in `src/main.rs` forbids the rows of a key the handler no
-longer answers to, so a key added without a row here fails nothing.
+The list is kept by hand. The tests that read it
+(`the_help_lists_the_speed_key`, `the_renew_row_is_in_the_help_and_the_device_hint`
+and the grouping tests named in `src/ui/help.rs`) check single rows and the
+grouping, and the retired-key test in `src/main.rs` forbids the rows of a key the
+handler no longer answers to, so a key added without a row here fails nothing.
 
 ## Getting around
 
@@ -30,14 +31,15 @@ longer answers to, so a key added without a row here fails nothing.
 |---|---|---|
 | `S` or `,` | everywhere except Clients / Dashboard / Bands | settings: theme, view, graph, refresh, budget; `w` saves, `Esc` closes |
 | `-` / `+` | settings | traffic budget in 10 GB steps |
-| `?` | everywhere | this help |
+| `?` | everywhere | this help, grouped by section; `j` `k` or `PageUp` / `PageDown` scroll it when the list is taller than the screen |
 | `i` | everywhere | event feed: `j`/`k` read back, `space` pauses, `Esc` or `i` closes |
 | `Esc` | everywhere | close whatever is open: help, settings, event feed, band confirm, open message |
 
-While the event feed is open it owns `j` `k` `space` `Esc`, so those keys stop
-moving the list underneath until you close it. On Clients and on the dashboard's
-client table `s` sorts, and on Bands `s` saves the ticked merge, so `Shift+S` (or
-`,`) is the way into settings from those sections.
+While the event feed is open it owns `j` `k` `space` `Esc`, and while the help is
+open it owns `j` `k` `PageUp` `PageDown`, so those keys stop moving the list
+underneath until you close it. `?` reopens the help at the top. On Clients and on
+the dashboard's client table `s` sorts, and on Bands `s` saves the ticked merge,
+so `Shift+S` (or `,`) is the way into settings from those sections.
 
 ## Section keys
 
