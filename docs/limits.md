@@ -79,6 +79,11 @@ why each one is stated instead of hidden.
   and says which `nr` fields did arrive (`nrearfcn`, bandwidths, rank, BLER, CQI,
   TX power) rather than inventing dBm; it switches to the full gauges the moment
   any one of `nrrsrp`, `nrrsrq` or `nrsinr` carries a value.
+- **A weak CQI is a reading, not a cause**: the signal panel prints `CQI 6 weak`
+  and below, the number alone at 7 and above, and `-` when the firmware sends
+  none (127 means none and is dropped at parse). The cut is a fixed 6 and is not
+  tuned per model: both sides carry the number, so a wrong cut would mislabel a
+  value but never hide it, and the label never states why the value is low.
 - **The budget counts from a baseline, and says where its number came from**: the
   bar compares your `budget_gb` against traffic measured since the baseline
   (`b` moves it, and it moves itself at the start of each billing cycle read from
@@ -88,6 +93,33 @@ why each one is stated instead of hidden.
   counter clear. The per-day ledger behind the usage table only counts while
   routwatch runs, gaps over five minutes are marked rather than spread, and the
   panel prints how many days it covers.
+- **The budget report is arithmetic over the ledger, and says how much of the
+  window was watched**: `routwatch budget` reads `$XDG_DATA_HOME/routwatch/usage.json`
+  once, opens no router session and needs no config file; with no config the
+  100 GB default is printed as a default so it cannot pass for a configured
+  limit. The pace divides the bytes this cycle used by the seconds the ledger
+  actually watched, and the window is the cycle clipped by the gaps the ledger
+  marked, so coverage is stated rather than assumed: `measured` at nine tenths of
+  the window, `thin` from half, `insufficient` below that and for a zero window.
+  No pace is printed under `insufficient` or under ten watched minutes, because a
+  rate from that little is a guess with a unit. The Traffic panel prints the same
+  two facts, and only on a screen tall enough to keep its reset row.
+- **A crossing is reported once per cycle**: the observation log gains one
+  `budget` row when the cycle first reaches 80% of `budget_gb` and one at 95%,
+  with the bytes used, the limit and the coverage in the row. Both flags are
+  persisted, so a restart does not repeat a crossing it already reported, and
+  every path that moves the baseline (reset, cycle rollover, source change,
+  counter clear) clears them so the next cycle can report again. A preview frame
+  and a one-shot command write no such row: they carry no ledger path and are
+  read-only by design.
+- **The pace baseline survives a restart but not a downgrade**: the source total
+  the last sample read is persisted with the rest of the ledger and refreshed on
+  the same cycle as the sample time, so after a crash the first read works from a
+  baseline one cycle old and its `used` figure can be stale by that much. An
+  older build loads the same file, does not know the field and drops it on its
+  next save, so going back to 0.9.3 and forward again restarts the pace from a
+  zero baseline. The contract version stays 1 on purpose: the file must keep
+  reading in both directions, and a lost baseline is the stated cost of that.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown in a `0700`
   directory, with IMEI, serial, WAN IP, MACs and SSIDs hidden - these files get
   pasted in public. `report_identity`, `--report-identity` or `i` in the settings
@@ -244,7 +276,9 @@ why each one is stated instead of hidden.
   "no sample", not as "the link was down". The lock is tried three times, 5 ms apart,
   before the sample is skipped: a trim takes 131 ms and is not chased, while a holder
   that lasts only milliseconds is gone by the second attempt.
-  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the log off for scripts that read every second.
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` turns the log off for scripts that read every second,
+  and turns the cells catalog off with it: both are background records of the same read,
+  so one switch silences both.
 
 - **The signal log keeps three days and trims itself by rewriting**: the cap is 4320
   rows, one row a minute, because the drift guard compares today against two complete
@@ -290,6 +324,11 @@ why each one is stated instead of hidden.
   hour writes one row. A refused or busy read is a row; a retry that succeeded is
   not. The address a renew produced is deliberately not a field: the log is not a
   place a WAN IP may live.
+  A transmission-mode change on a cell that stayed is a row too, and only the
+  TUI worker writes it: the row is a comparison with the previous read, and a
+  one-shot `status` or `snapshot` keeps no previous read. The new value must be
+  read twice in a row before it counts, and a read that names a different cell
+  resets the baseline instead of reporting one.
 
 - **The screen is polled, never pushed**: measured 2026-11-19 on the H122-373
   (WEBUI 11.0.2.21), seven stream candidates (`websocket`, `ws`, `events`,
@@ -448,6 +487,8 @@ why each one is stated instead of hidden.
   holds one record per serving cell that a radio read has seen, and `routwatch cells
   list` prints them ordered by `last_seen`, newest first. That order is chronological,
   not a ranking: there is no best cell, no quality score and no throughput comparison.
+  `ROUTWATCH_DISABLE_SIGNAL_LOG=1` stops the catalog as well, so a script that mutes the
+  minute log leaves no cell file either.
   Measured over 80.55 hours: two serving cells, one read 1438 times and the other twice,
   and the PCI changed inside that window. A second cell with a five minute window did
   not occur, so the per-cell comparison has no measurement behind it and is not offered;

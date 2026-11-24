@@ -436,7 +436,7 @@ fn signal_lines(app: &App) -> Vec<Line<'static>> {
             sig.ul_mcs
                 .map(|m| m.to_string())
                 .unwrap_or_else(|| "-".into()),
-            sig.cqi.map(|m| m.to_string()).unwrap_or_else(|| "-".into()),
+            cqi_label(sig.cqi),
             app.signal_quality()
         ),
         Style::default().fg(t.fg),
@@ -1464,11 +1464,13 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
     // The table gets a panel of its own; below 24 rows the stats panel keeps
     // every fact and names the missing table instead of clipping a row.
     let tall = area.height >= 24;
+    // The stats box is exactly full at ten rows: eight lines, the last of them
+    // the reset row. The rate and the coverage need two more, so a screen with
+    // the room for them gets a box of twelve and a shorter one keeps its reset.
+    let room = area.height >= 26;
     let (top, usage_area, dns_area) = if tall {
         let [a, b, c] = Layout::vertical([
-            // Nine would leave seven inner rows for eight lines and clip the
-            // reset row the test pins; ten gives it eight.
-            Constraint::Length(10),
+            Constraint::Length(if room { 12 } else { 10 }),
             Constraint::Min(7),
             Constraint::Length(7),
         ])
@@ -1548,20 +1550,42 @@ pub fn traffic_tab(f: &mut Frame, area: Rect, app: &App) {
             t.dim,
         ),
         bar(frac, (top.width.saturating_sub(24)) as usize, colour, t.dim),
-        Line::from(Span::styled(
-            // At zero the baseline is set by the first sample; printing a date
-            // there would say 1970.
-            if app.usage.reset_at == 0 {
-                "baseline starts with the first sample · b resets the baseline".to_string()
-            } else {
-                format!(
-                    "reset {} · b resets the baseline · auto at cycle start",
-                    crate::usage::date_label(app.usage.reset_at)
-                )
-            },
-            Style::default().fg(t.dim),
-        )),
     ];
+    if room {
+        // Two facts and no verdict: the pace the ledger measured, and how much
+        // of the window that pace was divided by.
+        let budget_bytes = (app.budget_gb * 1024.0 * 1024.0 * 1024.0) as u64;
+        let p = crate::usage::projection(&app.usage, s.generated_at, used, budget_bytes);
+        let rate = match p.per_day {
+            Some(r) => match p.days_left {
+                Some(d) => format!("rate {} /day · {d} days left", crate::usage::gib(r)),
+                None => format!("rate {} /day", crate::usage::gib(r)),
+            },
+            None => "rate - · too little of the window was watched".to_string(),
+        };
+        lines.push(Line::from(Span::styled(rate, Style::default().fg(t.value))));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "coverage {} · {}",
+                crate::usage::coverage_word(p.coverage),
+                crate::usage::watched_of(p.watched_secs, p.window_secs)
+            ),
+            Style::default().fg(t.dim),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        // At zero the baseline is set by the first sample; printing a date
+        // there would say 1970.
+        if app.usage.reset_at == 0 {
+            "baseline starts with the first sample · b resets the baseline".to_string()
+        } else {
+            format!(
+                "reset {} · b resets the baseline · auto at cycle start",
+                crate::usage::date_label(app.usage.reset_at)
+            )
+        },
+        Style::default().fg(t.dim),
+    )));
     if !tall {
         lines.push(Line::from(Span::styled(
             "usage table needs 24 rows",
@@ -3067,10 +3091,7 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
                 .pci
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "-".into()),
-            s.signal
-                .cqi
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into()),
+            cqi_label(s.signal.cqi),
         )
     };
     facts.push(Span::styled(detail, Style::default().fg(t.dim)));
@@ -3109,6 +3130,18 @@ fn signal_panel(f: &mut Frame, area: Rect, app: &App, s: &crate::model::Snapshot
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// CQI as the panels print it. Six or below carries the word `weak`: the LTE
+/// table spends those indices on QPSK and low-order 16QAM, which is what a link
+/// that cannot hold a wide modulation reports. Seven and above print the number
+/// alone, so the word means something when it appears.
+pub(crate) fn cqi_label(cqi: Option<u8>) -> String {
+    match cqi {
+        Some(v) if v <= 6 => format!("{v} weak"),
+        Some(v) => v.to_string(),
+        None => "-".into(),
+    }
+}
+
 /// The NR fields that are not main gauge metrics, as separate parts.
 fn nr_aux_parts(nr: &crate::model::Nr) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
@@ -3128,7 +3161,7 @@ fn nr_aux_parts(nr: &crate::model::Nr) -> Vec<String> {
         parts.push(format!("BLER {b:.1}%"));
     }
     if let Some(c) = nr.cqi {
-        parts.push(format!("CQI {c}"));
+        parts.push(format!("CQI {}", cqi_label(Some(c))));
     }
     if let Some(tx) = nr.txpower_dbm {
         parts.push(format!("TX {tx:.0} dBm"));
@@ -3530,7 +3563,7 @@ pub fn dense(f: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{graphs_panel, split, throughput_panel, visible_rows};
+    use super::{cqi_label, graphs_panel, split, throughput_panel, visible_rows};
     use crate::app::{App, Tab};
     use crate::theme::{GraphStyle, Theme};
 
@@ -3548,6 +3581,141 @@ mod tests {
         app.on_snapshot(snap, 432);
         app.tab = Tab::Network;
         app
+    }
+
+    // ------------------------------------------------------------- traffic
+
+    /// The lines the panel prints between the budget row and the reset row.
+    fn burn_lines(screen: &str) -> Vec<&str> {
+        let rows: Vec<&str> = screen.lines().collect();
+        let budget = rows
+            .iter()
+            .position(|l| l.contains("budget"))
+            .unwrap_or_else(|| panic!("no budget row: {screen}"));
+        let reset = rows
+            .iter()
+            .position(|l| l.contains("reset ") || l.contains("baseline starts"))
+            .unwrap_or_else(|| panic!("no reset row: {screen}"));
+        assert!(reset > budget, "the reset row closes the box: {screen}");
+        rows[budget + 1..reset]
+            .iter()
+            .filter(|l| l.contains("rate ") || l.contains("coverage "))
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn the_panel_shows_burn_and_coverage() {
+        let mut app = fixture_app();
+        app.tab = Tab::Traffic;
+
+        // A cycle that has not started has no window, and the panel says that
+        // instead of printing "0m watched of 0m" as if it were measured.
+        let cold = crate::ui::render_to_string(&app, 120, 34);
+        let cold_burn = burn_lines(&cold);
+        assert_eq!(cold_burn.len(), 2, "{cold_burn:?}");
+        assert!(cold_burn[0].contains("rate - "), "{:?}", cold_burn[0]);
+        assert!(cold_burn[1].contains("no window yet"), "{:?}", cold_burn[1]);
+
+        let now = app.snap.as_ref().expect("snapshot").generated_at;
+        // Two days of a baseline watched the whole time, 2 GB used: a rate
+        // exists and it was measured over the whole window.
+        app.usage.base_bytes = 0;
+        app.usage.reset_at = now.saturating_sub(2 * 86_400);
+        app.usage.last_at = now;
+        app.usage.last_total = 2_000_000_000;
+
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let burn = burn_lines(&screen);
+        assert_eq!(burn.len(), 2, "two lines and no more: {burn:?}");
+        let rate = burn[0];
+        let coverage = burn[1];
+        assert!(rate.contains("/day"), "the pace carries its unit: {rate}");
+        assert!(rate.contains("days left"), "{rate}");
+        assert!(coverage.contains("coverage measured"), "{coverage}");
+        assert!(coverage.contains("2.0d watched of 2.0d"), "{coverage}");
+        // A number is not a verdict: neither line names a judgement.
+        for word in ["good", "bad", "fine", "low", "high", "healthy"] {
+            assert!(
+                !rate.contains(word) && !coverage.contains(word),
+                "{word}: {burn:?}"
+            );
+        }
+
+        // A window that was entirely a gap has no pace to print, and the line
+        // says why instead of inventing one.
+        app.usage.gaps = vec![crate::usage::Gap {
+            from: app.usage.reset_at,
+            to: now,
+        }];
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let burn = burn_lines(&screen);
+        assert_eq!(burn.len(), 2, "{burn:?}");
+        assert!(burn[0].contains("rate - "), "{:?}", burn[0]);
+        assert!(
+            !burn[0].contains("/day"),
+            "no pace from no window: {:?}",
+            burn[0]
+        );
+        assert!(burn[1].contains("coverage insufficient"), "{:?}", burn[1]);
+    }
+
+    #[test]
+    fn a_short_panel_keeps_its_reset_row() {
+        let mut app = fixture_app();
+        app.tab = Tab::Traffic;
+        // 24 rows is the tallest screen that still gets the ten row box, and
+        // the reset row is its last line rather than the line it clips.
+        let screen = crate::ui::render_to_string(&app, 120, 24);
+        assert!(
+            screen.contains("reset ") || screen.contains("baseline starts"),
+            "the reset row survived the short screen: {screen}"
+        );
+        assert!(burn_lines(&screen).is_empty(), "no room, no burn lines");
+    }
+
+    // ------------------------------------------------------------ signal / CQI
+
+    #[test]
+    fn cqi_below_seven_is_marked_weak() {
+        assert_eq!(cqi_label(Some(0)), "0 weak");
+        assert_eq!(cqi_label(Some(6)), "6 weak");
+    }
+
+    #[test]
+    fn cqi_at_seven_or_above_is_plain() {
+        assert_eq!(cqi_label(Some(7)), "7");
+        assert_eq!(cqi_label(Some(15)), "15");
+        assert_eq!(cqi_label(None), "-");
+    }
+
+    #[test]
+    fn the_signal_panel_shows_tm_and_cqi_on_one_line() {
+        let mut app = fixture_app();
+        app.tab = Tab::Signal;
+        if let Some(snap) = app.snap.as_mut() {
+            snap.signal.cqi = Some(7);
+        }
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let line = screen
+            .lines()
+            .find(|l| l.contains("TM[4]"))
+            .unwrap_or_else(|| panic!("no line names the TM: {screen}"));
+        assert!(line.contains("CQI 7"), "the CQI shares the TM line: {line}");
+        assert!(
+            !line.contains("weak"),
+            "seven is not the weak side of the cut: {line}"
+        );
+
+        if let Some(snap) = app.snap.as_mut() {
+            snap.signal.cqi = Some(6);
+        }
+        let screen = crate::ui::render_to_string(&app, 120, 34);
+        let line = screen
+            .lines()
+            .find(|l| l.contains("TM[4]"))
+            .unwrap_or_else(|| panic!("no line names the TM: {screen}"));
+        assert!(line.contains("CQI 6 weak"), "six is marked: {line}");
     }
 
     // ---------------------------------------------------------------- clients

@@ -129,6 +129,15 @@ pub struct Usage {
     pub last_at: u64,
     pub last_dl: u64,
     pub last_ul: u64,
+    /// The source total the last sample read, in bytes. It is what the next
+    /// sample compares against after a restart: the baselines alone say where a
+    /// cycle started, not how far the counters had already moved.
+    pub last_total: u64,
+    /// The 80% and 95% thresholds of the current cycle were reported to the
+    /// observation log. They live in the file so a restart does not report the
+    /// same crossing twice, and they are cleared wherever the baseline restarts.
+    pub thr_80: bool,
+    pub thr_95: bool,
     pub days: Vec<DayBucket>,
     pub gaps: Vec<Gap>,
 }
@@ -145,6 +154,9 @@ impl Default for Usage {
             last_at: 0,
             last_dl: 0,
             last_ul: 0,
+            last_total: 0,
+            thr_80: false,
+            thr_95: false,
             days: Vec::new(),
             gaps: Vec::new(),
         }
@@ -170,6 +182,9 @@ pub fn reset(u: &mut Usage, now: u64, total: u64, has_quota: bool) {
     u.base_bytes = total;
     u.reset_at = now;
     u.source = u8::from(has_quota);
+    u.last_total = total;
+    u.thr_80 = false;
+    u.thr_95 = false;
 }
 
 /// A different router means different counters, not a different user: keep the
@@ -193,6 +208,9 @@ pub fn switch_router(u: &mut Usage, now: u64, tr: &Traffic, quota: Option<&Quota
     u.last_at = now;
     u.last_dl = tr.total_dl_bytes;
     u.last_ul = tr.total_ul_bytes;
+    u.last_total = u.base_bytes;
+    u.thr_80 = false;
+    u.thr_95 = false;
 }
 
 fn add(days: &mut Vec<DayBucket>, day: i64, dl: u64, ul: u64) {
@@ -230,12 +248,16 @@ pub fn observe_day(
     let src = source_total(tr, quota);
     let kind = u8::from(quota.is_some());
 
+    // Any branch that moves the baseline re-arms the cycle's thresholds: the bar
+    // went back to zero, so the crossings are ahead of it again.
+    let mut restarted = false;
     if u.cycle_start == 0 {
         u.cycle_start = cycle;
         u.base_bytes = src;
         u.reset_at = now;
         u.source = kind;
         dirty = true;
+        restarted = true;
     } else if cycle != u.cycle_start {
         // Automatic reset, first sample of the new billing cycle.
         u.cycle_start = cycle;
@@ -243,6 +265,7 @@ pub fn observe_day(
         u.reset_at = now;
         u.source = kind;
         dirty = true;
+        restarted = true;
     }
 
     if kind != u.source {
@@ -252,11 +275,17 @@ pub fn observe_day(
         u.base_bytes = src;
         u.reset_at = now;
         dirty = true;
+        restarted = true;
     } else if src < u.base_bytes {
         // The router cleared its own counter, or the lifetime counters wrapped.
         u.base_bytes = src;
         u.reset_at = now;
         dirty = true;
+        restarted = true;
+    }
+    if restarted {
+        u.thr_80 = false;
+        u.thr_95 = false;
     }
 
     if u.last_at != 0 {
@@ -283,12 +312,219 @@ pub fn observe_day(
     u.last_at = now;
     u.last_dl = tr.total_dl_bytes;
     u.last_ul = tr.total_ul_bytes;
+    u.last_total = src;
 
     u.days.sort_by_key(|b| b.day);
     while u.days.len() > KEEP_DAYS {
         u.days.remove(0);
     }
     dirty
+}
+
+/// How much of the window a projection could divide by. The words are the
+/// contract: a rate is only called measured when nine tenths of the window was
+/// watched, weak from half, and not printed below that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    Measured,
+    Weak,
+    Poor,
+}
+
+/// What the ledger can honestly say about the pace of the current cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Projection {
+    /// Seconds since the baseline was taken.
+    pub window_secs: u64,
+    /// The part of that window no recorded gap covers.
+    pub watched_secs: u64,
+    pub coverage: Coverage,
+    /// Bytes per day across the watched part; None when it is too short or too
+    /// little of it was seen to divide by.
+    pub per_day: Option<u64>,
+    /// Days the remaining budget lasts at that rate; None when nothing is
+    /// burning.
+    pub days_left: Option<u32>,
+    /// True when the budget is spent. A zero budget is "no budget set", not
+    /// "every byte over".
+    pub over: bool,
+}
+
+/// The shortest watched window a daily rate is computed from. Ten minutes of a
+/// cycle say nothing about the month, and the division turns noise into a
+/// confident-looking number.
+pub const MIN_RATE_SECS: u64 = 600;
+
+/// The pace of the cycle as the ledger saw it. Pure: the caller passes the
+/// clock, the bytes used, and the budget, so tests need no timezone and no file.
+pub fn projection(u: &Usage, now: u64, used: u64, budget: u64) -> Projection {
+    let window_secs = now.saturating_sub(u.reset_at);
+    let mut gap_secs = 0u64;
+    for g in &u.gaps {
+        let from = g.from.max(u.reset_at);
+        let to = g.to.min(now);
+        if to > from {
+            gap_secs = gap_secs.saturating_add(to - from);
+        }
+    }
+    let watched_secs = window_secs.saturating_sub(gap_secs);
+    // Integer ratios, so a rounding error cannot move a boundary. A zero window
+    // is not a perfect one: nothing was watched, so nothing can be said.
+    let coverage = if window_secs == 0 {
+        Coverage::Poor
+    } else if watched_secs.saturating_mul(10) >= window_secs.saturating_mul(9) {
+        Coverage::Measured
+    } else if watched_secs.saturating_mul(2) >= window_secs {
+        Coverage::Weak
+    } else {
+        Coverage::Poor
+    };
+    let rate = (coverage != Coverage::Poor && watched_secs >= MIN_RATE_SECS)
+        .then(|| used.saturating_mul(86_400) / watched_secs);
+    let days_left = rate.filter(|p| *p > 0).map(|p| {
+        let left = budget.saturating_sub(used);
+        let days = left.saturating_add(p - 1) / p;
+        u32::try_from(days).unwrap_or(u32::MAX)
+    });
+    Projection {
+        window_secs,
+        watched_secs,
+        coverage,
+        per_day: rate,
+        days_left,
+        over: budget > 0 && used >= budget,
+    }
+}
+
+/// How a coverage level is named in the CLI and in the panel. One spelling, so a
+/// reader of one surface recognises the other.
+/// "2.0h watched of 2.0h", or the plain truth when the cycle has no window yet:
+/// "0m watched of 0m" reads like a measurement and is not one.
+pub fn watched_of(watched_secs: u64, window_secs: u64) -> String {
+    if window_secs == 0 {
+        "no window yet".to_string()
+    } else {
+        format!("{} watched of {}", span(watched_secs), span(window_secs))
+    }
+}
+
+pub fn coverage_word(c: Coverage) -> &'static str {
+    match c {
+        Coverage::Measured => "measured",
+        Coverage::Weak => "thin",
+        Coverage::Poor => "insufficient",
+    }
+}
+
+/// Bytes in the unit the panel's bar and this report share.
+pub fn gib(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
+/// A span of seconds in the shortest unit that keeps a digit.
+pub fn span(secs: u64) -> String {
+    if secs >= 86_400 {
+        format!("{:.1}d", secs as f64 / 86_400.0)
+    } else if secs >= 3_600 {
+        format!("{:.1}h", secs as f64 / 3_600.0)
+    } else {
+        format!("{}m", secs / 60)
+    }
+}
+
+/// The budget command's numbers, as one struct so the text and the `--json`
+/// shape cannot disagree about the same cycle.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BurnReport {
+    /// Bytes above the baseline, as of the last sample the ledger kept.
+    pub used_bytes: u64,
+    pub budget_gb: u64,
+    pub budget_bytes: u64,
+    pub percent: f64,
+    pub window_secs: u64,
+    pub watched_secs: u64,
+    /// measured, thin or insufficient, the same words the panel prints.
+    pub coverage: String,
+    /// None when the watched window was too short or too broken to divide.
+    pub per_day_bytes: Option<u64>,
+    pub days_left: Option<u32>,
+    pub over: bool,
+    /// The local stamp of the sample the numbers came from; empty before the
+    /// first sample.
+    pub as_of: String,
+    /// True when no config file was readable and the built-in budget was used.
+    pub budget_default: bool,
+}
+
+/// What this machine's ledger alone can say about the month: no router is read,
+/// so the bytes are the last sample's and the window is the one it watched.
+pub fn budget_report(u: &Usage, budget_gb: u64, budget_default: bool) -> BurnReport {
+    let budget_bytes = budget_gb.saturating_mul(1024 * 1024 * 1024);
+    let used_bytes = u.last_total.saturating_sub(u.base_bytes);
+    let p = projection(u, u.last_at, used_bytes, budget_bytes);
+    BurnReport {
+        used_bytes,
+        budget_gb,
+        budget_bytes,
+        percent: if budget_bytes == 0 {
+            0.0
+        } else {
+            used_bytes as f64 * 100.0 / budget_bytes as f64
+        },
+        window_secs: p.window_secs,
+        watched_secs: p.watched_secs,
+        coverage: coverage_word(p.coverage).to_string(),
+        per_day_bytes: p.per_day,
+        days_left: p.days_left,
+        over: p.over,
+        as_of: if u.last_at == 0 {
+            String::new()
+        } else {
+            crate::signal_history::local_stamp(u.last_at)
+        },
+        budget_default,
+    }
+}
+
+/// The `budget` command's text: facts, no verdict, and no number where the
+/// window cannot carry one.
+pub fn burn_text(r: &BurnReport) -> String {
+    let mut out = format!(
+        "Budget · {} GB{}\n",
+        r.budget_gb,
+        if r.budget_default {
+            " (default: no config file)"
+        } else {
+            ""
+        }
+    );
+    if r.as_of.is_empty() {
+        out.push_str("the ledger has no sample yet\n");
+        return out;
+    }
+    out.push_str(&format!("as of {}\n", r.as_of));
+    out.push_str(&format!(
+        "used {} of {} GB ({:.1}%)\n",
+        gib(r.used_bytes),
+        r.budget_gb,
+        r.percent
+    ));
+    match r.per_day_bytes {
+        Some(p) => {
+            let left = match r.days_left {
+                Some(d) => format!(" · {d} days left"),
+                None => String::new(),
+            };
+            out.push_str(&format!("rate {} /day{left}\n", gib(p)));
+        }
+        None => out.push_str("rate - · too little of the window was watched\n"),
+    }
+    out.push_str(&format!(
+        "coverage {} · {}\n",
+        r.coverage,
+        watched_of(r.watched_secs, r.window_secs)
+    ));
+    out
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -775,5 +1011,165 @@ mod tests {
             "the lock must die with the handle"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---------------------------------------------------------- projection
+
+    #[test]
+    fn a_cycle_with_no_window_says_so() {
+        // The first sample of a cycle sets the baseline, so the window is still
+        // zero and there is nothing to divide by: the line says that instead of
+        // printing "0m watched of 0m" as if it were measured.
+        let u = Usage {
+            reset_at: 1_790_000_000,
+            last_at: 1_790_000_000,
+            last_total: 1_790_000_000,
+            ..Usage::default()
+        };
+        let text = burn_text(&budget_report(&u, 100, true));
+        assert!(
+            text.contains("coverage insufficient · no window yet"),
+            "{text}"
+        );
+        assert!(!text.contains("0m watched"), "{text}");
+        assert!(text.contains("rate - "), "{text}");
+
+        // A ledger with no sample at all claims nothing about coverage.
+        let none = burn_text(&budget_report(&Usage::default(), 100, true));
+        assert!(none.contains("no sample yet"), "{none}");
+        assert!(!none.contains("coverage"), "{none}");
+    }
+
+    #[test]
+    fn a_projection_refuses_without_a_window() {
+        let u = Usage {
+            reset_at: 5_000,
+            ..Default::default()
+        };
+        let p = projection(&u, 5_000, 1_000, 10_000);
+        assert_eq!(p.window_secs, 0);
+        assert_eq!(p.coverage, Coverage::Poor);
+        assert_eq!(p.per_day, None);
+        assert_eq!(p.days_left, None);
+        assert!(!p.over);
+    }
+
+    #[test]
+    fn a_projection_reads_burn_and_days_left() {
+        // One hour since the baseline, half of it covered by one recorded gap.
+        let u = Usage {
+            reset_at: 1_000_000,
+            gaps: vec![Gap {
+                from: 1_000_600,
+                to: 1_002_400,
+            }],
+            ..Default::default()
+        };
+        let used = 1_000_000_000u64;
+        let p = projection(&u, 1_003_600, used, 100_000_000_000);
+        assert_eq!(p.window_secs, 3_600);
+        assert_eq!(p.watched_secs, 1_800);
+        assert_eq!(p.coverage, Coverage::Weak, "half the window was watched");
+        assert_eq!(p.per_day, Some(48_000_000_000), "1 GB over 1800 s");
+        assert_eq!(p.days_left, Some(3), "99 GB left at 48 GB a day");
+        assert!(!p.over);
+
+        // The same rate with the budget spent is over, and no days are left.
+        let spent = projection(&u, 1_003_600, 100_000_000_000, 100_000_000_000);
+        assert!(spent.over);
+        assert_eq!(spent.days_left, Some(0));
+    }
+
+    #[test]
+    fn a_projection_below_half_the_window_prints_no_rate() {
+        let u = Usage {
+            reset_at: 0,
+            gaps: vec![Gap {
+                from: 1_000,
+                to: 4_000,
+            }],
+            ..Default::default()
+        };
+        let p = projection(&u, 4_000, 10_000_000, 10_000_000_000);
+        assert_eq!(p.watched_secs, 1_000);
+        assert_eq!(p.coverage, Coverage::Poor);
+        assert_eq!(p.per_day, None);
+        assert_eq!(p.days_left, None);
+    }
+
+    #[test]
+    fn a_round_trip_keeps_last_total() {
+        let dir = std::env::temp_dir().join(format!("routwatch-total-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("usage.json");
+        let u = Usage {
+            last_total: 7_654_321,
+            ..Default::default()
+        };
+        save(&path, &u).unwrap();
+        assert_eq!(load(&path).last_total, 7_654_321);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_file_without_last_total_loads() {
+        // A 0.9.3 ledger has no last_total: it must load as zero, keep version
+        // 1, and not be refused on the next save.
+        let dir = std::env::temp_dir().join(format!("routwatch-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("usage.json");
+        let old = br#"{"version":1,"base_bytes":1000,"reset_at":900,"last_at":950,"last_dl":10,"last_ul":2}"#;
+        std::fs::write(&path, old).unwrap();
+        let u = load(&path);
+        assert_eq!(u.version, VERSION);
+        assert_eq!(u.base_bytes, 1_000);
+        assert_eq!(u.last_total, 0);
+        save(&path, &u).expect("an old file is ours to rewrite");
+        assert_eq!(load(&path).last_total, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_counter_reset_rearms_the_threshold() {
+        let day = day(20_700, 4);
+        let mut u = Usage::default();
+        observe_day(&mut u, 1_000, day, &tr(1_000, 0), None, 1);
+        u.thr_80 = true;
+        u.thr_95 = true;
+        // The router cleared its own counter: the baseline restarts from the
+        // small number, so the crossings are ahead of the bar again.
+        assert!(observe_day(&mut u, 1_100, day, &tr(10, 0), None, 1));
+        assert_eq!(u.base_bytes, 10);
+        assert!(!u.thr_80 && !u.thr_95, "a cleared counter re-arms both");
+
+        // The same rule at the other two restart points a sample can reach.
+        u.thr_80 = true;
+        u.thr_95 = true;
+        reset(&mut u, 1_200, 5_000, false);
+        assert!(!u.thr_80 && !u.thr_95, "a manual reset re-arms both");
+        u.thr_80 = true;
+        u.thr_95 = true;
+        switch_router(&mut u, 1_300, &tr(70_000, 0), None);
+        assert!(!u.thr_80 && !u.thr_95, "a router switch re-arms both");
+    }
+
+    #[test]
+    fn every_restart_refreshes_last_total() {
+        let day = day(20_700, 4);
+        let mut u = Usage::default();
+        observe_day(&mut u, 1_000, day, &tr(1_000, 0), None, 1);
+        assert_eq!(u.last_total, 1_000, "the first sample is a restart");
+        observe_day(&mut u, 1_100, day, &tr(1_500, 0), None, 1);
+        assert_eq!(u.last_total, 1_500, "a plain sample still tracks the total");
+        reset(&mut u, 1_200, 4_000, false);
+        assert_eq!(u.last_total, 4_000, "a manual reset moves the total");
+        switch_router(&mut u, 1_300, &tr(50_000, 0), None);
+        assert_eq!(u.last_total, 50_000, "a router switch moves the total");
+        // The router cleared its own counter: the baseline restarts, and the
+        // newest total is the small one.
+        observe_day(&mut u, 1_400, day, &tr(10, 0), None, 1);
+        assert_eq!(u.base_bytes, 10);
+        assert_eq!(u.last_total, 10);
     }
 }

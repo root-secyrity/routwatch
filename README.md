@@ -250,12 +250,18 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
   ranks them, never picks a best cell and never compares throughput across cells: that
   comparison has no measurement behind it yet, so the command prints what was seen and
   nothing more. The rules are in [`docs/limits.md`](docs/limits.md).
+- **The month's burn can be read without the screen**: `routwatch budget` reads
+  the local usage ledger and prints what the cycle used, the limit, the pace the
+  ledger measured and how much of the window it was divided by; `--json` is the
+  same figures for a script. It needs no config file and opens no router session,
+  and it states the coverage instead of implying the rate is exact.
 - **The signal is logged, one row a minute**: `$XDG_DATA_HOME/routwatch/signal-history.jsonl`
   (`0600`, three days of rows) gives a drop nobody watched a shape. `routwatch history
   --signal` prints it without touching the network; `ROUTWATCH_DISABLE_SIGNAL_LOG=1`
-  turns the log off. The same rows feed `routwatch antenna worth`, which says whether
-  the cell is limited by how much arrives or by how clean it arrives, and the drift
-  guard, which says when today is worse than this cell's own last days.
+  turns the log off, and the cells catalog below with it. The same rows feed
+  `routwatch antenna worth`, which says whether the cell is limited by how much
+  arrives or by how clean it arrives, and the drift guard, which says when today
+  is worse than this cell's own last days.
 
 The rest, including the `100006` band-write code, the small-terminal order and the
 retired graph styles, are stated in [`docs/limits.md`](docs/limits.md). Nothing there

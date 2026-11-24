@@ -64,6 +64,34 @@ file reads as `[]` with exit 0; a damaged one warns on stderr and prints the rec
 that still read. The text table prints the same set with `best_sinr` as `9 dB` and
 both stamps in local ISO 8601.
 
+`routwatch budget [--json]` answers what this cycle has spent and how fast, from
+the local ledger alone: no config file, no router session, exit `0` even when the
+router is unreachable. `--json` prints the fixed keys:
+
+```json
+{
+  "used_bytes": 2000000000,
+  "budget_gb": 100,
+  "budget_bytes": 107374182400,
+  "percent": 1.862645149230957,
+  "window_secs": 7200,
+  "watched_secs": 7200,
+  "coverage": "measured",
+  "per_day_bytes": 24000000000,
+  "days_left": 5,
+  "over": false,
+  "as_of": "2026-09-21 19:13",
+  "budget_default": true
+}
+```
+
+`per_day_bytes` and `days_left` are `null` when the ledger watched too little of
+the window for a pace, `coverage` is one of `measured`, `thin` or `insufficient`,
+and `budget_default` is true only when no config file was found, so a limit
+nobody set never reads as a configured one. The text form prints the same figures
+as four lines, and `docs/limits.md` states where the cuts and the baseline come
+from.
+
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
 IMEI, MACs, WAN IP, client names and addresses, and the operator name with
 `(hidden)`, `dump --redact` does the same to the raw XML (keeping every tag name,

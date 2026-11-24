@@ -4,6 +4,31 @@ Newest first. Each section lists what changed, in the words the release uses.
 
 ## Unreleased
 
+- **`routwatch budget [--json]`**: what this cycle spent, the limit, the pace the
+  ledger measured and how much of the window that pace was divided by, read from
+  the local ledger alone: no config file, no router session. With no config the
+  100 GB default is labelled a default (`budget_default`), so it cannot pass for a
+  configured limit. The Traffic panel prints the same two figures when the screen
+  has the room for them and keeps its reset row when it does not.
+- **The budget crossing is reported at 80% and 95%**: one `budget` row per
+  crossing, once per cycle, with the bytes, the limit and the coverage; the flags
+  are persisted so a restart does not repeat a row, and every restart of the
+  baseline clears them. The pace is projected from the watched part of the window
+  and says so (`measured`, `thin`, `insufficient`) instead of dividing by a window
+  that was partly unobserved.
+- **A weak CQI is marked where the CQI is already printed**: `CQI 6 weak` and
+  below, the number alone from 7, on all three lines that carry a CQI. The label
+  is a reading, never a cause.
+- **A transmission-mode change is a row in the observation log**: the TUI worker
+  writes it once the new value has been read twice in a row, and a read that names
+  a different cell resets the baseline instead of reporting one.
+- **`ROUTWATCH_DISABLE_SIGNAL_LOG=1` now silences the cells catalog too**: one
+  switch for both background records of the same read.
+- **`scripts/gate-isolation.sh` holds one run at a time**: concurrent runs shared
+  the data homes and the fingerprints, so a second run now exits with one line and
+  the lock carries its owner's pid. Part C no longer exits 0 with a skipped line
+  while the app is live; a skip must be asked for with
+  `ROUTWATCH_ISOLATION_ALLOW_LIVE=1`.
 - **`routwatch cells list`**: the serving cells this machine has read, newest first,
   from `$XDG_DATA_HOME/routwatch/cells.json` (`0600`). A cell is keyed by downlink
   ARFCN and PCI; a sample whose ARFCN did not parse becomes its own `earfcn_unknown`

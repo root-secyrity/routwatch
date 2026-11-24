@@ -205,10 +205,10 @@ pub fn collect_traced(
         if let Some(path) = signal_history::path() {
             let _ = signal_history::record_if_due(&snap, at, &path);
         }
+        // Inside the switch on purpose: a script that reads every second asked
+        // for no background record of its reads, and the catalog is one.
+        crate::cells::record_cell(&snap, at);
     }
-    // The catalog is not the log: that switch silences the minute rows, not the
-    // record of which cell was read.
-    crate::cells::record_cell(&snap, at);
     Ok(snap)
 }
 
@@ -253,10 +253,10 @@ pub fn collect_tier(
                 if let Some(path) = signal_history::path() {
                     let _ = signal_history::record_if_due(snap, at, &path);
                 }
+                // The switch covers both records: the minute row and the cell
+                // catalog that same read would leave behind.
+                crate::cells::record_cell(snap, at);
             }
-            // Outside that block on purpose: the catalog answers "which cell did
-            // this machine read", which the log switch does not gate.
-            crate::cells::record_cell(snap, at);
         }
         Tier::Clients => {
             let clients = match step(trace, Phase::Clients, || c.get("wlan/host-list")) {

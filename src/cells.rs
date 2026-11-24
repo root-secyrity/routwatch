@@ -48,6 +48,20 @@ pub enum CellKey {
     Unkeyed { band: String, pci: u16 },
 }
 
+/// The key a stored row carries: `(earfcn_dl, pci)` when the firmware gave a
+/// downlink ARFCN, otherwise the band-and-PCI variant. `None` when the row names
+/// no cell at all, which is the case a PCI alone must never fill.
+///
+/// One function, so the catalog that stores a cell and the watcher that reports a
+/// TM change cannot disagree about which cell they are looking at.
+pub fn key_from_row(row: &Row) -> Option<CellKey> {
+    let pci = row.pci.and_then(|p| u16::try_from(p).ok())?;
+    match row.earfcn_dl {
+        Some(earfcn_dl) => Some(CellKey::Carrier { earfcn_dl, pci }),
+        None => row.band.clone().map(|band| CellKey::Unkeyed { band, pci }),
+    }
+}
+
 /// The catalog in memory. Loaded once from disk, then kept current by the radio
 /// read that produced each sample.
 #[derive(Debug, Default)]
@@ -85,17 +99,11 @@ impl CellCatalog {
         let Some(row) = Row::from_snapshot(s, at) else {
             return;
         };
-        let Some(pci) = row.pci.and_then(|p| u16::try_from(p).ok()) else {
+        let Some(key) = key_from_row(&row) else {
             return;
         };
-        let key = match row.earfcn_dl {
-            Some(earfcn_dl) => CellKey::Carrier { earfcn_dl, pci },
-            None => match row.band.clone() {
-                Some(band) => CellKey::Unkeyed { band, pci },
-                // Neither an ARFCN nor a band: a PCI on its own names no cell,
-                // it names the one sharing that number nearby.
-                None => return,
-            },
+        let pci = match &key {
+            CellKey::Carrier { pci, .. } | CellKey::Unkeyed { pci, .. } => *pci,
         };
         let tac = s.signal.tac.and_then(|t| u16::try_from(t).ok());
         let sinr = row.sinr_db.map(|v| v.round() as i32);
@@ -597,6 +605,46 @@ mod tests {
         assert!(c.sorted().is_empty());
         assert_eq!(c.writes(), 0);
         assert!(!p.exists());
+    }
+
+    #[test]
+    fn a_stored_record_keys_the_same_as_its_row() {
+        let p = scratch("key-from-row");
+        let s = cell(Some(481));
+        let row = Row::from_snapshot(&s, 1_000).expect("a row with figures");
+        let key = key_from_row(&row).expect("the row names a cell");
+        assert_eq!(
+            key,
+            CellKey::Carrier {
+                earfcn_dl: 100,
+                pci: 481
+            }
+        );
+
+        let mut c = CellCatalog::default();
+        c.observe(&s, 1_000, &p);
+        let (stored, rec) = c.entries.iter().next().expect("one entry");
+        assert_eq!(
+            stored, &key,
+            "the catalog must file the cell under the key its row gives"
+        );
+        assert_eq!((rec.pci, rec.earfcn_dl), (481, Some(100)));
+
+        // The same agreement on the other variant: no ARFCN, so band and PCI.
+        let silent = sample("B3", Some(395), None, Some(8.0), Some(516));
+        let row = Row::from_snapshot(&silent, 1_060).expect("a row with figures");
+        assert_eq!(
+            key_from_row(&row),
+            Some(CellKey::Unkeyed {
+                band: "B3".into(),
+                pci: 395
+            })
+        );
+
+        // And no key at all when neither an ARFCN nor a PCI is there.
+        let nameless = sample("B1", None, None, Some(9.0), Some(516));
+        let row = Row::from_snapshot(&nameless, 1_120).expect("a row with figures");
+        assert_eq!(key_from_row(&row), None);
     }
 
     #[test]
