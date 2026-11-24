@@ -198,14 +198,17 @@ pub fn collect_traced(
     // Best effort, and silent on purpose: a log that cannot be written must not
     // fail a `status` the user asked for. `ROUTWATCH_DISABLE_SIGNAL_LOG` is the
     // switch a script that reads every second needs.
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     if std::env::var_os("ROUTWATCH_DISABLE_SIGNAL_LOG").is_none() {
         if let Some(path) = signal_history::path() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            let _ = signal_history::record_if_due(&snap, now, &path);
+            let _ = signal_history::record_if_due(&snap, at, &path);
         }
     }
+    // The catalog is not the log: that switch silences the minute rows, not the
+    // record of which cell was read.
+    crate::cells::record_cell(&snap, at);
     Ok(snap)
 }
 
@@ -251,6 +254,9 @@ pub fn collect_tier(
                     let _ = signal_history::record_if_due(snap, at, &path);
                 }
             }
+            // Outside that block on purpose: the catalog answers "which cell did
+            // this machine read", which the log switch does not gate.
+            crate::cells::record_cell(snap, at);
         }
         Tier::Clients => {
             let clients = match step(trace, Phase::Clients, || c.get("wlan/host-list")) {
