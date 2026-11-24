@@ -297,9 +297,12 @@ why each one is stated instead of hidden.
 - **The drift guard cannot judge before two complete v2 days**: it compares
   today's best SINR on one cell against the median of the previous days' best,
   and it needs at least 60 rows a day, so a day the router was off is skipped with
-  a note. Below six hours of today's rows it is still collecting and says so, in
-  place of a verdict. The alert threshold is 4 dB: three days of this H122-373
-  measured a daily spread of 3 dB (2026-11-22, 80.55 h on one cell, SINR std
+  a note. Today must hold six hours of sampled minutes: each distinct minute of that
+  cell counts once, never the span between its first and last row, because a day with
+  two reads seven hours apart is two minutes of coverage. Below that it is still
+  collecting and says so, naming the span beside the samples, in place of a verdict.
+  The alert threshold is 4 dB: three days of this H122-373 measured a daily spread of
+  3 dB (2026-11-22, 80.55 h on one cell, SINR std
   1.20 dB), and an alert that fires inside weather is an alert nobody reads. Rows
   without an earfcn and a pci are v1 rows: they are counted and never judged. A
   pci change inside one earfcn is another cell, so it is reported as a change and
@@ -455,7 +458,9 @@ why each one is stated instead of hidden.
   not attributed to either band, and a figure beside a band is associated with it,
   never caused by it. The derived smear is the 95th percentile gap between the samples
   inside the window, not the widest gap in the log: a pause of hours is absence of
-  observation, and letting it mute the day would hide every real change.
+  observation, and letting it mute the day would hide every real change. A window with
+  fewer than two reads has no smear, and `smear_ms` is then `null` with the window line
+  saying so, because a zero there would read as an order the rows never settled.
 - **Band advice has four confidence levels and no write path**: `insufficient`, `low`,
   `medium`, `high`, from the rows and the measured scans, and the weakest link sets the
   whole advice. `bands advise` prints the command that would add evidence, switches
@@ -546,12 +551,16 @@ why each one is stated instead of hidden.
   RSRP fall is `mixed`, with no single verdict.
 - **Download is compared only when both sides have two reads**: one speed row per side
   states no difference, and the transfer is never inferred from MCS (r -0.161 over the same
-  still link, so MCS and SINR did not move together). Two events closer together than the
-  smear print that their order is not resolved. The smear is the 95th percentile of the
-  gaps between the reads inside the compared window, taken from a sorted copy of it: a
-  pause of hours outside the window cannot enter, and one lost read inside it cannot widen
-  the figure to a day. A window with fewer than two reads has no smear at all, and the note
-  then says the order cannot be resolved instead of printing a gap.
+  still link, so MCS and SINR did not move together). Two events are ordered by their own
+  stamps, and the smear never enters that pair: it ranks a reading against a change, and
+  applying it to two events refused an order the log already holds. Two events inside the
+  same second print that their order is not resolved, because the log records whole
+  seconds and the pairs share the one stamp it kept. The smear itself is the 95th
+  percentile of the gaps between the reads inside the compared window, taken from a
+  sorted copy of it: a pause of hours outside the window cannot enter, and one lost
+  read inside it cannot widen the figure to a day. A window with fewer than two reads has
+  no smear at all, and the note then says the order cannot be resolved instead of printing
+  a gap.
 - **The Align tab averages reads, not time**: the 15 s window holds the radio reads that
   arrived in it, so a slower poll means fewer reads in the same window and a poll slower
   than 15 s leaves it empty rather than repeating the last value. The measured cadence on

@@ -124,7 +124,9 @@ pub struct Set {
 pub struct Advice {
     pub window_secs: u64,
     pub rows_used: usize,
-    pub smear_ms: u64,
+    /// The measured smear, or `None` when the window holds fewer than two reads
+    /// and no gap can be ranked. `None` is not zero: zero would claim an order.
+    pub smear_ms: Option<u64>,
     /// The weaker of the two sections' levels: an advice is only as good as the
     /// part of it that is least supported.
     pub confidence: Confidence,
@@ -153,7 +155,8 @@ pub struct Input<'a> {
     pub now_unix: u64,
     pub window_secs: u64,
     pub min_rows: usize,
-    pub smear_ms: u64,
+    /// The smear measured over the same window the advice reads, or `None`.
+    pub smear_ms: Option<u64>,
 }
 
 /// Bare band number. The log says `3`; a caller that hands over `B3` gets `3`.
@@ -205,7 +208,6 @@ pub(crate) fn median_f64(values: &[f64]) -> Option<f64> {
 
 /// The advice. Pure: no clock, no file, no network, no write.
 pub fn advise(input: &Input) -> Advice {
-    let smear_secs = input.smear_ms as f64 / 1000.0;
     let since = input.now_unix.saturating_sub(input.window_secs);
     let in_window: Vec<&crate::signal_history::Row> = input
         .signal
@@ -220,8 +222,15 @@ pub fn advise(input: &Input) -> Advice {
     let mut prev: Option<&crate::signal_history::Row> = None;
     for row in &in_window {
         if let Some(p) = prev {
-            let gap = row.at_unix.saturating_sub(p.at_unix) as f64;
-            if gap > 0.0 && gap < smear_secs && row.band != p.band {
+            // One definition of order: a reading against a change is open inside
+            // the measured smear, and a window without two reads ranks nothing.
+            let order = crate::incidents::classify_pair(
+                crate::incidents::PairSide::EventAndReading,
+                p.at_unix.saturating_mul(1000),
+                row.at_unix.saturating_mul(1000),
+                input.smear_ms,
+            );
+            if order == crate::incidents::PairOrder::InsideSmear && row.band != p.band {
                 dropped_in_smear += 1;
                 prev = Some(row);
                 continue;
@@ -311,12 +320,16 @@ pub fn advise(input: &Input) -> Advice {
     notes.push(
         "the log records the band that was served, not the set that was configured".to_string(),
     );
-    // A window with no rankable gap (zero) has nothing to attribute inside.
-    if input.smear_ms > 0 {
-        notes.push(format!(
-            "a reading within {} ms of a band change is not attributed to either band",
-            input.smear_ms
-        ));
+    match input.smear_ms {
+        Some(ms) if ms > 0 => notes.push(format!(
+            "a reading within {ms} ms of a band change is not attributed to either band"
+        )),
+        Some(_) => {}
+        None => notes.push(
+            "the window holds fewer than two reads, so a reading near a band change cannot be \
+             placed inside a measured smear"
+                .to_string(),
+        ),
     }
     notes.push("a figure beside a band is associated with it, never caused by it".to_string());
     if dropped_in_smear > 0 {
@@ -478,6 +491,17 @@ fn best_sinr(rows: &[&crate::signal_history::Row]) -> Option<f32> {
     })
 }
 
+/// The seconds a day was actually read: each distinct sample slot counted once.
+/// A span counts an outage as covered, which is how a day with two reads at the
+/// two ends of seven hours looked like a full day.
+pub fn sampled_secs(rows: &[&crate::signal_history::Row]) -> u64 {
+    let width = crate::signal_history::SIGNAL_SAMPLE_SECS;
+    let mut slots: Vec<u64> = rows.iter().map(|r| r.at_unix / width).collect();
+    slots.sort_unstable();
+    slots.dedup();
+    slots.len() as u64 * width
+}
+
 /// Judge one cell against its own past. Pure: rows in, opinion out.
 pub fn drift_guard(rows: &[crate::signal_history::Row], now_unix: u64) -> GuardAdvice {
     let mut out = GuardAdvice::default();
@@ -559,13 +583,28 @@ pub fn drift_guard(rows: &[crate::signal_history::Row], now_unix: u64) -> GuardA
         return out;
     }
     out.cell.today_best_db = best_sinr(&today_rows);
-    let first = today_rows.first().map(|r| r.at_unix).unwrap_or(now_unix);
-    let last_at = today_rows.last().map(|r| r.at_unix).unwrap_or(now_unix);
-    let covered = last_at.saturating_sub(first) + crate::signal_history::SIGNAL_SAMPLE_SECS;
+    let first = today_rows
+        .iter()
+        .map(|r| r.at_unix)
+        .min()
+        .unwrap_or(now_unix);
+    let last_at = today_rows
+        .iter()
+        .map(|r| r.at_unix)
+        .max()
+        .unwrap_or(now_unix);
+    let span = last_at.saturating_sub(first) + crate::signal_history::SIGNAL_SAMPLE_SECS;
+    let covered = sampled_secs(&today_rows);
+    out.notes.push(format!(
+        "today: {:.1} h spanned, {:.1} h sampled on this cell",
+        span as f64 / 3600.0,
+        covered as f64 / 3600.0
+    ));
     if covered < GUARD_TODAY_SECS {
         out.collecting = true;
         out.missing.push(format!(
-            "today covers {:.1} h of this cell, {} h needed before a verdict",
+            "today spans {:.1} h, sampled {:.1} h, {} h needed before a verdict",
+            span as f64 / 3600.0,
             covered as f64 / 3600.0,
             GUARD_TODAY_SECS / 3600
         ));
@@ -708,8 +747,14 @@ mod tests {
             now_unix: 10_000,
             window_secs: 3_600,
             min_rows: 3,
-            smear_ms,
+            smear_ms: Some(smear_ms),
         }
+    }
+
+    fn input_without_a_smear<'a>(rows: &'a [crate::signal_history::Row]) -> Input<'a> {
+        let mut input = input(rows, 0);
+        input.smear_ms = None;
+        input
     }
 
     #[test]
@@ -746,6 +791,29 @@ mod tests {
                 .iter()
                 .any(|n| n.contains(" ms of a band change")),
             "{:?}",
+            advice.notes
+        );
+    }
+
+    /// `None` is not zero: with no rankable gap the advice says so instead of
+    /// printing a number, and it drops nothing.
+    #[test]
+    fn a_window_without_two_reads_names_no_smear() {
+        let rows = vec![row(9_900, "3", -100.0), row(9_901, "1", -90.0)];
+        let advice = advise(&input_without_a_smear(&rows));
+        assert_eq!(advice.smear_ms, None);
+        assert_eq!(advice.dropped_in_smear, 0);
+        assert!(
+            advice
+                .notes
+                .iter()
+                .any(|n| n.contains("fewer than two reads")),
+            "{:?}",
+            advice.notes
+        );
+        assert!(
+            !advice.notes.iter().any(|n| n.contains("0 ms")),
+            "no invented zero: {:?}",
             advice.notes
         );
     }
@@ -856,6 +924,82 @@ mod tests {
             g.cell
         );
         assert_eq!(g.cell.drift_db, Some(3.0));
+    }
+
+    /// Two reads at the two ends of seven hours are two minutes of samples, not
+    /// a day of coverage.
+    #[test]
+    fn two_reads_at_the_ends_of_a_span_do_not_cover_it() {
+        let anchor = 1_700_000_000;
+        let today_start = start_of_day(anchor);
+        let yesterday = start_of_day(today_start - 60);
+        let before = start_of_day(yesterday - 60);
+        let mut rows = day(before, 360, 9.0, EARFCN, PCI);
+        rows.extend(day(yesterday, 360, 9.0, EARFCN, PCI));
+        rows.push(keyed(today_start + 60, EARFCN, PCI, 8.0));
+        rows.push(keyed(today_start + 60 + 7 * 3_600, EARFCN, PCI, 8.0));
+        let now = today_start + 7 * 3_600 + 120;
+        let g = drift_guard(&rows, now);
+        assert!(g.collecting, "two reads cannot judge a day: {:?}", g);
+        assert!(
+            g.missing.iter().any(|m| m.contains("sampled 0.0 h")),
+            "the coverage must be the sampled minutes: {:?}",
+            g.missing
+        );
+        assert!(
+            g.notes.iter().any(|n| n.contains("7.0 h spanned")),
+            "the span is still named, beside the samples: {:?}",
+            g.notes
+        );
+    }
+
+    /// The same minute read twice is one minute of coverage.
+    #[test]
+    fn a_minute_read_twice_is_one_minute() {
+        let anchor = 1_700_000_000;
+        let today_start = start_of_day(anchor);
+        let yesterday = start_of_day(today_start - 60);
+        let before = start_of_day(yesterday - 60);
+        let mut rows = day(before, 360, 9.0, EARFCN, PCI);
+        rows.extend(day(yesterday, 360, 9.0, EARFCN, PCI));
+        for m in 0..360 {
+            let at = today_start + 60 + m * 60;
+            rows.push(keyed(at, EARFCN, PCI, 6.0));
+            rows.push(keyed(at + 1, EARFCN, PCI, 6.0));
+        }
+        let now = today_start + 6 * 3_600 + 200;
+        let g = drift_guard(&rows, now);
+        assert!(
+            !g.collecting,
+            "six hours of minutes, each read twice: {:?}",
+            g
+        );
+        assert!(
+            g.notes.iter().any(|n| n.contains("6.0 h sampled")),
+            "{:?}",
+            g.notes
+        );
+    }
+
+    /// The span comes from the extreme stamps, never from the order of the file.
+    #[test]
+    fn an_out_of_order_day_still_has_a_span() {
+        let anchor = 1_700_000_000;
+        let today_start = start_of_day(anchor);
+        let yesterday = start_of_day(today_start - 60);
+        let before = start_of_day(yesterday - 60);
+        let mut rows = day(before, 360, 9.0, EARFCN, PCI);
+        rows.extend(day(yesterday, 360, 9.0, EARFCN, PCI));
+        let mut today = day(today_start, 120, 6.0, EARFCN, PCI);
+        today.reverse();
+        rows.extend(today);
+        let now = today_start + 6 * 3_600 + 120;
+        let g = drift_guard(&rows, now);
+        assert!(
+            g.notes.iter().any(|n| n.contains("2.0 h spanned")),
+            "reversed rows must not read as a zero span: {:?}",
+            g.notes
+        );
     }
 
     #[test]

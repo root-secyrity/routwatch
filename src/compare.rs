@@ -321,24 +321,20 @@ pub fn compare(input: &CompareInput<'_>) -> Comparison {
             segments.len()
         ));
     }
-    let neighbour = match input.smear_ms {
-        Some(smear) => input.neighbours.iter().any(|&t| {
-            let d = t.abs_diff(t0) * 1000;
-            d > 0 && d <= smear
-        }),
-        // No rankable gap: anything else in the window may have come first.
-        None => input.neighbours.iter().any(|&t| t.abs_diff(t0) <= w),
-    };
-    if neighbour {
-        match input.smear_ms {
-            Some(smear) => notes.push(format!(
-                "another event falls inside the measured smear of {smear} ms, so which came first is not resolved"
-            )),
-            None => notes.push(
-                "another event falls inside a window with fewer than two reads, so which came first is not resolved"
-                    .to_string(),
-            ),
-        }
+    // A neighbour here is an event: it carries its own stamp, so the signal
+    // smear does not enter the pair. Only the same second leaves it open.
+    let same_second = input.neighbours.iter().any(|&t| {
+        crate::incidents::classify_pair(
+            crate::incidents::PairSide::TwoEvents,
+            t0.saturating_mul(1000),
+            t.saturating_mul(1000),
+            input.smear_ms,
+        ) == crate::incidents::PairOrder::SameStamp
+    });
+    if same_second {
+        notes.push(
+            "another event carries the same stamp, so which came first is not resolved".to_string(),
+        );
     }
     if input.smear_ms.is_none() {
         missing.push(
@@ -679,23 +675,44 @@ mod tests {
         assert!(text.contains("not measurable"), "{text}");
     }
 
+    /// A neighbour event carries its own stamp, so a window with no rankable
+    /// signal gap does not leave the pair open.
     #[test]
-    fn an_event_inside_a_hole_is_still_not_ordered() {
+    fn a_neighbour_event_in_a_hole_is_ordered_by_its_own_stamp() {
         let mut s = before_rows(1, 10.0, -100.0, 481, Some(100));
         s.extend(after_rows(1, 10.0, -100.0, 481, Some(100)));
         let c = run_with(s, WINDOW_SECS, &[T0 + 2], None);
         assert!(
-            c.notes.iter().any(|n| n.contains("not resolved")),
-            "a neighbour inside an unmeasurable window is still unordered: {c:?}"
+            !c.notes.iter().any(|n| n.contains("not resolved")),
+            "two events two seconds apart are ordered by their stamps: {c:?}"
+        );
+        assert!(c.missing.iter().any(|m| m.starts_with("smear:")), "{c:?}");
+    }
+
+    /// The same second is the one case a log of whole seconds cannot order.
+    #[test]
+    fn two_events_in_the_same_second_are_not_ordered() {
+        let mut s = before_rows(20, 10.0, -100.0, 481, Some(100));
+        s.extend(after_rows(20, 10.0, -100.0, 481, Some(100)));
+        let c = run(s, WINDOW_SECS, &[T0]);
+        assert!(
+            c.notes
+                .iter()
+                .any(|n| n.contains("same stamp") && n.contains("not resolved")),
+            "{c:?}"
         );
     }
 
+    /// The signal smear ranks a reading against a change, never two events.
     #[test]
-    fn a_neighbour_event_inside_the_smear_is_not_ordered() {
+    fn a_neighbour_event_inside_the_smear_is_ordered() {
         let mut s = before_rows(20, 10.0, -100.0, 481, Some(100));
         s.extend(after_rows(20, 10.0, -100.0, 481, Some(100)));
         let c = run(s, WINDOW_SECS, &[T0 + 2]);
-        assert!(c.notes.iter().any(|n| n.contains("not resolved")), "{c:?}");
+        assert!(
+            !c.notes.iter().any(|n| n.contains("not resolved")),
+            "a 61 s smear must not enter an event-event pair: {c:?}"
+        );
     }
 
     /// No sentence here may name a cause: the comparison says what moved.
