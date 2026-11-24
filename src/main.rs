@@ -2860,8 +2860,7 @@ fn bands_advise(
         &source.signal.iter().map(|r| r.at_unix).collect::<Vec<_>>(),
         now.saturating_sub(window_secs),
         now,
-    )
-    .unwrap_or(0);
+    );
 
     let scans = match scans_path.as_deref() {
         Some(path) => {
@@ -2937,10 +2936,17 @@ fn bands_advise(
     }
 
     let mhz = |band: &str| -> String { band.to_string() };
-    println!(
-        "window: last {} s, {} rows used, smear {} ms",
-        advice.window_secs, advice.rows_used, advice.smear_ms
-    );
+    match advice.smear_ms {
+        Some(ms) => println!(
+            "window: last {} s, {} rows used, smear {} ms",
+            advice.window_secs, advice.rows_used, ms
+        ),
+        None => println!(
+            "window: last {} s, {} rows used, smear not measurable: fewer than two reads inside \
+             the window",
+            advice.window_secs, advice.rows_used
+        ),
+    }
     println!(
         "confidence: {} (served {}, sets {})",
         advice.confidence.as_str(),

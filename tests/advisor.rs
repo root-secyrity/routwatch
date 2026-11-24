@@ -88,7 +88,7 @@ impl Case {
             now_unix: NOW,
             window_secs: WINDOW_SECS,
             min_rows: MIN_ROWS,
-            smear_ms: 2_860,
+            smear_ms: Some(2_860),
         })
     }
 }
@@ -162,7 +162,7 @@ fn the_window_bounds_what_is_counted() {
         now_unix: NOW,
         window_secs: 60,
         min_rows: MIN_ROWS,
-        smear_ms: 2_860,
+        smear_ms: Some(2_860),
     });
     assert_eq!(advice.rows_used, 0);
     assert_eq!(advice.confidence, Confidence::Insufficient);
