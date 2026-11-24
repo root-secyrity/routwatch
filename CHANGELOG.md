@@ -2,9 +2,9 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
-## Unreleased
+## 0.9.3
 
-**The signal log remembers the cell, and the guard reads it back**
+**The signal log remembers the cell, and the guard reads it back** (#74)
 
 - A signal row is v2: it carries the downlink and uplink earfcn as numbers and the
   transmission mode. `DL:100 UL:18100` is parsed once, on the way in; a malformed
