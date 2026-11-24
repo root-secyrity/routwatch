@@ -220,6 +220,10 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
 
 - **5G per-field metrics can be empty** on some firmware: the signal panel shows
   the bars and says which `nr` fields did arrive rather than inventing dBm.
+- **The Align tab averages reads, not time**: the tenth tab (`0`) shows a 15 s SINR
+  average, its direction past a 3.6 dB deadband, and a session peak that clears when the
+  serving cell changes. It is a reading, not a sweep: what a rotating antenna does to that
+  average is unmeasured, so nothing on the tab is labelled as one.
 - **The budget starts at a baseline**: `budget_gb` is compared against traffic
   since a baseline that `b` resets and the billing cycle moves. The router's own
   month counter is used when the firmware answers it; otherwise the lifetime
