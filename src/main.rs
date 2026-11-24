@@ -2222,20 +2222,20 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 .filter(|e| e.at_unix != event.at_unix)
                 .map(|e| e.at_unix)
                 .collect();
-            // The whole log is the window until the compare path passes its own:
-            // every event sees the same rank here, which is what it did before.
+            let window_secs = window.unwrap_or(routwatch::compare::WINDOW_SECS);
+            // The smear is read off the window around the event, never off the
+            // whole log: an overnight hole outside it must not mute the day.
             let smear_ms = routwatch::incidents::smear_in_window(
                 &src.signal.iter().map(|r| r.at_unix).collect::<Vec<_>>(),
-                0,
-                u64::MAX,
-            )
-            .unwrap_or(0);
+                event.at_unix.saturating_sub(window_secs),
+                event.at_unix.saturating_add(window_secs),
+            );
             let input = routwatch::compare::CompareInput {
                 event,
                 signal: &src.signal,
                 speed: &src.speed,
                 neighbours: &neighbours,
-                window_secs: window.unwrap_or(routwatch::compare::WINDOW_SECS),
+                window_secs,
                 smear_ms,
             };
             let c = routwatch::compare::compare(&input);
@@ -2840,25 +2840,6 @@ fn sms_delete_cmd(
     Ok(())
 }
 
-/// The smear the advice uses: the 95th percentile gap between the samples
-/// inside the window, not the widest gap in the whole log. An overnight pause
-/// is absence of observation, and letting it mute a whole day of readings would
-/// hide every real change instead of protecting them.
-fn window_smear(rows: &[routwatch::signal_history::Row], now: u64, window_secs: u64) -> u64 {
-    let since = now.saturating_sub(window_secs);
-    let mut gaps: Vec<u64> = rows
-        .windows(2)
-        .filter(|w| w[1].at_unix >= since && w[1].at_unix <= now)
-        .map(|w| w[1].at_unix.saturating_sub(w[0].at_unix) * 1000)
-        .filter(|ms| *ms > 0)
-        .collect();
-    if gaps.is_empty() {
-        return 0;
-    }
-    gaps.sort_unstable();
-    gaps[(gaps.len() * 95) / 100]
-}
-
 /// Band advice from the logs. Reads only: the one request it makes is the
 /// advertised list, and a router that does not answer narrows the advice
 /// instead of stopping it.
@@ -2872,7 +2853,15 @@ fn bands_advise(
 ) -> Result<(), ApiError> {
     let source = routwatch::incidents::Source::load();
     let window_secs = window.unwrap_or(routwatch::advisor::WINDOW_SECS);
-    let smear = window_smear(&source.signal, routwatch::record::now_unix(), window_secs);
+    let now = routwatch::record::now_unix();
+    // The same window rule as compare: rank the gaps inside the advice window,
+    // and say nothing when there are fewer than two reads to rank.
+    let smear = routwatch::incidents::smear_in_window(
+        &source.signal.iter().map(|r| r.at_unix).collect::<Vec<_>>(),
+        now.saturating_sub(window_secs),
+        now,
+    )
+    .unwrap_or(0);
 
     let scans = match scans_path.as_deref() {
         Some(path) => {

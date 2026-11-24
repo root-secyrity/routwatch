@@ -311,10 +311,13 @@ pub fn advise(input: &Input) -> Advice {
     notes.push(
         "the log records the band that was served, not the set that was configured".to_string(),
     );
-    notes.push(format!(
-        "a reading within {} ms of a band change is not attributed to either band",
-        input.smear_ms
-    ));
+    // A window with no rankable gap (zero) has nothing to attribute inside.
+    if input.smear_ms > 0 {
+        notes.push(format!(
+            "a reading within {} ms of a band change is not attributed to either band",
+            input.smear_ms
+        ));
+    }
     notes.push("a figure beside a band is associated with it, never caused by it".to_string());
     if dropped_in_smear > 0 {
         notes.push(format!(
@@ -723,6 +726,27 @@ mod tests {
         assert!(
             advice.served.iter().all(|s| s.band != "1" || s.rows == 1),
             "the dropped reading must not count toward B1"
+        );
+    }
+
+    /// A window with fewer than two reads has no smear: the advice must not
+    /// print "within 0 ms", which is a claim about a measurement that was never
+    /// made.
+    #[test]
+    fn a_smear_of_zero_prints_no_window_note() {
+        let rows = vec![
+            row(9_900, "3", -100.0),
+            row(9_950, "3", -99.0),
+            row(9_990, "3", -98.0),
+        ];
+        let advice = advise(&input(&rows, 0));
+        assert!(
+            !advice
+                .notes
+                .iter()
+                .any(|n| n.contains(" ms of a band change")),
+            "{:?}",
+            advice.notes
         );
     }
 

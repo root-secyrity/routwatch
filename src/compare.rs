@@ -117,7 +117,9 @@ pub struct Comparison {
     pub event_at_unix: u64,
     pub event_detail: Option<String>,
     pub window_secs: u64,
-    pub smear_ms: u64,
+    /// `None` when the window holds fewer than two reads, so no gap can be
+    /// ranked: a zero here would claim an order the log cannot show.
+    pub smear_ms: Option<u64>,
     pub segments: Vec<Segment>,
     /// The weakest segment's confidence: a summary is only as good as its worst part.
     pub confidence: Confidence,
@@ -137,8 +139,9 @@ pub struct CompareInput<'a> {
     pub neighbours: &'a [u64],
     pub window_secs: u64,
     /// How wide the measured smear is: two events closer than this may have
-    /// happened in either order.
-    pub smear_ms: u64,
+    /// happened in either order. `None` when the window holds fewer than two
+    /// reads, which rules out ordering anything inside it.
+    pub smear_ms: Option<u64>,
 }
 
 fn cell_label(k: &CellKey) -> String {
@@ -318,15 +321,29 @@ pub fn compare(input: &CompareInput<'_>) -> Comparison {
             segments.len()
         ));
     }
-    let neighbour = input.neighbours.iter().any(|&t| {
-        let d = t.abs_diff(t0) * 1000;
-        d > 0 && d <= input.smear_ms
-    });
+    let neighbour = match input.smear_ms {
+        Some(smear) => input.neighbours.iter().any(|&t| {
+            let d = t.abs_diff(t0) * 1000;
+            d > 0 && d <= smear
+        }),
+        // No rankable gap: anything else in the window may have come first.
+        None => input.neighbours.iter().any(|&t| t.abs_diff(t0) <= w),
+    };
     if neighbour {
-        notes.push(format!(
-            "another event falls inside the measured smear of {} ms, so which came first is not resolved",
-            input.smear_ms
-        ));
+        match input.smear_ms {
+            Some(smear) => notes.push(format!(
+                "another event falls inside the measured smear of {smear} ms, so which came first is not resolved"
+            )),
+            None => notes.push(
+                "another event falls inside a window with fewer than two reads, so which came first is not resolved"
+                    .to_string(),
+            ),
+        }
+    }
+    if input.smear_ms.is_none() {
+        missing.push(
+            "smear: the window holds fewer than two reads, so no gap can be ranked".to_string(),
+        );
     }
 
     let speed_note = "speed: a side has fewer than two reads, so there is no difference";
@@ -369,10 +386,16 @@ pub fn summary(c: &Comparison) -> String {
         c.event_kind,
         crate::signal_history::local_iso(c.event_at_unix)
     );
-    out.push_str(&format!(
-        "window {} s each side · smear {} ms\n",
-        c.window_secs, c.smear_ms
-    ));
+    match c.smear_ms {
+        Some(ms) => out.push_str(&format!(
+            "window {} s each side · smear {ms} ms\n",
+            c.window_secs
+        )),
+        None => out.push_str(&format!(
+            "window {} s each side · smear not measurable: fewer than two reads inside it\n",
+            c.window_secs
+        )),
+    }
     if let Some(d) = &c.event_detail {
         out.push_str(&format!("detail: {d}\n"));
     }
@@ -494,6 +517,15 @@ mod tests {
     }
 
     fn run(signal: Vec<Row>, window: u64, neighbours: &[u64]) -> Comparison {
+        run_with(signal, window, neighbours, Some(2860))
+    }
+
+    fn run_with(
+        signal: Vec<Row>,
+        window: u64,
+        neighbours: &[u64],
+        smear_ms: Option<u64>,
+    ) -> Comparison {
         let e = event();
         let input = CompareInput {
             event: &e,
@@ -501,7 +533,7 @@ mod tests {
             speed: &[],
             neighbours,
             window_secs: window,
-            smear_ms: 2860,
+            smear_ms,
         };
         compare(&input)
     }
@@ -627,11 +659,35 @@ mod tests {
             speed: &speed,
             neighbours: &[],
             window_secs: WINDOW_SECS,
-            smear_ms: 2860,
+            smear_ms: Some(2860),
         };
         let c = compare(&input);
         assert!(c.missing.iter().any(|m| m.starts_with("speed:")), "{c:?}");
         assert_eq!(c.segments[0].download_delta_mbps, None);
+    }
+
+    /// An event read inside a hole has no rankable gap: the answer must say so
+    /// instead of printing a zero that reads as "the order is settled".
+    #[test]
+    fn a_window_without_two_reads_says_the_smear_is_unmeasurable() {
+        let mut s = before_rows(20, 10.0, -100.0, 481, Some(100));
+        s.extend(after_rows(20, 10.0, -100.0, 481, Some(100)));
+        let c = run_with(s, WINDOW_SECS, &[], None);
+        assert_eq!(c.smear_ms, None);
+        assert!(c.missing.iter().any(|m| m.starts_with("smear:")), "{c:?}");
+        let text = summary(&c);
+        assert!(text.contains("not measurable"), "{text}");
+    }
+
+    #[test]
+    fn an_event_inside_a_hole_is_still_not_ordered() {
+        let mut s = before_rows(1, 10.0, -100.0, 481, Some(100));
+        s.extend(after_rows(1, 10.0, -100.0, 481, Some(100)));
+        let c = run_with(s, WINDOW_SECS, &[T0 + 2], None);
+        assert!(
+            c.notes.iter().any(|n| n.contains("not resolved")),
+            "a neighbour inside an unmeasurable window is still unordered: {c:?}"
+        );
     }
 
     #[test]
