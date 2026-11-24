@@ -603,7 +603,8 @@ pub fn drift_guard(rows: &[crate::signal_history::Row], now_unix: u64) -> GuardA
     if covered < GUARD_TODAY_SECS {
         out.collecting = true;
         out.missing.push(format!(
-            "today covers {:.1} h sampled of this cell, {} h needed before a verdict",
+            "today spans {:.1} h, sampled {:.1} h, {} h needed before a verdict",
+            span as f64 / 3600.0,
             covered as f64 / 3600.0,
             GUARD_TODAY_SECS / 3600
         ));
@@ -941,7 +942,7 @@ mod tests {
         let g = drift_guard(&rows, now);
         assert!(g.collecting, "two reads cannot judge a day: {:?}", g);
         assert!(
-            g.missing.iter().any(|m| m.contains("0.0 h sampled")),
+            g.missing.iter().any(|m| m.contains("sampled 0.0 h")),
             "the coverage must be the sampled minutes: {:?}",
             g.missing
         );
