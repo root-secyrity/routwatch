@@ -133,6 +133,11 @@ pub struct Usage {
     /// sample compares against after a restart: the baselines alone say where a
     /// cycle started, not how far the counters had already moved.
     pub last_total: u64,
+    /// The 80% and 95% thresholds of the current cycle were reported to the
+    /// observation log. They live in the file so a restart does not report the
+    /// same crossing twice, and they are cleared wherever the baseline restarts.
+    pub thr_80: bool,
+    pub thr_95: bool,
     pub days: Vec<DayBucket>,
     pub gaps: Vec<Gap>,
 }
@@ -150,6 +155,8 @@ impl Default for Usage {
             last_dl: 0,
             last_ul: 0,
             last_total: 0,
+            thr_80: false,
+            thr_95: false,
             days: Vec::new(),
             gaps: Vec::new(),
         }
@@ -176,6 +183,8 @@ pub fn reset(u: &mut Usage, now: u64, total: u64, has_quota: bool) {
     u.reset_at = now;
     u.source = u8::from(has_quota);
     u.last_total = total;
+    u.thr_80 = false;
+    u.thr_95 = false;
 }
 
 /// A different router means different counters, not a different user: keep the
@@ -200,6 +209,8 @@ pub fn switch_router(u: &mut Usage, now: u64, tr: &Traffic, quota: Option<&Quota
     u.last_dl = tr.total_dl_bytes;
     u.last_ul = tr.total_ul_bytes;
     u.last_total = u.base_bytes;
+    u.thr_80 = false;
+    u.thr_95 = false;
 }
 
 fn add(days: &mut Vec<DayBucket>, day: i64, dl: u64, ul: u64) {
@@ -237,12 +248,16 @@ pub fn observe_day(
     let src = source_total(tr, quota);
     let kind = u8::from(quota.is_some());
 
+    // Any branch that moves the baseline re-arms the cycle's thresholds: the bar
+    // went back to zero, so the crossings are ahead of it again.
+    let mut restarted = false;
     if u.cycle_start == 0 {
         u.cycle_start = cycle;
         u.base_bytes = src;
         u.reset_at = now;
         u.source = kind;
         dirty = true;
+        restarted = true;
     } else if cycle != u.cycle_start {
         // Automatic reset, first sample of the new billing cycle.
         u.cycle_start = cycle;
@@ -250,6 +265,7 @@ pub fn observe_day(
         u.reset_at = now;
         u.source = kind;
         dirty = true;
+        restarted = true;
     }
 
     if kind != u.source {
@@ -259,11 +275,17 @@ pub fn observe_day(
         u.base_bytes = src;
         u.reset_at = now;
         dirty = true;
+        restarted = true;
     } else if src < u.base_bytes {
         // The router cleared its own counter, or the lifetime counters wrapped.
         u.base_bytes = src;
         u.reset_at = now;
         dirty = true;
+        restarted = true;
+    }
+    if restarted {
+        u.thr_80 = false;
+        u.thr_95 = false;
     }
 
     if u.last_at != 0 {
@@ -950,6 +972,30 @@ mod tests {
         save(&path, &u).expect("an old file is ours to rewrite");
         assert_eq!(load(&path).last_total, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_counter_reset_rearms_the_threshold() {
+        let day = day(20_700, 4);
+        let mut u = Usage::default();
+        observe_day(&mut u, 1_000, day, &tr(1_000, 0), None, 1);
+        u.thr_80 = true;
+        u.thr_95 = true;
+        // The router cleared its own counter: the baseline restarts from the
+        // small number, so the crossings are ahead of the bar again.
+        assert!(observe_day(&mut u, 1_100, day, &tr(10, 0), None, 1));
+        assert_eq!(u.base_bytes, 10);
+        assert!(!u.thr_80 && !u.thr_95, "a cleared counter re-arms both");
+
+        // The same rule at the other two restart points a sample can reach.
+        u.thr_80 = true;
+        u.thr_95 = true;
+        reset(&mut u, 1_200, 5_000, false);
+        assert!(!u.thr_80 && !u.thr_95, "a manual reset re-arms both");
+        u.thr_80 = true;
+        u.thr_95 = true;
+        switch_router(&mut u, 1_300, &tr(70_000, 0), None);
+        assert!(!u.thr_80 && !u.thr_95, "a router switch re-arms both");
     }
 
     #[test]

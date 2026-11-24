@@ -861,6 +861,7 @@ impl App {
             snap.quota.as_ref(),
             start_day,
         );
+        self.note_budget(&snap, snap.generated_at);
         // One sample per radio read, not one per snapshot: with tiers the client
         // and device ticks carry the same signal value again, and pushing them
         // would both duplicate the sample and break the spacing the plots assume.
@@ -2112,6 +2113,54 @@ impl App {
                 now,
                 "drift",
                 Some(detail),
+            );
+            let _ = crate::events::append(&events, &e);
+        }
+    }
+
+    /// The two budget thresholds, each written to the observation log once per
+    /// cycle. The flags live in the ledger, so a restart does not report the same
+    /// crossing again, and the write needs `usage_path`: `preview` and `status`
+    /// run without one, and a preview frame never touches the disk.
+    pub fn note_budget(&mut self, snap: &Snapshot, now: u64) {
+        if self.usage_path.is_none() || self.budget_gb <= 0.0 {
+            return;
+        }
+        let used = crate::usage::used(&snap.traffic, snap.quota.as_ref(), &self.usage);
+        let budget_bytes = (self.budget_gb * 1024.0 * 1024.0 * 1024.0) as u64;
+        let frac = used as f64 / budget_bytes as f64;
+        let outcome = if frac >= 0.95 && !self.usage.thr_95 {
+            "95"
+        } else if frac >= 0.80 && !self.usage.thr_80 {
+            "80"
+        } else {
+            return;
+        };
+        self.usage.thr_80 = true;
+        if outcome == "95" {
+            self.usage.thr_95 = true;
+        }
+        self.usage_dirty = true;
+        let p = crate::usage::projection(&self.usage, now, used, budget_bytes);
+        let coverage = match p.coverage {
+            crate::usage::Coverage::Measured => "measured",
+            crate::usage::Coverage::Weak => "weak",
+            crate::usage::Coverage::Poor => "too little of the window watched",
+        };
+        let rate = p
+            .per_day
+            .map(|r| format!("{r} B/day"))
+            .unwrap_or_else(|| "no rate".into());
+        let detail = Some(format!(
+            "used {used} of {budget_bytes} bytes; {coverage}; {rate}"
+        ));
+        if let Some(events) = crate::events::path() {
+            let e = crate::events::ObsEvent::new(
+                crate::events::EventKind::Budget,
+                "app",
+                now,
+                outcome,
+                detail,
             );
             let _ = crate::events::append(&events, &e);
         }
@@ -3881,5 +3930,115 @@ mod tests {
             "a second write must not replace the one in flight: {:?}",
             app.write
         );
+    }
+
+    // ------------------------------------------------------------ budget events
+
+    /// One snapshot whose lifetime counters sit at `total` bytes, on a named
+    /// clock, with no month counter to measure instead.
+    fn budget_snap(total: u64, at: u64) -> Snapshot {
+        let mut s = fixture_snap();
+        s.generated_at = at;
+        s.quota = None;
+        s.traffic.total_dl_bytes = total;
+        s.traffic.total_ul_bytes = 0;
+        s
+    }
+
+    fn budget_rows() -> Vec<(String, String)> {
+        let Some(path) = crate::events::path() else {
+            return Vec::new();
+        };
+        crate::events::load(&path)
+            .rows
+            .into_iter()
+            .filter(|r| r.kind == "budget")
+            .map(|r| (r.outcome, r.detail.unwrap_or_default()))
+            .collect()
+    }
+
+    /// A 1 GiB budget and a counter that walks past 80%, back under it (a read
+    /// that does not add), then past 95%. Each crossing is one row, the rotation
+    /// arms them again, and nothing under 80 writes at all.
+    #[test]
+    fn a_budget_threshold_writes_one_event_per_cycle() {
+        let _home = crate::test_env::isolate_data_home("budget-thresholds");
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            1,
+            2000,
+        );
+        app.usage_path = Some(
+            crate::events::path()
+                .expect("a data dir")
+                .with_file_name("usage.json"),
+        );
+        // A 1 GiB budget and a clock of its own; the steps are 70%, 85%, 90% and
+        // 97% of it above the starting counter.
+        // The reads are 200 s apart so none of them is a gap (GAP_SECS is 300),
+        // and the first crossing lands on a 600 s window wide enough to divide.
+        let base = 1_790_000_000u64;
+        for (total, at) in [
+            (base, base),
+            (base + 751_619_276, base + 200),
+            (base + 751_619_276, base + 400),
+            (base + 912_680_550, base + 600),
+            (base + 966_367_632, base + 800),
+            (base + 1_041_529_568, base + 1_000),
+        ] {
+            app.on_snapshot(budget_snap(total, at), 0);
+        }
+        let rows = budget_rows();
+        let outcomes: Vec<&str> = rows.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            ["80", "95"],
+            "one row per threshold, none under 80: {rows:?}"
+        );
+        assert!(
+            rows[0].1.contains("used 912680550 of 1073741824 bytes"),
+            "the row carries the number it was measured on: {}",
+            rows[0].1
+        );
+        assert!(
+            rows[0].1.contains("B/day"),
+            "a watched window gives a rate: {}",
+            rows[0].1
+        );
+
+        // A new billing cycle restarts the baseline: the bar is empty again, so
+        // the same fraction has to be crossed a second time to write a third row.
+        let at = base + 1_000 + 40 * 86_400;
+        let fresh = 1_800_000_000u64;
+        app.on_snapshot(budget_snap(fresh, at), 0);
+        assert!(!app.usage.thr_80, "the rotation re-armed the threshold");
+        assert_eq!(budget_rows().len(), 2, "a rotation alone writes nothing");
+        app.on_snapshot(budget_snap(fresh + 912_680_550, at + 600), 0);
+        let outcomes: Vec<String> = budget_rows().into_iter().map(|(o, _)| o).collect();
+        assert_eq!(
+            outcomes,
+            ["80", "95", "80"],
+            "the next cycle reports its own crossing"
+        );
+    }
+
+    /// `preview` and `status` build the app with no ledger path: the same
+    /// snapshot that crosses the threshold above must leave the log empty.
+    #[test]
+    fn a_preview_never_writes_a_budget_event() {
+        let _home = crate::test_env::isolate_data_home("budget-preview");
+        let mut app = App::new(
+            Theme::get("terminal"),
+            GraphStyle::Braille,
+            View::Full,
+            1,
+            2000,
+        );
+        assert!(app.usage_path.is_none(), "a preview owns no ledger file");
+        app.on_snapshot(budget_snap(1_100_000_000, 2_400), 0);
+        assert!(budget_rows().is_empty(), "a preview frame wrote a row");
+        assert!(!app.usage.thr_80 && !app.usage.thr_95);
     }
 }

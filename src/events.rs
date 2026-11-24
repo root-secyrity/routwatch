@@ -26,10 +26,12 @@ pub const KEEP: usize = 2000;
 /// Compact once the file passes this size, checked after an append.
 const MAX_BYTES: u64 = 512 * 1024;
 
-/// The seven families of state change. `ReadFail` is a state change too: a tier
+/// The eight families of state change. `ReadFail` is a state change too: a tier
 /// that stopped answering is why a panel froze. `Config` carries field names
 /// only, never a value and never a fingerprint. `Tm` is the cell's transmission
-/// mode moving while the cell itself stayed.
+/// mode moving while the cell itself stayed. `Budget` is the local ledger
+/// crossing 80% or 95% of the month's budget, a fact about this machine's
+/// history and not about the link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
     Write,
@@ -39,6 +41,7 @@ pub enum EventKind {
     Signal,
     Config,
     Tm,
+    Budget,
 }
 
 impl EventKind {
@@ -51,6 +54,7 @@ impl EventKind {
             EventKind::Signal => "signal",
             EventKind::Config => "config",
             EventKind::Tm => "tm",
+            EventKind::Budget => "budget",
         }
     }
 
@@ -63,6 +67,7 @@ impl EventKind {
             "signal" => Some(EventKind::Signal),
             "config" => Some(EventKind::Config),
             "tm" => Some(EventKind::Tm),
+            "budget" => Some(EventKind::Budget),
             _ => None,
         }
     }
@@ -445,7 +450,7 @@ mod tests {
 
     #[test]
     fn a_kind_round_trips_through_its_word() {
-        for k in [
+        let kinds = [
             EventKind::Write,
             EventKind::Renew,
             EventKind::Wan,
@@ -453,7 +458,11 @@ mod tests {
             EventKind::Signal,
             EventKind::Config,
             EventKind::Tm,
-        ] {
+            EventKind::Budget,
+        ];
+        // The module doc calls them the eight families: this list is the count.
+        assert_eq!(kinds.len(), 8);
+        for k in kinds {
             assert_eq!(EventKind::parse(k.as_str()), Some(k));
         }
         assert_eq!(EventKind::parse("attempt"), None);
