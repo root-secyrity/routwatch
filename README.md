@@ -250,6 +250,15 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
   ranks them, never picks a best cell and never compares throughput across cells: that
   comparison has no measurement behind it yet, so the command prints what was seen and
   nothing more. The rules are in [`docs/limits.md`](docs/limits.md).
+- **A cell change is logged, and can be compared with itself**: when the serving cell
+  changes, the observation log gets one `cell` row after the new key is read twice in a
+  row, and `routwatch cells changes` prints those rows. `routwatch compare --around ID`
+  then compares that one cell with itself on either side of the event, over the signal log
+  and the speed log already on disk: no router, no network, no cross-cell difference. It
+  prints medians and a 10th percentile, calls a move real only past three measured
+  standard deviations, and says `insufficient` instead of guessing when a side is thin.
+  The observation log keeps recording when `ROUTWATCH_DISABLE_SIGNAL_LOG=1` mutes the
+  minute log.
 - **The month's burn can be read without the screen**: `routwatch budget` reads
   the local usage ledger and prints what the cycle used, the limit, the pace the
   ledger measured and how much of the window it was divided by; `--json` is the

@@ -64,6 +64,78 @@ file reads as `[]` with exit 0; a damaged one warns on stderr and prints the rec
 that still read. The text table prints the same set with `best_sinr` as `9 dB` and
 both stamps in local ISO 8601.
 
+`cells changes [--json] [--window SECS]` (no network, no config) prints the `cell` rows
+of the observation log, newest first: the event id, the stamp, the tier, the outcome and
+the detail the worker wrote. `--window` keeps only the rows whose `at_unix` falls inside
+the last SECS counted back from the newest cell row (not from the clock, so an old log
+still lists something). The keys are fixed, and `detail` is absent when the row had none:
+
+```json
+[
+  {
+    "id": "cell-1763981580",
+    "at_unix": 1763981580,
+    "at": "2026-11-24T08:13:00",
+    "tier": "signal",
+    "outcome": "changed",
+    "detail": "earfcn_dl 100 pci 481 -> earfcn_dl 300 pci 395 band B3 tac 516 held 2"
+  }
+]
+```
+
+`compare --around ID [--window SECS] [--json]` (no network, no config, exit `3` when the
+id is not in the log) compares one cell with itself on both sides of that event, 1800 s
+each side by default. `segments` holds one entry per stretch of one cell, so a key change
+inside the window splits it instead of comparing two cells; a side with fewer than 10 rows
+or under half the window covered is `insufficient` and carries no delta. `class` is one of
+`improved`, `degraded`, `within_noise`, `mixed`, `insufficient`, and `confidence` reuses the
+advisor's words (`insufficient`, `low`, `medium`, `high`). `notes` and `missing` are plain
+sentences, never a verdict:
+
+```json
+{
+  "event_id": "cell-1763981580",
+  "event_kind": "cell",
+  "event_at_unix": 1763981580,
+  "event_detail": "earfcn_dl 100 pci 481 -> earfcn_dl 300 pci 395 band B3 tac 516 held 2",
+  "window_secs": 600,
+  "smear_ms": 120000,
+  "segments": [
+    {
+      "cell": "earfcn_dl 100 pci 481",
+      "before": {
+        "rows": 10,
+        "watched_secs": 600,
+        "coverage": 1.0,
+        "sinr_median": 10.0,
+        "sinr_p10": 10.0,
+        "rsrp_median": -100.0,
+        "download_median_mbps": null,
+        "speed_rows": 0
+      },
+      "after": {
+        "rows": 10,
+        "watched_secs": 600,
+        "coverage": 1.0,
+        "sinr_median": 15.0,
+        "sinr_p10": 15.0,
+        "rsrp_median": -100.0,
+        "download_median_mbps": null,
+        "speed_rows": 0
+      },
+      "sinr_delta_db": 5.0,
+      "rsrp_delta_db": 0.0,
+      "download_delta_mbps": null,
+      "class": "improved",
+      "confidence": "low"
+    }
+  ],
+  "confidence": "low",
+  "notes": [],
+  "missing": ["speed: a side has fewer than two reads, so there is no difference"]
+}
+```
+
 `routwatch budget [--json]` answers what this cycle has spent and how fast, from
 the local ledger alone: no config file, no router session, exit `0` even when the
 router is unreachable. `--json` prints the fixed keys:
