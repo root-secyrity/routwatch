@@ -79,6 +79,11 @@ why each one is stated instead of hidden.
   and says which `nr` fields did arrive (`nrearfcn`, bandwidths, rank, BLER, CQI,
   TX power) rather than inventing dBm; it switches to the full gauges the moment
   any one of `nrrsrp`, `nrrsrq` or `nrsinr` carries a value.
+- **A weak CQI is a reading, not a cause**: the signal panel prints `CQI 6 weak`
+  and below, the number alone at 7 and above, and `-` when the firmware sends
+  none (127 means none and is dropped at parse). The cut is a fixed 6 and is not
+  tuned per model: both sides carry the number, so a wrong cut would mislabel a
+  value but never hide it, and the label never states why the value is low.
 - **The budget counts from a baseline, and says where its number came from**: the
   bar compares your `budget_gb` against traffic measured since the baseline
   (`b` moves it, and it moves itself at the start of each billing cycle read from
@@ -88,6 +93,33 @@ why each one is stated instead of hidden.
   counter clear. The per-day ledger behind the usage table only counts while
   routwatch runs, gaps over five minutes are marked rather than spread, and the
   panel prints how many days it covers.
+- **The budget report is arithmetic over the ledger, and says how much of the
+  window was watched**: `routwatch budget` reads `$XDG_DATA_HOME/routwatch/usage.json`
+  once, opens no router session and needs no config file; with no config the
+  100 GB default is printed as a default so it cannot pass for a configured
+  limit. The pace divides the bytes this cycle used by the seconds the ledger
+  actually watched, and the window is the cycle clipped by the gaps the ledger
+  marked, so coverage is stated rather than assumed: `measured` at nine tenths of
+  the window, `thin` from half, `insufficient` below that and for a zero window.
+  No pace is printed under `insufficient` or under ten watched minutes, because a
+  rate from that little is a guess with a unit. The Traffic panel prints the same
+  two facts, and only on a screen tall enough to keep its reset row.
+- **A crossing is reported once per cycle**: the observation log gains one
+  `budget` row when the cycle first reaches 80% of `budget_gb` and one at 95%,
+  with the bytes used, the limit and the coverage in the row. Both flags are
+  persisted, so a restart does not repeat a crossing it already reported, and
+  every path that moves the baseline (reset, cycle rollover, source change,
+  counter clear) clears them so the next cycle can report again. A preview frame
+  and a one-shot command write no such row: they carry no ledger path and are
+  read-only by design.
+- **The pace baseline survives a restart but not a downgrade**: the source total
+  the last sample read is persisted with the rest of the ledger and refreshed on
+  the same cycle as the sample time, so after a crash the first read works from a
+  baseline one cycle old and its `used` figure can be stale by that much. An
+  older build loads the same file, does not know the field and drops it on its
+  next save, so going back to 0.9.3 and forward again restarts the pace from a
+  zero baseline. The contract version stays 1 on purpose: the file must keep
+  reading in both directions, and a lost baseline is the stated cost of that.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown in a `0700`
   directory, with IMEI, serial, WAN IP, MACs and SSIDs hidden - these files get
   pasted in public. `report_identity`, `--report-identity` or `i` in the settings
