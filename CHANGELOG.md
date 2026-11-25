@@ -15,11 +15,15 @@ Newest first. Each section lists what changed, in the words the release uses.
 - **The words name the action**: `IMPROVING` and `DEGRADING` past the 3.6 dB deadband,
   `HOLD HERE` inside it, `NOT COMPARABLE YET` when there is no comparison. The deadband,
   the 15 s window and the peak rule are unchanged.
-- **The tab is one reading, not a table**: a four-row direction block beside five rows of
-  block digits, one line naming the window by its read count, the peak line (with the cell
-  change folded into it), a `last 30 s` label whose right edge says `now`, and the 30 s
-  braille strip at full inner width. The RSRP/RSRQ/TM/CQI context row drops below 100
-  columns or under 20 rows, and the cell is named once, in the title.
+- **The tab reads as two columns, and the number carries its unit**: `▲ IMPROVING  4.7 dB`
+  on the left and the fact that explains it on the right (`over 15 s · 7 reads`,
+  `SINR average · poor`, `hold band ±3.6 dB`, `peak this session 5.0 dB · 12 s ago`),
+  each reading printed with its own unit. The four-row direction block and the five rows of
+  block digits are gone; the state is one row and one rule. The footer names its three
+  groups in the sketch's words: `RSRP -96 dBm · enough` (the advisor's own fair threshold),
+  `RSRQ -8 dB · cell load`, `TM[4] · CQI 14`, and it drops below 100 columns or under 20
+  rows. The 30 s strip draws eight levels of blocks scaled to its own window, with `30 s`
+  at its left edge and `┤ now` at its right, and it stays blocks under either graph style.
 - **Two designed captures hold the engine**: `fixtures/align-sweep.csv` (a ramp, a plateau,
   a fall and a cell change) turns the arrow on rows 21 to 26 and 45 to 50 and resets the
   peak; `fixtures/stationary.csv` (200 reads, 1.202 dB spread) never turns it, reading

@@ -573,11 +573,21 @@ why each one is stated instead of hidden.
 - **The Align tab's arrow moves only past the measured noise**: a rise of more than
   3.6 dB against the previous 15 s window reads `IMPROVING`, a fall of more than 3.6 dB
   reads `DEGRADING`, the same three-sigma bar `compare` uses. Inside that band the word is
-  `HOLD HERE`, drawn as a bar rather than a slope. A window with nothing to compare against
+  `HOLD HERE`, drawn as a dash rather than a slope. A window with nothing to compare against
   (no earlier 15 s of reads, or not one read in the current window) reads
   `NOT COMPARABLE YET` with no arrow, and the tab says how many seconds of reads it still
   needs instead of inventing a direction. The peak is the best rolling 15 s average of the
   current serving cell, not a record, and a PCI change clears it and says so on screen.
+- **The Align strip is blocks on its own window scale, not the graph style**: the last
+  30 s are drawn as eight levels of block glyphs, one glyph per two time slots of that
+  window and the higher read of the two, with a read holding its slots until the next one
+  arrives. The scale is the smallest and largest read inside the window
+  rather than a dB domain. A one dB ramp and a ten dB ramp therefore draw the same height,
+  so the strip reads as a shape and the number beside it is what carries the dB unit and
+  the wording what carries the 3.6 dB band. A window whose readings move less than 0.2 dB
+  draws one level instead of amplifying noise into a curve. The strip stays blocks under
+  either `graph_style` value, because the plots above it are scaled to a value and this one
+  is not.
 - **CQI is marked weak at six or below**: those indices are QPSK and low-order 16QAM on the
   LTE table. The firmware's 127, which means the metric is absent, is dropped by the parser
   before the screen sees it, so the word `weak` always means a measured low index.
