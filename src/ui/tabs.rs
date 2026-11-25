@@ -4484,6 +4484,50 @@ mod tests {
         assert!(!changed.contains("peak 12.0 dB"), "{changed}");
     }
 
+    #[test]
+    fn the_align_tab_names_all_four_states() {
+        let states = [
+            (3usize, "NOT COMPARABLE YET"),
+            (22, "IMPROVING"),
+            (35, "HOLD HERE"),
+            (46, "DEGRADING"),
+        ];
+        let every = ["NOT COMPARABLE YET", "IMPROVING", "HOLD HERE", "DEGRADING"];
+        for (rows, word) in states {
+            let screen = sweep_screen(100, 30, rows);
+            assert!(
+                screen.contains(word),
+                "row {rows} must say {word}: {screen}"
+            );
+            for other in every {
+                if other != word {
+                    assert!(
+                        !screen.contains(other),
+                        "row {rows} must not say {other} as well: {screen}"
+                    );
+                }
+            }
+        }
+
+        // The partial window names what is missing and how much has arrived.
+        let partial = sweep_screen(100, 30, 3);
+        assert!(partial.contains("no 15 s before it yet"), "{partial}");
+        assert!(partial.contains("s so far"), "{partial}");
+    }
+
+    #[test]
+    fn the_align_tab_drops_the_context_row_below_one_hundred() {
+        let wide = sweep_screen(120, 34, 35);
+        assert!(wide.contains("RSRP"), "{wide}");
+        assert!(wide.contains("RSRQ"), "{wide}");
+
+        let narrow = sweep_screen(80, 24, 35);
+        assert!(!narrow.contains("RSRP"), "{narrow}");
+        assert!(!narrow.contains("RSRQ"), "{narrow}");
+        assert!(narrow.contains("HOLD HERE"), "{narrow}");
+        assert!(narrow.contains('\u{2588}'), "{narrow}");
+    }
+
     fn braille_ink(line: &str) -> bool {
         line.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
     }
@@ -4555,6 +4599,18 @@ mod tests {
         assert!(
             last + 2 >= cells.len(),
             "the strip reaches its right edge: {strip}"
+        );
+
+        // The row above names that edge, so the reader knows which end is now.
+        let at = rows
+            .iter()
+            .position(|r| braille_ink(r.as_str()))
+            .expect("a braille strip");
+        let label: Vec<char> = rows[at - 1].chars().collect();
+        let tail: String = label[label.len().saturating_sub(8)..].iter().collect();
+        assert!(
+            tail.contains("now"),
+            "the strip's right edge is named: {tail}"
         );
     }
 
