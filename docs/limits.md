@@ -577,7 +577,14 @@ why each one is stated instead of hidden.
   before the screen sees it, so the word `weak` always means a measured low index.
 - **What a rotating antenna does to the average is unmeasured**: no sweep was recorded on
   this link, so the tab shows the average and its direction and labels no shape as a sweep.
-  A sweep reading would need its own round and its own figures.
+  A sweep reading would need its own round and its own figures. What is measured is the
+  engine's response to a designed one: `fixtures/align-sweep.csv` holds 60 reads at 4 s
+  intervals, flat at 2.0 dB, a 1 dB per 4 s ramp that reaches 12.0 dB at 96 s, then a
+  plateau and a fall, then a cell change on the last ten reads. A test holds the arrow to
+  rows 21 to 26 and 45 to 50, and the peak to 12.0 dB before the change and 2.0 dB on the
+  new cell after it. That proves the arithmetic, the deadband crossing and the reset; the
+  shape of a real sweep, with the firmware's own update lag, is still what the field round
+  has to measure.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the
