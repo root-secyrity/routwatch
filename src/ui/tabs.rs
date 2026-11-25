@@ -4427,6 +4427,50 @@ mod tests {
         panel_rows(w, h, |f, a| align_body(f, a, &app))
     }
 
+    /// The tab over the designed sweep, cut at a row prefix: one phase of the
+    /// search per frame. A fresh App each time, so no earlier phase can reach
+    /// it through the view cache.
+    fn sweep_screen(w: u16, h: u16, rows: usize) -> String {
+        let mut all = crate::align::sweep_from_csv(SWEEP).expect("the fixture parses");
+        all.truncate(rows);
+        let mut app = fixture_app();
+        app.tab = Tab::Align;
+        app.set_align_samples(all);
+        panel_rows(w, h, |f, a| align_body(f, a, &app)).join("\n")
+    }
+
+    const SWEEP: &str = include_str!("../../fixtures/align-sweep.csv");
+
+    #[test]
+    fn the_sweep_phases_render_their_own_arrows() {
+        let steady = sweep_screen(100, 30, 15);
+        assert!(steady.contains("· steady"), "{steady}");
+        assert!(!steady.contains("peak cleared"), "{steady}");
+
+        let rising = sweep_screen(100, 30, 22);
+        assert!(rising.contains("▲ rising"), "{rising}");
+        assert!(!rising.contains("▼ falling"), "{rising}");
+
+        let falling = sweep_screen(100, 30, 46);
+        assert!(falling.contains("▼ falling"), "{falling}");
+        assert!(!falling.contains("▲ rising"), "{falling}");
+    }
+
+    #[test]
+    fn the_sweep_phases_name_the_peak_and_its_cell() {
+        let plateau = sweep_screen(100, 30, 35);
+        assert!(plateau.contains("peak 12.0 dB · pci 100"), "{plateau}");
+        assert!(!plateau.contains("peak cleared"), "{plateau}");
+
+        let changed = sweep_screen(100, 30, 55);
+        assert!(changed.contains("peak 2.0 dB · pci 200"), "{changed}");
+        assert!(
+            changed.contains("peak cleared at the cell change"),
+            "{changed}"
+        );
+        assert!(!changed.contains("peak 12.0 dB"), "{changed}");
+    }
+
     fn braille_ink(line: &str) -> bool {
         line.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
     }
