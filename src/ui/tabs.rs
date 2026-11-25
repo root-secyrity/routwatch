@@ -4444,16 +4444,16 @@ mod tests {
     #[test]
     fn the_sweep_phases_render_their_own_arrows() {
         let steady = sweep_screen(100, 30, 15);
-        assert!(steady.contains("· steady"), "{steady}");
+        assert!(steady.contains("- HOLD HERE"), "{steady}");
         assert!(!steady.contains("peak cleared"), "{steady}");
 
         let rising = sweep_screen(100, 30, 22);
-        assert!(rising.contains("▲ rising"), "{rising}");
-        assert!(!rising.contains("▼ falling"), "{rising}");
+        assert!(rising.contains("▲ IMPROVING"), "{rising}");
+        assert!(!rising.contains("▼ DEGRADING"), "{rising}");
 
         let falling = sweep_screen(100, 30, 46);
-        assert!(falling.contains("▼ falling"), "{falling}");
-        assert!(!falling.contains("▲ rising"), "{falling}");
+        assert!(falling.contains("▼ DEGRADING"), "{falling}");
+        assert!(!falling.contains("▲ IMPROVING"), "{falling}");
     }
 
     #[test]
