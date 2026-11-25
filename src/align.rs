@@ -506,6 +506,34 @@ mod tests {
         assert_eq!(view.direction, Direction::Steady, "{view:?}");
     }
 
+    /// A designed flat capture: 200 reads on 4 s in one cell, with a 1.2 dB
+    /// ripple that sits well inside the deadband. It is the guard that a
+    /// station-keeping session never prints a direction it did not measure.
+    const STATIONARY: &str = include_str!("../fixtures/stationary.csv");
+
+    #[test]
+    fn a_stationary_capture_never_turns_the_arrow() {
+        let rows = sweep_from_csv(STATIONARY).expect("the committed stationary fixture parses");
+        assert_eq!(rows.len(), 200, "200 designed reads");
+        assert!(
+            rows.iter().all(|r| r.pci == Some(100)),
+            "the fixture must stay on one cell"
+        );
+
+        let mut steady = 0;
+        for i in 1..=rows.len() {
+            let view = align_engine(&rows[..i], rows[i - 1].at_ms);
+            match view.direction {
+                Direction::Steady => steady += 1,
+                Direction::NotComparable => {
+                    assert!(i <= 4, "only the first window is partial: {i}");
+                }
+                other => panic!("a flat capture turned the arrow at row {i}: {other:?}"),
+            }
+        }
+        assert_eq!(steady, 196, "every row with a comparison holds");
+    }
+
     #[test]
     fn sweep_from_csv_rejects_a_bad_row() {
         let short = sweep_from_csv("at_ms,sinr_db,pci\n0,2.0\n").unwrap_err();
