@@ -2,6 +2,30 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
+## Unreleased
+
+**The Align tab names what it cannot compare, and leads with one reading**
+
+- **A window with nothing to compare against says so instead of inventing a direction**:
+  the engine returned `steady` whenever the previous 15 s window was empty, so the first
+  fifteen seconds of every session, and the whole tab on a fresh start, claimed a hold
+  nobody had measured. It now returns `NOT COMPARABLE YET`, and the tab prints the average,
+  says no 15 s window exists before it, and counts the seconds of reads it still needs.
+  The arrow follows the direction, so it is absent in that state rather than a mark.
+- **The words name the action**: `IMPROVING` and `DEGRADING` past the 3.6 dB deadband,
+  `HOLD HERE` inside it, `NOT COMPARABLE YET` when there is no comparison. The deadband,
+  the 15 s window and the peak rule are unchanged.
+- **The tab is one reading, not a table**: a four-row direction block beside five rows of
+  block digits, one line naming the window by its read count, the peak line (with the cell
+  change folded into it), a `last 30 s` label whose right edge says `now`, and the 30 s
+  braille strip at full inner width. The RSRP/RSRQ/TM/CQI context row drops below 100
+  columns or under 20 rows, and the cell is named once, in the title.
+- **Two designed captures hold the engine**: `fixtures/align-sweep.csv` (a ramp, a plateau,
+  a fall and a cell change) turns the arrow on rows 21 to 26 and 45 to 50 and resets the
+  peak; `fixtures/stationary.csv` (200 reads, 1.202 dB spread) never turns it, reading
+  `NOT COMPARABLE YET` on its first four rows and `HOLD HERE` on the other 196. Both are
+  synthetic; the shape of a real sweep is still unmeasured.
+
 ## 0.10.0
 
 **The log remembers the cells, ranks its own smear, and a tenth tab reads the average**

@@ -220,12 +220,15 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
 
 - **5G per-field metrics can be empty** on some firmware: the signal panel shows
   the bars and says which `nr` fields did arrive rather than inventing dBm.
-- **The Align tab averages reads, not time**: the tenth tab (`0`) shows a 15 s SINR
-  average, its direction past a 3.6 dB deadband, and a session peak that clears when the
-  serving cell changes. It is a reading, not a sweep: what a rotating antenna does to that
-  average is unmeasured, so nothing on the tab is labelled as one. The engine behind it is
-  held to a designed 60-read sweep (`fixtures/align-sweep.csv`), which covers the deadband
-  crossing and the peak reset and says nothing about a measured curve.
+- **The Align tab averages reads, not time**: the tenth tab (`0`) leads with a 15 s SINR
+  average in big digits and one of four words: `IMPROVING` or `DEGRADING` past a 3.6 dB
+  deadband against the previous window, `HOLD HERE` inside it, and `NOT COMPARABLE YET`
+  when there is no window to compare against (the tab then says how many seconds of reads
+  it still needs). A session peak clears when the serving cell changes. It is a reading,
+  not a sweep: what a rotating antenna does to that average is unmeasured, so nothing on
+  the tab is labelled as one. The engine behind it is held to a designed 60-read sweep
+  (`fixtures/align-sweep.csv`), which covers the deadband crossing and the peak reset and
+  says nothing about a measured curve.
 - **The budget starts at a baseline**: `budget_gb` is compared against traffic
   since a baseline that `b` resets and the billing cycle moves. The router's own
   month counter is used when the firmware answers it; otherwise the lifetime
