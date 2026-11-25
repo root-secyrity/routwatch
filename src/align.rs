@@ -4,7 +4,8 @@
 //! Everything here is a pure function of the samples handed in: no clock, no
 //! config, no render state. The caller keeps one bounded ring of samples and
 //! asks for a view; the same samples always give the same view, so the tab can
-//! be checked against a stationary capture instead of a live radio.
+//! be replayed from a designed sweep (fixtures/align-sweep.csv) instead of a
+//! live radio.
 
 /// The averaging window. The radio tier is read about once a second (p50
 /// 939 ms, p95 1748 ms, measured 2026-11-22), so 15 s holds ten to sixteen
@@ -172,6 +173,56 @@ fn last_cell_change(samples: &[AlignSample]) -> usize {
     start
 }
 
+/// The rows of a sweep CSV: `at_ms,sinr_db,pci,rsrp_dbm,band,earfcn`.
+///
+/// Only the first three columns feed the engine; the rest keep a row readable
+/// by hand and are ignored here. A first line whose first field is `at_ms` is a
+/// header, blank lines are skipped, and every field is trimmed, so a file with
+/// CRLF endings parses. An empty `pci` is a read that carried no cell. Errors
+/// name the 1-based physical line, so a hand-edited sweep points at the row
+/// that broke instead of at the file.
+pub fn sweep_from_csv(text: &str) -> Result<Vec<AlignSample>, String> {
+    let mut rows = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let n = i + 1;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let cells: Vec<&str> = line.split(',').map(str::trim).collect();
+        if n == 1 && cells[0].eq_ignore_ascii_case("at_ms") {
+            continue;
+        }
+        if cells.len() < 3 {
+            return Err(format!(
+                "line {n}: a sweep row needs at least 3 columns, found {}",
+                cells.len()
+            ));
+        }
+        let at_ms: u64 = cells[0]
+            .parse()
+            .map_err(|_| format!("line {n}: at_ms is not a whole number: {:?}", cells[0]))?;
+        let sinr_db: f64 = cells[1]
+            .parse()
+            .map_err(|_| format!("line {n}: sinr_db is not a number: {:?}", cells[1]))?;
+        let pci = if cells[2].is_empty() {
+            None
+        } else {
+            Some(
+                cells[2]
+                    .parse::<u32>()
+                    .map_err(|_| format!("line {n}: pci is not a whole number: {:?}", cells[2]))?,
+            )
+        };
+        rows.push(AlignSample {
+            at_ms,
+            sinr_db,
+            pci,
+        });
+    }
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +345,107 @@ mod tests {
             view.peak.is_some(),
             "the session peak outlives the window: {view:?}"
         );
+    }
+
+    /// The designed sweep in fixtures/align-sweep.csv: 15 flat reads on 2.0 dB,
+    /// a 1 dB per 4 s ramp to 12.0, a plateau, a fall, then the serving cell
+    /// changes at row 51 and the signal drops back to 2.0. Only the SINR moves.
+    const SWEEP: &str = include_str!("../fixtures/align-sweep.csv");
+
+    fn sweep() -> Vec<AlignSample> {
+        sweep_from_csv(SWEEP).expect("the committed fixture parses")
+    }
+
+    #[test]
+    fn the_sweep_fixture_turns_the_arrow_at_the_measured_rows() {
+        let rows = sweep();
+        assert_eq!(rows.len(), 60, "60 designed reads");
+        let mut rising = Vec::new();
+        let mut falling = Vec::new();
+        for i in 1..=rows.len() {
+            match align_engine(&rows[..i], rows[i - 1].at_ms).direction {
+                Direction::Rising => rising.push(i),
+                Direction::Falling => falling.push(i),
+                Direction::Steady => {}
+            }
+        }
+        assert_eq!(
+            rising,
+            (21..=26).collect::<Vec<_>>(),
+            "the ramp clears the 3.6 dB deadband at row 21 and stops clearing it at row 27"
+        );
+        assert_eq!(
+            falling,
+            (45..=50).collect::<Vec<_>>(),
+            "the fall clears it at row 45, and row 51 starts a new cell"
+        );
+    }
+
+    #[test]
+    fn the_sweep_fixture_clears_the_peak_at_the_cell_change() {
+        let rows = sweep();
+
+        let held = align_engine(&rows[..50], rows[49].at_ms);
+        let peak = held.peak.expect("a peak on the first cell");
+        assert!(close(peak.sinr_db, 12.0), "{held:?}");
+        assert_eq!(peak.at_ms, 108_000, "the first window that averaged 12.0");
+        assert_eq!(peak.pci, Some(100));
+        assert!(held.cleared_at.is_none(), "one cell so far: {held:?}");
+
+        let cleared = align_engine(&rows[..51], rows[50].at_ms);
+        let peak = cleared.peak.expect("a peak on the second cell");
+        assert!(
+            close(peak.sinr_db, 2.0),
+            "the old cell's 12 dB must not follow the read onto the new one: {cleared:?}"
+        );
+        assert_eq!(peak.pci, Some(200));
+        assert_eq!(
+            cleared.cleared_at,
+            Some(200_000),
+            "the tab must be able to date the restart: {cleared:?}"
+        );
+    }
+
+    #[test]
+    fn a_flat_sweep_never_leaves_steady() {
+        let rows = sweep();
+        for i in 1..=15 {
+            let view = align_engine(&rows[..i], rows[i - 1].at_ms);
+            assert_eq!(view.direction, Direction::Steady, "prefix {i}: {view:?}");
+        }
+
+        // A longer flat run at a different spacing: a window sliding over a
+        // constant series can never clear the deadband.
+        let flat = burst(0, 40, 2.0, Some(100));
+        for i in 1..=flat.len() {
+            let view = align_engine(&flat[..i], flat[i - 1].at_ms);
+            assert_eq!(view.direction, Direction::Steady, "prefix {i}: {view:?}");
+        }
+    }
+
+    #[test]
+    fn sweep_from_csv_rejects_a_bad_row() {
+        let short = sweep_from_csv("at_ms,sinr_db,pci\n0,2.0\n").unwrap_err();
+        assert!(short.contains("line 2"), "{short}");
+
+        let bad = sweep_from_csv("at_ms,sinr_db,pci\n0,not-a-number,100\n").unwrap_err();
+        assert!(bad.contains("line 2"), "{bad}");
+        assert!(bad.contains("sinr_db"), "{bad}");
+
+        let no_cell = sweep_from_csv("at_ms,sinr_db,pci\r\n0,2.0,\r\n").expect("a CRLF row");
+        assert_eq!(
+            no_cell,
+            vec![AlignSample {
+                at_ms: 0,
+                sinr_db: 2.0,
+                pci: None,
+            }],
+            "an empty pci is a read with no cell"
+        );
+
+        assert!(sweep_from_csv("").expect("empty input").is_empty());
+        assert!(sweep_from_csv("at_ms,sinr_db,pci\n")
+            .expect("a header alone")
+            .is_empty());
     }
 }
