@@ -1679,6 +1679,23 @@ impl App {
             .clone()
     }
 
+    /// Replaces the sample ring with rows read from a file, so a frame can be
+    /// rendered from a designed sweep instead of a live radio. The ring is
+    /// emptied first: a read the preview took before the file belongs to a
+    /// different cell and would date a peak the sweep never held. The cache
+    /// key is dropped for the same reason, because an installed prefix does
+    /// not move the radio stamp the key is built from.
+    pub fn set_align_samples(&mut self, samples: Vec<AlignSample>) {
+        self.align_samples.clear();
+        for sample in samples {
+            self.align_samples.push_back(sample);
+        }
+        while self.align_samples.len() > HISTORY {
+            self.align_samples.pop_front();
+        }
+        self.align_cache.borrow_mut().key = None;
+    }
+
     /// Builds and reuses of the align view since boot, in that order: the two
     /// numbers the once-per-read rule is held by.
     pub fn align_counters(&self) -> (usize, usize) {

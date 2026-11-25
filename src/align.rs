@@ -4,7 +4,8 @@
 //! Everything here is a pure function of the samples handed in: no clock, no
 //! config, no render state. The caller keeps one bounded ring of samples and
 //! asks for a view; the same samples always give the same view, so the tab can
-//! be checked against a stationary capture instead of a live radio.
+//! be replayed from a designed sweep (fixtures/align-sweep.csv) instead of a
+//! live radio.
 
 /// The averaging window. The radio tier is read about once a second (p50
 /// 939 ms, p95 1748 ms, measured 2026-11-22), so 15 s holds ten to sixteen
@@ -37,21 +38,25 @@ pub struct PeakHold {
     pub pci: Option<u32>,
 }
 
-/// Which way the average moved. Three words, because a 3.6 dB deadband cannot
-/// support more.
+/// Which way the average moved. Four states, because a missing comparison
+/// window is not a direction: the tab says so instead of printing a steady
+/// mark it never measured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Rising,
     Falling,
     Steady,
+    /// A window that has no 15 s before it yet: no direction can be read.
+    NotComparable,
 }
 
 impl Direction {
     pub fn as_str(self) -> &'static str {
         match self {
-            Direction::Rising => "rising",
-            Direction::Falling => "falling",
-            Direction::Steady => "steady",
+            Direction::Rising => "IMPROVING",
+            Direction::Falling => "DEGRADING",
+            Direction::Steady => "HOLD HERE",
+            Direction::NotComparable => "NOT COMPARABLE YET",
         }
     }
 
@@ -59,7 +64,8 @@ impl Direction {
         match self {
             Direction::Rising => "▲",
             Direction::Falling => "▼",
-            Direction::Steady => "·",
+            Direction::Steady => "-",
+            Direction::NotComparable => "·",
         }
     }
 }
@@ -81,6 +87,13 @@ pub struct AlignView {
     /// The stamp the view was built at, so a renderer can say how far back a
     /// peak sits without reading a clock of its own.
     pub newest_ms: u64,
+    /// How many reads the 15 s window holds, so the panel can say what the
+    /// average rests on instead of implying a fixed cadence.
+    pub window_reads: usize,
+    /// How much time the reads in the window actually cover: `now_ms` minus
+    /// the oldest read in it, 0 when it holds none. A window that covers less
+    /// than 15 s is a partial comparison, not a steady reading.
+    pub covered_ms: u64,
 }
 
 /// The mean SINR of the reads no more than `window_ms` old as of `now_ms`, or
@@ -122,14 +135,23 @@ pub fn align_engine(samples: &[AlignSample], now_ms: u64) -> AlignView {
     let seg_start = last_cell_change(&sorted);
     let segment = &sorted[seg_start..];
 
-    let average = sinr_average(segment, now_ms, WINDOW_MS);
+    let window: Vec<&AlignSample> = segment
+        .iter()
+        .filter(|s| in_window(s.at_ms, now_ms, WINDOW_MS))
+        .collect();
+    let average = mean_of(window.iter().copied());
     let previous = mean_of(segment.iter().filter(|s| {
         in_window(s.at_ms, now_ms, 2 * WINDOW_MS) && !in_window(s.at_ms, now_ms, WINDOW_MS)
     }));
+    // Sorted ascending, so the first read of the window is the oldest one.
+    let covered_ms = window
+        .first()
+        .map_or(0, |first| now_ms.saturating_sub(first.at_ms));
     let direction = match (average, previous) {
         (Some(now), Some(was)) if now - was > SINR_DEADBAND_DB => Direction::Rising,
         (Some(now), Some(was)) if was - now > SINR_DEADBAND_DB => Direction::Falling,
-        _ => Direction::Steady,
+        (Some(_), Some(_)) => Direction::Steady,
+        _ => Direction::NotComparable,
     };
 
     // The peak is a rolling average, not a single reading: one spike is not a
@@ -157,6 +179,8 @@ pub fn align_engine(samples: &[AlignSample], now_ms: u64) -> AlignView {
         peak,
         cleared_at: (seg_start > 0).then(|| sorted[seg_start].at_ms),
         newest_ms: now_ms,
+        window_reads: window.len(),
+        covered_ms,
     }
 }
 
@@ -170,6 +194,56 @@ fn last_cell_change(samples: &[AlignSample]) -> usize {
         }
     }
     start
+}
+
+/// The rows of a sweep CSV: `at_ms,sinr_db,pci,rsrp_dbm,band,earfcn`.
+///
+/// Only the first three columns feed the engine; the rest keep a row readable
+/// by hand and are ignored here. A first line whose first field is `at_ms` is a
+/// header, blank lines are skipped, and every field is trimmed, so a file with
+/// CRLF endings parses. An empty `pci` is a read that carried no cell. Errors
+/// name the 1-based physical line, so a hand-edited sweep points at the row
+/// that broke instead of at the file.
+pub fn sweep_from_csv(text: &str) -> Result<Vec<AlignSample>, String> {
+    let mut rows = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let n = i + 1;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let cells: Vec<&str> = line.split(',').map(str::trim).collect();
+        if n == 1 && cells[0].eq_ignore_ascii_case("at_ms") {
+            continue;
+        }
+        if cells.len() < 3 {
+            return Err(format!(
+                "line {n}: a sweep row needs at least 3 columns, found {}",
+                cells.len()
+            ));
+        }
+        let at_ms: u64 = cells[0]
+            .parse()
+            .map_err(|_| format!("line {n}: at_ms is not a whole number: {:?}", cells[0]))?;
+        let sinr_db: f64 = cells[1]
+            .parse()
+            .map_err(|_| format!("line {n}: sinr_db is not a number: {:?}", cells[1]))?;
+        let pci = if cells[2].is_empty() {
+            None
+        } else {
+            Some(
+                cells[2]
+                    .parse::<u32>()
+                    .map_err(|_| format!("line {n}: pci is not a whole number: {:?}", cells[2]))?,
+            )
+        };
+        rows.push(AlignSample {
+            at_ms,
+            sinr_db,
+            pci,
+        });
+    }
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -222,7 +296,11 @@ mod tests {
             view.previous.is_none(),
             "the older window is empty: {view:?}"
         );
-        assert_eq!(view.direction, Direction::Steady);
+        assert_eq!(
+            view.direction,
+            Direction::NotComparable,
+            "no 15 s before this one means no direction yet: {view:?}"
+        );
     }
 
     #[test]
@@ -284,7 +362,9 @@ mod tests {
         let empty = align_engine(&[], 10_000);
         assert_eq!(empty.average, None);
         assert_eq!(empty.peak, None);
-        assert_eq!(empty.direction, Direction::Steady);
+        assert_eq!(empty.direction, Direction::NotComparable);
+        assert_eq!(empty.window_reads, 0);
+        assert_eq!(empty.covered_ms, 0);
 
         let old = burst(0, 3, 9.0, Some(100));
         let view = align_engine(&old, 100_000);
@@ -294,5 +374,189 @@ mod tests {
             view.peak.is_some(),
             "the session peak outlives the window: {view:?}"
         );
+    }
+
+    /// The designed sweep in fixtures/align-sweep.csv: 15 flat reads on 2.0 dB,
+    /// a 1 dB per 4 s ramp to 12.0, a plateau, a fall, then the serving cell
+    /// changes at row 51 and the signal drops back to 2.0. Only the SINR moves.
+    const SWEEP: &str = include_str!("../fixtures/align-sweep.csv");
+
+    fn sweep() -> Vec<AlignSample> {
+        sweep_from_csv(SWEEP).expect("the committed fixture parses")
+    }
+
+    #[test]
+    fn the_sweep_fixture_turns_the_arrow_at_the_measured_rows() {
+        let rows = sweep();
+        assert_eq!(rows.len(), 60, "60 designed reads");
+        let mut rising = Vec::new();
+        let mut falling = Vec::new();
+        for i in 1..=rows.len() {
+            match align_engine(&rows[..i], rows[i - 1].at_ms).direction {
+                Direction::Rising => rising.push(i),
+                Direction::Falling => falling.push(i),
+                Direction::Steady | Direction::NotComparable => {}
+            }
+        }
+        assert_eq!(
+            rising,
+            (21..=26).collect::<Vec<_>>(),
+            "the ramp clears the 3.6 dB deadband at row 21 and stops clearing it at row 27"
+        );
+        assert_eq!(
+            falling,
+            (45..=50).collect::<Vec<_>>(),
+            "the fall clears it at row 45, and row 51 starts a new cell"
+        );
+    }
+
+    #[test]
+    fn the_sweep_fixture_clears_the_peak_at_the_cell_change() {
+        let rows = sweep();
+
+        let held = align_engine(&rows[..50], rows[49].at_ms);
+        let peak = held.peak.expect("a peak on the first cell");
+        assert!(close(peak.sinr_db, 12.0), "{held:?}");
+        assert_eq!(peak.at_ms, 108_000, "the first window that averaged 12.0");
+        assert_eq!(peak.pci, Some(100));
+        assert!(held.cleared_at.is_none(), "one cell so far: {held:?}");
+
+        let cleared = align_engine(&rows[..51], rows[50].at_ms);
+        let peak = cleared.peak.expect("a peak on the second cell");
+        assert!(
+            close(peak.sinr_db, 2.0),
+            "the old cell's 12 dB must not follow the read onto the new one: {cleared:?}"
+        );
+        assert_eq!(peak.pci, Some(200));
+        assert_eq!(
+            cleared.cleared_at,
+            Some(200_000),
+            "the tab must be able to date the restart: {cleared:?}"
+        );
+    }
+
+    #[test]
+    fn a_flat_sweep_never_leaves_steady() {
+        let rows = sweep();
+        for i in 1..=15 {
+            let view = align_engine(&rows[..i], rows[i - 1].at_ms);
+            let expected = if i <= 4 {
+                // Four reads on 4 s do not fill the window they are compared
+                // against, so the first four rows have no direction yet.
+                Direction::NotComparable
+            } else {
+                Direction::Steady
+            };
+            assert_eq!(view.direction, expected, "prefix {i}: {view:?}");
+        }
+
+        // A longer flat run at a different spacing: a window sliding over a
+        // constant series can never clear the deadband.
+        let flat = burst(0, 40, 2.0, Some(100));
+        for i in 1..=flat.len() {
+            let view = align_engine(&flat[..i], flat[i - 1].at_ms);
+            let expected = if i <= 15 {
+                // 1 s spacing needs 16 reads before a full previous window
+                // exists.
+                Direction::NotComparable
+            } else {
+                Direction::Steady
+            };
+            assert_eq!(view.direction, expected, "prefix {i}: {view:?}");
+        }
+    }
+
+    #[test]
+    fn a_thin_window_is_not_comparable_not_steady() {
+        // Three designed reads on 4 s: the window has an average but the 15 s
+        // before it holds nothing, so the tab must not claim a direction.
+        let rows: Vec<AlignSample> = (0..3)
+            .map(|k| AlignSample {
+                at_ms: k * 4000,
+                sinr_db: 2.0,
+                pci: Some(100),
+            })
+            .collect();
+        let view = align_engine(&rows, 8000);
+        assert_eq!(view.average, Some(2.0), "{view:?}");
+        assert_eq!(view.direction, Direction::NotComparable, "{view:?}");
+        assert_eq!(view.window_reads, 3, "{view:?}");
+        assert_eq!(view.covered_ms, 8000, "{view:?}");
+    }
+
+    #[test]
+    fn the_view_names_the_reads_inside_its_window() {
+        // Five reads on 4 s, read at the fifth stamp: the window holds the
+        // four that are under 15 s old and covers the 12 s between them.
+        let rows: Vec<AlignSample> = (0..5)
+            .map(|k| AlignSample {
+                at_ms: k * 4000,
+                sinr_db: 2.0,
+                pci: Some(100),
+            })
+            .collect();
+        let view = align_engine(&rows, 16_000);
+        assert_eq!(view.window_reads, 4, "{view:?}");
+        assert_eq!(view.covered_ms, 12_000, "{view:?}");
+        assert_eq!(
+            view.average,
+            Some(2.0),
+            "the average is those four: {view:?}"
+        );
+        assert_eq!(view.direction, Direction::Steady, "{view:?}");
+    }
+
+    /// A designed flat capture: 200 reads on 4 s in one cell, with a 1.2 dB
+    /// ripple that sits well inside the deadband. It is the guard that a
+    /// station-keeping session never prints a direction it did not measure.
+    const STATIONARY: &str = include_str!("../fixtures/stationary.csv");
+
+    #[test]
+    fn a_stationary_capture_never_turns_the_arrow() {
+        let rows = sweep_from_csv(STATIONARY).expect("the committed stationary fixture parses");
+        assert_eq!(rows.len(), 200, "200 designed reads");
+        assert!(
+            rows.iter().all(|r| r.pci == Some(100)),
+            "the fixture must stay on one cell"
+        );
+
+        let mut steady = 0;
+        for i in 1..=rows.len() {
+            let view = align_engine(&rows[..i], rows[i - 1].at_ms);
+            match view.direction {
+                Direction::Steady => steady += 1,
+                Direction::NotComparable => {
+                    assert!(i <= 4, "only the first window is partial: {i}");
+                }
+                other => panic!("a flat capture turned the arrow at row {i}: {other:?}"),
+            }
+        }
+        assert_eq!(steady, 196, "every row with a comparison holds");
+    }
+
+    #[test]
+    fn sweep_from_csv_rejects_a_bad_row() {
+        let short = sweep_from_csv("at_ms,sinr_db,pci\n0,2.0\n").unwrap_err();
+        assert!(short.contains("line 2"), "{short}");
+
+        let bad = sweep_from_csv("at_ms,sinr_db,pci\n0,not-a-number,100\n").unwrap_err();
+        assert!(bad.contains("line 2"), "{bad}");
+        assert!(bad.contains("sinr_db"), "{bad}");
+
+        let no_cell = sweep_from_csv("at_ms,sinr_db,pci\r\n0,2.0,\r\n").expect("a CRLF row");
+        assert_eq!(
+            no_cell,
+            vec![AlignSample {
+                at_ms: 0,
+                sinr_db: 2.0,
+                pci: None,
+            }],
+            "an empty pci is a read with no cell"
+        );
+
+        assert!(sweep_from_csv("").expect("empty input").is_empty());
+        assert!(sweep_from_csv("at_ms,sinr_db,pci\n")
+            .expect("a header alone")
+            .is_empty());
     }
 }

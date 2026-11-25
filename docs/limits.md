@@ -565,19 +565,46 @@ why each one is stated instead of hidden.
   arrived in it, so a slower poll means fewer reads in the same window and a poll slower
   than 15 s leaves it empty rather than repeating the last value. The measured cadence on
   the H122-373 is 939 ms at the median and 1748 ms at the 95th percentile, so a window
-  usually holds between eight and sixteen reads. The right edge of the strip is the newest
-  read, never the wall clock, and the tab prints no "instant" or "real-time" figure because
-  no reading is one.
-- **The Align tab's arrow moves only past the measured noise**: a change smaller than
-  3.6 dB against the previous 15 s window reads `steady`, the same three-sigma bar
-  `compare` uses. The peak is the best rolling 15 s average of the current serving cell,
-  not a record, and a PCI change clears it and says so on screen.
+  usually holds between eight and sixteen reads. The window is 15 s with its upper bound
+  excluded, so its read count is arithmetic from the window and the refresh rather than a
+  measurement: 8 reads at a 2000 ms refresh and 25 at 600 ms. The right edge of the strip
+  is the newest read, never the wall clock, and the tab prints no "instant" or "real-time"
+  figure because no reading is one.
+- **The Align tab's arrow moves only past the measured noise**: a rise of more than
+  3.6 dB against the previous 15 s window reads `IMPROVING`, a fall of more than 3.6 dB
+  reads `DEGRADING`, the same three-sigma bar `compare` uses. Inside that band the word is
+  `HOLD HERE`, drawn as a dash rather than a slope. A window with nothing to compare against
+  (no earlier 15 s of reads, or not one read in the current window) reads
+  `NOT COMPARABLE YET` with no arrow, and the tab says how many seconds of reads it still
+  needs instead of inventing a direction. The peak is the best rolling 15 s average of the
+  current serving cell, not a record, and a PCI change clears it and says so on screen.
+- **The Align strip is blocks on its own window scale, not the graph style**: the last
+  30 s are drawn as eight levels of block glyphs, one glyph per two time slots of that
+  window and the higher read of the two, with a read holding its slots until the next one
+  arrives. The scale is the smallest and largest read inside the window
+  rather than a dB domain. A one dB ramp and a ten dB ramp therefore draw the same height,
+  so the strip reads as a shape and the number beside it is what carries the dB unit and
+  the wording what carries the 3.6 dB band. A window whose readings move less than 0.2 dB
+  draws one level instead of amplifying noise into a curve. The strip stays blocks under
+  either `graph_style` value, because the plots above it are scaled to a value and this one
+  is not.
 - **CQI is marked weak at six or below**: those indices are QPSK and low-order 16QAM on the
   LTE table. The firmware's 127, which means the metric is absent, is dropped by the parser
   before the screen sees it, so the word `weak` always means a measured low index.
 - **What a rotating antenna does to the average is unmeasured**: no sweep was recorded on
   this link, so the tab shows the average and its direction and labels no shape as a sweep.
-  A sweep reading would need its own round and its own figures.
+  A sweep reading would need its own round and its own figures. What is measured is the
+  engine's response to a designed one: `fixtures/align-sweep.csv` holds 60 reads at 4 s
+  intervals, flat at 2.0 dB, a 1 dB per 4 s ramp that reaches 12.0 dB at 96 s, then a
+  plateau and a fall, then a cell change on the last ten reads. A test holds the arrow to
+  rows 21 to 26 and 45 to 50, and the peak to 12.0 dB before the change and 2.0 dB on the
+  new cell after it. The still side is designed as well: `fixtures/stationary.csv` holds
+  200 reads at 4 s spacing whose SINR swings 1.202 dB around 2.0 dB, and a test holds the
+  tab to `NOT COMPARABLE YET` on the first four rows and `HOLD HERE` on the other 196, with
+  no arrow turned anywhere in the file. Both files are synthetic, built for the engine and
+  not captured from a device. That proves the arithmetic, the deadband crossing, the reset
+  and the directionless window; the shape of a real sweep, with the firmware's own update
+  lag, is still what the field round has to measure.
 
 The write path itself is a promise, not a limitation, and it is kept by a test:
 reads are free, writes are confirmed and read back. The three rules are in the

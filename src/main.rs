@@ -428,6 +428,16 @@ enum Cmd {
         /// (review only: nothing is read from the router and nothing is written)
         #[arg(long, value_name = "N", default_value_t = 0)]
         demo_history: usize,
+        /// Feed the Align tab from a sweep CSV (at_ms,sinr_db,pci,...) instead
+        /// of the read the preview took. Hidden because the tab reads the
+        /// router in normal use, and a file has no place in the help text a
+        /// user reads; it needs --fixture, and nothing is written.
+        #[arg(long, value_name = "FILE", hide = true)]
+        align_fixture: Option<PathBuf>,
+        /// Use only the first N sweep rows, so one frame shows one phase;
+        /// absent means the whole file
+        #[arg(long, value_name = "N", hide = true)]
+        align_rows: Option<usize>,
         /// Emit real ANSI colours instead of plain symbols - for README
         /// screenshots and for checking a theme without a terminal
         #[arg(long)]
@@ -2394,9 +2404,25 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             demo_settings,
             demo_open,
             demo_history,
+            ref align_fixture,
+            align_rows,
             ansi,
         }) => {
             let (w, h) = parse_size(size)?;
+            // A sweep frame needs a snapshot to render at all, and a hidden
+            // review flag must never reach a router: refuse before the connect
+            // below can dial one.
+            if align_fixture.is_some() && fixture.is_none() {
+                return Err(ApiError::Config(
+                    "--align-fixture needs --fixture: the tab renders against a snapshot"
+                        .to_string(),
+                ));
+            }
+            if align_fixture.is_none() && align_rows.is_some() {
+                return Err(ApiError::Config(
+                    "--align-rows needs --align-fixture".to_string(),
+                ));
+            }
             let mut app = build_app(&cli, &cfg)?;
             // Read the ledger so the usage table shows the same numbers the TUI
             // would, but never take the lock and never write: a preview is a
@@ -2449,6 +2475,23 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 app.sms_open();
             }
             app.demo_history(demo_history);
+            if let Some(p) = align_fixture {
+                let text = std::fs::read_to_string(p)
+                    .map_err(|e| ApiError::Config(format!("{}: {e}", p.display())))?;
+                let mut rows = routwatch::align::sweep_from_csv(&text).map_err(ApiError::Config)?;
+                if let Some(n) = align_rows {
+                    if n == 0 || n > rows.len() {
+                        return Err(ApiError::Config(format!(
+                            "--align-rows {n} is outside 1..={}",
+                            rows.len()
+                        )));
+                    }
+                    rows.truncate(n);
+                }
+                // Last, so the read the preview pushed and the demo ring both
+                // give way to the file: the sample on screen is the sweep's.
+                app.set_align_samples(rows);
+            }
             if ansi {
                 print!("{}", ui::render_ansi(&app, w, h));
             } else {
