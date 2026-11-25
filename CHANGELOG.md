@@ -2,7 +2,7 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
-## Unreleased
+## 0.10.2
 
 **The Align tab names what it cannot compare, and leads with one reading**
 
