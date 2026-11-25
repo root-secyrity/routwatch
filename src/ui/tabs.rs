@@ -3,6 +3,7 @@
 //! Every panel is built from `App` only; nothing here touches the network, which
 //! is what makes the render tests possible.
 
+use crate::align::{Direction, ALIGN_WINDOW_SECS};
 use crate::app::{App, View};
 use crate::theme::Theme;
 use crate::ui::active_text_colour;
@@ -94,6 +95,10 @@ const ALIGN_STRIP_SECS: u64 = 30;
 const ALIGN_MIN_W: u16 = 60;
 const ALIGN_MIN_H: u16 = 12;
 
+/// The one context row (RSRP, RSRQ, TM, CQI) needs this much width to fit on a
+/// single line; under it the row is dropped rather than wrapped into the strip.
+const ALIGN_CONTEXT_MIN_W: u16 = 100;
+
 /// The alignment tab: one number, its direction, the session peak, the last
 /// half minute as a strip, and the readings that constrain it. Everything here
 /// is read from the same snapshot the other tabs print, and the average comes
@@ -121,58 +126,64 @@ pub fn align_body(f: &mut Frame, area: Rect, app: &App) {
     }
     let sig = &s.signal;
     let view = app.align_view();
+    let sample_pci = app.align_samples.back().and_then(|s| s.pci);
+    let inner_w = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let dim = Style::default().fg(t.dim);
-
     let colour = view
         .average
         .map(|v| t.sinr_color(v as f32))
         .unwrap_or(t.dim);
-    let face = match view.average {
-        Some(v) => big_digits(&format!("{v:.1}")),
-        None => big_digits("--"),
-    };
-    let facts = [
-        String::new(),
-        "15 s average · dB".to_string(),
-        view.average
-            .map(|v| crate::theme::step_word(t.sinr_step(v as f32)).to_string())
-            .unwrap_or_else(|| "no read in the window".to_string()),
-        view.average
-            .map(|_| format!("{} {}", view.direction.arrow(), view.direction.as_str()))
-            .unwrap_or_default(),
-        format!("deadband {:.1} dB", crate::align::SINR_DEADBAND_DB),
-    ];
-    for (i, row) in face.iter().enumerate() {
-        let mut spans = vec![Span::styled(
-            format!("  {row}  "),
-            Style::default().fg(colour),
-        )];
-        if i == 1 {
-            spans.push(Span::styled(facts[i].clone(), dim));
-        } else if i == 2 {
-            spans.push(Span::styled(facts[i].clone(), Style::default().fg(colour)));
-        } else if i == 3 {
-            spans.push(Span::styled(
-                facts[i].clone(),
-                Style::default().fg(t.accent),
-            ));
-        } else {
-            spans.push(Span::styled(facts[i].clone(), dim));
-        }
-        lines.push(Line::from(spans));
-    }
 
-    lines.push(Line::from(Span::styled(
-        match (view.average, view.previous) {
-            (Some(_), Some(p)) => format!("  the 15 s before read {p:.1} dB"),
-            (Some(_), None) => "  no 15 s before this one to compare".to_string(),
-            _ => String::new(),
-        },
-        dim,
-    )));
-    lines.push(Line::from(Span::styled(
-        match view.peak {
+    if view.direction == Direction::NotComparable {
+        // Nothing to compare against yet: the tab says which window is
+        // missing and how much of it has arrived, and claims no direction.
+        lines.push(Line::from(Span::styled(
+            format!("  {} {}", view.direction.arrow(), view.direction.as_str()),
+            Style::default().fg(t.accent),
+        )));
+        lines.push(Line::from(Span::styled(
+            match view.average {
+                Some(v) => format!("  {v:.1} dB now · no 15 s before it yet"),
+                None => "  no read in the window · no 15 s before it yet".to_string(),
+            },
+            dim,
+        )));
+        let covered_s = view.covered_ms / 1000;
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  need {} s more of reads · {covered_s} s so far",
+                ALIGN_WINDOW_SECS.saturating_sub(covered_s)
+            ),
+            dim,
+        )));
+    } else {
+        let block = direction_block(view.direction);
+        let face = big_digits(&format!("{:.1}", view.average.unwrap_or_default()));
+        for (i, row) in face.iter().enumerate() {
+            let left = block.get(i).copied().unwrap_or("        ");
+            let mut spans = vec![
+                Span::styled(format!(" {left}"), Style::default().fg(t.accent)),
+                Span::styled(format!(" {row} "), Style::default().fg(colour)),
+            ];
+            if i == 2 {
+                spans.push(Span::styled(
+                    format!("  {}", view.direction.as_str()),
+                    Style::default().fg(t.accent),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  over {ALIGN_WINDOW_SECS} s · {} reads · hold band ±{:.1} dB",
+                view.window_reads,
+                crate::align::SINR_DEADBAND_DB
+            ),
+            dim,
+        )));
+        let mut peak = match view.peak {
             Some(p) => format!(
                 "  peak {:.1} dB · pci {} · {} back",
                 p.sinr_db,
@@ -180,84 +191,66 @@ pub fn align_body(f: &mut Frame, area: Rect, app: &App) {
                 age_text(view.newest_ms, p.at_ms),
             ),
             None => "  no peak held yet".to_string(),
-        },
-        dim,
-    )));
-    match view.cleared_at {
-        Some(at) => lines.push(Line::from(Span::styled(
-            format!(
-                "  peak cleared at the cell change, {} back",
-                age_text(view.newest_ms, at)
-            ),
-            Style::default().fg(t.warn),
-        ))),
-        None => lines.push(Line::from("")),
-    }
+        };
+        if view.cleared_at.is_some() {
+            peak.push_str(" · peak cleared at the cell change");
+        }
+        lines.push(Line::from(Span::styled(peak, dim)));
 
-    lines.push(Line::from(vec![
-        Span::styled("  last 30 s  ", dim),
-        Span::styled("the newest read sits at the right edge", dim),
-    ]));
-    let cols = area.width.saturating_sub(2) as usize;
-    let strip = align_strip(app, cols);
-    let opts = crate::ui::chart::ChartOpts {
-        ascii: false,
-        baseline: false,
-    };
-    let (lo, hi) = crate::theme::SINR_DOMAIN;
-    for line in crate::ui::chart::spark_lines_scaled(
-        &strip,
-        cols,
-        1,
-        t.accent,
-        f64::from(lo),
-        f64::from(hi),
-        opts,
-    ) {
-        lines.push(line);
-    }
+        // The label row names the strip's right edge as the newest read: "now"
+        // sits in the last six columns of the same width the strip spans.
+        let mut label = format!("  last {ALIGN_STRIP_SECS} s");
+        if inner_w > label.chars().count() + 6 {
+            let pad_n = inner_w - label.chars().count() - 3;
+            label.push_str(&" ".repeat(pad_n));
+            label.push_str("now");
+        }
+        lines.push(Line::from(Span::styled(label, dim)));
+        let cols = area.width.saturating_sub(2) as usize;
+        let strip = align_strip(app, cols);
+        let opts = crate::ui::chart::ChartOpts {
+            ascii: false,
+            baseline: false,
+        };
+        let (lo, hi) = crate::theme::SINR_DOMAIN;
+        for line in crate::ui::chart::spark_lines_scaled(
+            &strip,
+            cols,
+            1,
+            t.accent,
+            f64::from(lo),
+            f64::from(hi),
+            opts,
+        ) {
+            lines.push(line);
+        }
 
-    lines.push(Line::from(""));
-    let (word, word_colour) = match sig.rsrp_dbm {
-        Some(v) if t.rsrp_step(v) >= 1 => ("enough", t.ok),
-        Some(_) => ("weak", t.danger),
-        None => ("-", t.dim),
-    };
-    lines.push(Line::from(vec![
-        Span::styled("  constraint  RSRP ", dim),
-        Span::styled(
-            opt_f(sig.rsrp_dbm, "dBm"),
-            Style::default().fg(t.rsrp_color(sig.rsrp_dbm.unwrap_or(0.0))),
-        ),
-        Span::styled(" · ", dim),
-        Span::styled(word, Style::default().fg(word_colour)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  cell load   RSRQ ", dim),
-        Span::styled(
-            opt_f(sig.rsrq_db, "dB"),
-            Style::default().fg(t.rsrq_color(sig.rsrq_db.unwrap_or(0.0))),
-        ),
-        Span::styled(" · ", dim),
-        Span::styled(
-            sig.rsrq_db
-                .map(|v| crate::theme::step_word(t.rsrq_step(v)).to_string())
-                .unwrap_or_else(|| "-".into()),
-            dim,
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  context     ", dim),
-        Span::styled(sig.tm.clone().unwrap_or_else(|| "-".into()), dim),
-        Span::styled(" · CQI ", dim),
-        Span::styled(cqi_label(sig.cqi), dim),
-        Span::styled(" · ", dim),
-        Span::styled(cell_line(sig), dim),
-    ]));
+        // One context row, and only where the panel has the room for it: below
+        // 100 columns the readings are cut, and a clipped fact row is worse
+        // than the average without it.
+        if area.width >= ALIGN_CONTEXT_MIN_W && area.height >= 20 {
+            lines.push(Line::from(vec![
+                Span::styled("  RSRP ", dim),
+                Span::styled(
+                    opt_f(sig.rsrp_dbm, "dBm"),
+                    Style::default().fg(t.rsrp_color(sig.rsrp_dbm.unwrap_or(0.0))),
+                ),
+                Span::styled(" · RSRQ ", dim),
+                Span::styled(
+                    opt_f(sig.rsrq_db, "dB"),
+                    Style::default().fg(t.rsrq_color(sig.rsrq_db.unwrap_or(0.0))),
+                ),
+                Span::styled(" · ", dim),
+                Span::styled(sig.tm.clone().unwrap_or_else(|| "-".into()), dim),
+                Span::styled(" · CQI ", dim),
+                Span::styled(cqi_label(sig.cqi), dim),
+            ]));
+        }
+    }
 
     f.render_widget(
         Paragraph::new(lines)
-            .block(panel(format!("ALIGN · {}", cell_line(sig)), t))
+            .block(panel(format!("ALIGN · {}", cell_line(sig, sample_pci)), t))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -274,20 +267,24 @@ fn age_text(newest_ms: u64, at_ms: u64) -> String {
     }
 }
 
-/// The cell the readings belong to: the downlink carrier, its PCI and its band.
-/// The composite the firmware reports is handed to the one parser that already
-/// owns it, so this line cannot disagree with the signal log about a cell.
-fn cell_line(sig: &crate::model::Signal) -> String {
+/// The cell the readings belong to, named once in the panel title: its band,
+/// its downlink carrier and its PCI. The composite the firmware reports is
+/// handed to the one parser that already owns it, so this line cannot disagree
+/// with the signal log about a cell.
+fn cell_line(sig: &crate::model::Signal, sample_pci: Option<u32>) -> String {
     let (dl, _) = sig
         .earfcn
         .as_deref()
         .map(crate::signal_history::parse_earfcn)
         .unwrap_or((None, None));
+    // The align reads carry their own PCI, and a cell change is the event this
+    // tab reports, so the sample's cell wins over the snapshot's older one.
+    let pci = sample_pci.or(sig.pci);
     format!(
-        "earfcn_dl {} · pci {} · band {}",
-        dl.map_or("-".to_string(), |v| v.to_string()),
-        sig.pci.map_or("-".to_string(), |v| v.to_string()),
+        "band {} · earfcn {} · pci {}",
         sig.band.clone().unwrap_or_else(|| "-".into()),
+        dl.map_or("-".to_string(), |v| v.to_string()),
+        pci.map_or("-".to_string(), |v| v.to_string()),
     )
 }
 
@@ -362,6 +359,18 @@ fn big_digits(text: &str) -> Vec<String> {
         }
     }
     rows
+}
+
+/// The direction as a four row block, eight columns wide, so it is read before
+/// the number beside it. A window with nothing to compare prints no mark here:
+/// the tab names that state in words instead of drawing a direction.
+fn direction_block(d: Direction) -> [&'static str; 4] {
+    match d {
+        Direction::Rising => ["   ▲    ", "  ▲▲▲   ", " ▲▲▲▲▲  ", "  ▲▲▲   "],
+        Direction::Falling => ["  ▼▼▼   ", " ▼▼▼▼▼  ", "  ▼▼▼   ", "   ▼    "],
+        Direction::Steady => ["        ", " ------ ", " ------ ", "        "],
+        Direction::NotComparable => ["        ", "        ", "        ", "        "],
+    }
 }
 
 // ---------------------------------------------------------------- dashboard
@@ -4444,16 +4453,20 @@ mod tests {
     #[test]
     fn the_sweep_phases_render_their_own_arrows() {
         let steady = sweep_screen(100, 30, 15);
-        assert!(steady.contains("- HOLD HERE"), "{steady}");
+        assert!(steady.contains("HOLD HERE"), "{steady}");
+        assert!(!steady.contains("IMPROVING"), "{steady}");
+        assert!(!steady.contains("DEGRADING"), "{steady}");
         assert!(!steady.contains("peak cleared"), "{steady}");
 
         let rising = sweep_screen(100, 30, 22);
-        assert!(rising.contains("▲ IMPROVING"), "{rising}");
-        assert!(!rising.contains("▼ DEGRADING"), "{rising}");
+        assert!(rising.contains("IMPROVING"), "{rising}");
+        assert!(rising.contains('▲'), "{rising}");
+        assert!(!rising.contains("DEGRADING"), "{rising}");
 
         let falling = sweep_screen(100, 30, 46);
-        assert!(falling.contains("▼ DEGRADING"), "{falling}");
-        assert!(!falling.contains("▲ IMPROVING"), "{falling}");
+        assert!(falling.contains("DEGRADING"), "{falling}");
+        assert!(falling.contains('▼'), "{falling}");
+        assert!(!falling.contains("IMPROVING"), "{falling}");
     }
 
     #[test]
@@ -4478,13 +4491,14 @@ mod tests {
     #[test]
     fn the_align_tab_leads_with_its_average_and_names_its_facts() {
         let screen = align_screen(120, 34, 120).join("\n");
-        assert!(screen.contains("15 s average"), "{screen}");
-        assert!(screen.contains("deadband 3.6 dB"), "{screen}");
+        assert!(screen.contains("over 15 s"), "{screen}");
+        assert!(screen.contains("reads"), "{screen}");
+        assert!(screen.contains("hold band ±3.6 dB"), "{screen}");
         assert!(screen.contains("peak "), "{screen}");
-        assert!(screen.contains("constraint  RSRP"), "{screen}");
-        assert!(screen.contains("cell load   RSRQ"), "{screen}");
-        assert!(screen.contains("context"), "{screen}");
-        assert!(screen.contains("earfcn_dl"), "{screen}");
+        assert!(screen.contains("RSRP"), "{screen}");
+        assert!(screen.contains("RSRQ"), "{screen}");
+        assert!(!screen.contains("context"), "{screen}");
+        assert!(screen.contains("earfcn"), "{screen}");
         assert!(
             screen.contains('\u{2588}'),
             "the tab leads with a block face, not a table cell: {screen}"
