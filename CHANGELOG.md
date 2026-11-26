@@ -2,6 +2,63 @@
 
 Newest first. Each section lists what changed, in the words the release uses.
 
+## 0.10.3
+
+**`--redact` covers every family the router sends, and the recording survives a torn byte**
+
+- **The redacted snapshot hides the DHCP resolvers it carries**: the report printed `dns.primary`
+  and `dns.secondary` beside a hidden serial, so a shared snapshot named the operator's resolvers.
+  Both are hidden now; `lan_ip` stays, because the same document prints the router's own address
+  as `router` and hiding one while showing the other would contradict itself.
+- **The scrubber knows the operator, SIM, SMS and DNS families, in elements and attributes**:
+  `Mccmnc`, `plmn`, `Sca`, `phone_number`, `wan_dns_address`, `wan_ipv6_dns_address`,
+  `PrimaryIPv6Dns`, `SecondaryIPv6Dns` and the radio MAC pair are hidden by name, underscores are
+  stripped before the lookup so `wan_dns_address` matches `WanDNSAddress`, and a MAC carried as an
+  attribute is masked too. The close tag is matched in any case, so `</Imei>` and `</imei >` no
+  longer leave the value in the open.
+- **`replay --json --redact` redacts**: the json arm printed and returned before the flag was read,
+  so the output was byte-identical to the unredacted one. It now masks the frames it prints.
+- **The flag's help and the documents state what it covers**: "Hide serial, IMEI, MACs, WAN IP and
+  client names in every command that prints router data", and `docs/headless.md` names the rule the
+  scrubber enforces instead of a field count that was never true.
+- **One undecodable byte costs one frame, not the recording**: the reader failed the whole file on a
+  line it could not decode, which turned a torn tail into an empty replay. It skips the line and
+  keeps the frames around it.
+- **Pruning writes a sibling and renames it**: the prune truncated the only copy, so a kill between
+  the truncate and the rewrite left zero bytes. It writes a `0600` sibling first.
+- **`sms delete` refuses a bare run and prints its plan**: `sms delete --allow-write --yes` deleted
+  the whole inbox with no plan and no index. It now needs an index or `--all`, and every deleting
+  path prints what it is about to delete before it connects.
+- **SIGTERM and SIGHUP put the terminal back**: raw mode was restored only on a normal exit or a
+  panic, so a systemd stop or a closed window left the tty without echo, canonical mode or signals.
+- **`StartDay` is read the way the ledger reads it**: a router reporting 29 to 31 was clamped to 1 in
+  the parse and to 28 in the ledger; both say 28 now. 900 and 901 both read `connected` (901 is
+  connected with the WAN up), which is the word the event counter already treated as up, and a code
+  that does not fit 16 bits lands on `unknown` instead of wrapping into a code that does.
+- **A counter that went backwards inside the window is a hole, not a measurement**: the interval's
+  bytes vanished and the projection counted the time as watched. The gap is recorded, and when the
+  cap is reached the two oldest gaps fold into one instead of the oldest being dropped.
+- **The gap percentile is nearest rank**: the floor index returned the widest gap for any window of
+  20 or fewer, which is how a 1 000 000 ms smear was reported for a 60 000 ms one.
+- **The first speedtest read counts toward the rate**: its bytes were counted while its transfer time
+  was left out of the divisor, and `speedtest --history --json` printed the same table as the text
+  run.
+- **A tooltip without the LTE RSRP prints a dash**: an absent reading showed `0 dBm`, which is a
+  value. A negative ping bloat floors at zero instead of being printed as negative.
+- **File errors are usage errors, not config errors**: a missing recording, an unreadable history
+  file and a `--config` path that is a directory now exit 3 with the file named, and
+  `--config <dir>` no longer advises `chmod 600` on a directory.
+- **The offline command set is the one the help promises**: `doctor`, `ping`, `incidents`, `report`,
+  `config list` and `capabilities` need no `config.toml`, while every command that logs in still
+  refuses a missing or loose config before it connects.
+- **`preview --size` has a ceiling**: `9999x9999` asked for 4.8 GB and aborted the process; anything
+  above 512x256 is refused with the reason.
+- **A cited guard must carry `#[test]`**: `docs/contracts.md` resolves a row only when the function
+  it names in `src/` carries the attribute, so a doc comment cannot pass as a guard.
+- **Comments state the rule, not the round**: five device facts name the firmware (`H122-373`) and
+  the capture date, duplicated test docs are gone, and `CONTRIBUTING.md` carries the rule the next
+  comment is judged by.
+
 ## 0.10.2
 
 **The Align tab names what it cannot compare, and leads with one reading**
