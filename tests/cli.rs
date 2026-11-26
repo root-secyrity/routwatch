@@ -1827,6 +1827,26 @@ fn a_doctor_run_needs_no_config() {
     assert!(text.contains("config"), "{text}");
 }
 
+/// A ping runs on this machine and reads no router data, so a machine with no
+/// config file can use it. `ping` itself may be missing from the image: either
+/// outcome passes as long as the failure is not a missing config.
+#[test]
+fn a_ping_run_needs_no_config() {
+    let out = run(
+        &["ping", "--count", "1", "127.0.0.1"],
+        &[("XDG_CONFIG_HOME", NO_CONFIG)],
+    );
+    let err = stderr(&out);
+    assert!(
+        !err.contains("config.toml"),
+        "ping asked for a config file: {err}"
+    );
+    assert!(
+        !err.starts_with("config:"),
+        "ping failed as a config error: {err}"
+    );
+}
+
 /// `config snapshot` logs in, so a missing or loose config stops it before any
 /// socket is opened.
 #[test]
