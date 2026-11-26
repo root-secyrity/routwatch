@@ -178,7 +178,8 @@ rather than pretending to be safe.
 `--redact` also covers `status`, `record`, `replay` and `preview`, so the same flag
 covers every command that prints a snapshot or a frame.
 `routwatch share` writes the whole ask-for-a-model document - capabilities,
-endpoint field names, redacted snapshot - as `0600` in the current directory.
+endpoint field names, redacted snapshot - as `0600` in the current directory, and a
+directory it has to create is `0700` (one that already exists keeps its own mode).
 `dump` follows the same rule for its output (json or text): `0600` inside a
 `0700` directory, and an existing file is replaced only with `--force`.
 
