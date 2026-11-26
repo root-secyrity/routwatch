@@ -801,8 +801,13 @@ pub fn status_waybar(snap: Option<&Snapshot>, err: Option<&str>) -> WaybarStatus
         }
     }
     tooltip.push(format!(
-        "LTE RSRP {:.0} dBm · RSRQ {} dB · SINR {} dB",
-        s.signal.rsrp_dbm.unwrap_or(0.0),
+        "LTE RSRP {} dBm · RSRQ {} dB · SINR {} dB",
+        // A field the firmware did not answer is a dash, the same way RSRQ and
+        // SINR already print: 0 dBm is a real and very good reading.
+        s.signal
+            .rsrp_dbm
+            .map(|v| format!("{v:.0}"))
+            .unwrap_or_else(|| "-".into()),
         s.signal
             .rsrq_db
             .map(|v| format!("{v:.0}"))
@@ -953,6 +958,21 @@ mod status_tests {
             "a live link without RSRP is not offline"
         );
         assert_eq!(w.percentage, 0);
+    }
+
+    /// The waybar plots the 5G reading when ENDC carries one, and the tooltip
+    /// still prints the LTE row: a field the firmware did not answer is a dash,
+    /// never 0 dBm.
+    #[test]
+    fn a_tooltip_without_the_lte_rsrp_shows_a_dash() {
+        let s = snap_with(None, true, Some(-115.0));
+        let w = status_waybar(Some(&s), None);
+        assert!(
+            w.tooltip.contains("LTE RSRP - dBm"),
+            "an absent LTE RSRP printed as a number: {}",
+            w.tooltip
+        );
+        assert!(w.tooltip.contains("NR  RSRP -115"), "{}", w.tooltip);
     }
 
     #[test]
