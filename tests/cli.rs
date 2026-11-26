@@ -1634,15 +1634,15 @@ fn a_json_replay_honours_redact() {
         plain.contains("SYNTHSERIAL0001"),
         "the plain run must carry the router's value: {plain}"
     );
-    for secret in [
-        "SYNTHSERIAL0001",
-        "000000000000000",
-        "02:00:00:00:0A:01",
-        "Test Net",
+    for (label, secret) in [
+        ("serial", "SYNTHSERIAL0001"),
+        ("IMEI", "000000000000000"),
+        ("radio MAC", "02:00:00:00:0A:01"),
+        ("operator name", "Test Net"),
     ] {
         assert!(
             !text.contains(secret),
-            "{secret} survived a redacted replay: {text}"
+            "a redacted replay still carries the {label}: {text}"
         );
     }
     assert!(text.contains(routwatch::scrub::HIDDEN), "{text}");
