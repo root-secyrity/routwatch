@@ -55,6 +55,10 @@ fn is_identity(tag: &str) -> bool {
         || lower.ends_with("ipaddress")
         || lower.ends_with("psk")
         || lower.ends_with("password")
+        // H122-373, capture of 2026-11-22: the radios report as
+        // `WifiMacAddrWl0` and `WifiMacAddrWl1`, so a fixed list can never
+        // finish this family; the tag carries the index.
+        || lower.contains("macaddr")
 }
 
 /// Replace the *text* of every identity element, leaving the tag names, the
@@ -143,6 +147,8 @@ mod tests {
 <SerialNumber>MOCKSERIAL0001</SerialNumber>
 <Imei>000000000000000</Imei>
 <MacAddress1>02:00:00:00:0A:01</MacAddress1>
+<WifiMacAddrWl0>02:00:00:00:0A:10</WifiMacAddrWl0>
+<WifiMacAddrWl1>02:00:00:00:0A:11</WifiMacAddrWl1>
 <WanIPAddress>203.0.113.77</WanIPAddress>
 <rsrp>-95dBm</rsrp>
 <Hosts><Host><HostName>living-room-tv</HostName><IpAddress>192.168.8.101</IpAddress></Host></Hosts>
@@ -169,6 +175,8 @@ mod tests {
             "MOCKSERIAL0001",
             "000000000000000",
             "02:00:00:00:0A:01",
+            "02:00:00:00:0A:10",
+            "02:00:00:00:0A:11",
             "203.0.113.77",
             "living-room-tv",
         ] {
@@ -178,6 +186,8 @@ mod tests {
             "<SerialNumber>",
             "<Imei>",
             "<MacAddress1>",
+            "<WifiMacAddrWl0>",
+            "<WifiMacAddrWl1>",
             "<WanIPAddress>",
             "<HostName>",
         ] {
