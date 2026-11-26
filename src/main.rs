@@ -3354,12 +3354,34 @@ fn install_restore_hook() {
     });
 }
 
+/// Set by the stop handler and read on every pass of a screen loop. A signal
+/// never runs a destructor, so the loop has to notice and leave through its own
+/// path: that is what puts the tty back. Terminal emulators send SIGHUP when a
+/// window closes and init or systemd sends SIGTERM on a logout, and a tty left
+/// in raw mode swallows every keystroke of the shell that comes back.
+static TERMINATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_terminate(_sig: libc::c_int) {
+    TERMINATED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Installed before raw mode is entered, so the two signals that end a session
+/// from outside are handled for the whole time the screen owns the tty.
+fn install_stop_handler() {
+    let handler: extern "C" fn(libc::c_int) = on_terminate;
+    unsafe {
+        libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, handler as libc::sighandler_t);
+    }
+}
+
 fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), ApiError> {
     // The ledger lives beside the recordings, under the user's data dir. One
     // writer at a time: a second window runs read-only rather than racing.
     let usage_path = routwatch::usage::path();
     let (tx, rx) = worker::spawn(cfg, password);
 
+    install_stop_handler();
     install_restore_hook();
     enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
     let _restore = RestoreOnDrop(Some(restore_terminal));
@@ -3407,6 +3429,12 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     app.mark_dirty();
 
     while !app.quit {
+        if TERMINATED.load(std::sync::atomic::Ordering::SeqCst) {
+            // Leaving through the same break a closed window takes: the usage
+            // file is saved, the worker is told to log out, and the guard
+            // restores the tty.
+            break;
+        }
         drain(&mut app, &rx);
         if incidents_at.elapsed().as_secs() >= 60 {
             app.load_incidents();
@@ -3502,6 +3530,7 @@ fn run_replay(
     speed: u64,
     redact: bool,
 ) -> Result<(), ApiError> {
+    install_stop_handler();
     install_restore_hook();
     enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
     let _restore = RestoreOnDrop(Some(restore_terminal));
@@ -3530,6 +3559,10 @@ fn run_replay(
 
         let mut held = Duration::ZERO;
         while held < tick || paused {
+            if TERMINATED.load(std::sync::atomic::Ordering::SeqCst) {
+                quit = true;
+                break;
+            }
             if event::poll(Duration::from_millis(50)).unwrap_or(false) {
                 match event::read() {
                     Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => match k.code {
