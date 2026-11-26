@@ -1597,9 +1597,6 @@ fn cells_changes_window_keeps_the_tail_of_the_log() {
     assert!(text.contains("cell-1700090000"), "{text}");
 }
 
-/// `replay --json` serialises the frames itself, so it redacts before printing:
-/// a recording pasted in an issue carries the same hidden values as
-/// `snapshot --json --redact`.
 #[test]
 fn a_json_replay_honours_redact() {
     let home = temp_data_home("replay-json");
@@ -1801,8 +1798,6 @@ fn an_absurd_size_is_refused() {
     assert!(err.contains("512x256"), "{err}");
 }
 
-/// `--config` takes the path of a file: a directory is refused as that, not
-/// told to chmod itself 0600.
 #[test]
 fn a_config_directory_is_not_a_config_file() {
     let dir = std::env::temp_dir().join(format!("routwatch-cfgdir-{}", std::process::id()));
@@ -1832,7 +1827,6 @@ fn a_doctor_run_needs_no_config() {
     assert!(text.contains("config"), "{text}");
 }
 
-/// `config list` reads the snapshots on disk, so it runs without a config file.
 /// `config snapshot` logs in, so a missing or loose config stops it before any
 /// socket is opened.
 #[test]
@@ -1841,8 +1835,7 @@ fn config_list_needs_no_config_but_snapshot_checks_the_config() {
     assert!(out.status.success(), "stderr: {}", stderr(&out));
 
     // A machine with no config file must be told so rather than dialling a
-    // default address: ROUTWATCH_IP points that dial at a closed port, so the
-    // unfixed path fails as a network error (2) and the fixed one as config (3).
+    // default address, which ROUTWATCH_IP points at a closed port: exit 3, not 2.
     let out = run(
         &["config", "snapshot"],
         &[

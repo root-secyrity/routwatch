@@ -694,8 +694,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             // The flags that reach the router keep the strict loader.
             | Some(Cmd::Doctor { live: false, .. })
             | Some(Cmd::Capabilities { probe: false, .. })
-            // `config list` reads the snapshots on disk; `snapshot` and `diff`
-            // log in, so they keep the strict loader.
+            // `config list` reads the snapshots on disk; the config operations
+            // that log in keep the strict loader.
             | Some(Cmd::Config {
                 op: ConfigCmd::List { .. },
             })
@@ -3382,11 +3382,9 @@ fn install_restore_hook() {
     });
 }
 
-/// Set by the stop handler and read on every pass of a screen loop. A signal
-/// never runs a destructor, so the loop has to notice and leave through its own
-/// path: that is what puts the tty back. Terminal emulators send SIGHUP when a
-/// window closes and init or systemd sends SIGTERM on a logout, and a tty left
-/// in raw mode swallows every keystroke of the shell that comes back.
+/// Set by the stop handler and read on every pass of a screen loop: a signal
+/// never runs a destructor, so the loop leaves through the path that puts the
+/// tty back, on SIGHUP from a closed window and SIGTERM from a logout.
 static TERMINATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 extern "C" fn on_terminate(_sig: libc::c_int) {

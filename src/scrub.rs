@@ -50,10 +50,9 @@ pub const IDENTITY_TAGS: &[&str] = &[
     // status document uses for the same thing.
     "mccmnc",
     "plmn",
-    // The resolvers the LAN hands out. A custom pair names a provider or a
-    // private resolver, and that is where the owner lives, not how the router
-    // behaves. `lan_ip` is deliberately absent: it is the router's own address,
-    // which every report prints anyway.
+    // The resolvers the LAN hands out: a custom pair names a provider or a
+    // private resolver, not router behaviour. `lan_ip` is deliberately absent,
+    // being the router's own address, which every report prints anyway.
     "primarydns",
     "secondarydns",
     "primaryipv6dns",

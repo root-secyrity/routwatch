@@ -758,8 +758,6 @@ mod tests {
         assert_eq!(e.ping_bloat_ms, Some(0.0));
     }
 
-    /// A file another build left at 0644 is tightened by the next append: a row
-    /// names the network it measured.
     #[test]
     fn an_existing_loose_history_file_is_tightened_on_append() {
         use std::os::unix::fs::PermissionsExt;

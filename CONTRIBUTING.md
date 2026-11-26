@@ -101,8 +101,9 @@ already carry that.
   it unnamed; if a number has to appear in prose, a test asserts it.
 - A claim about a device names the firmware and the date it was measured, or it is called
   unverified in that word.
-- One note per fact. If the same sentence would sit above four different fields, write it once
-  at module level or drop it.
+- One note per fact, and the fact lives in the production comment: a test doc says what no other
+  comment says, or it is absent. If the same sentence would sit above four different fields,
+  write it once at module level or drop it.
 - Do not sweep comments wholesale. In this repository a "why" comment is often the only public
   record of a firmware behaviour, because the build log and the real captures are not tracked.
 

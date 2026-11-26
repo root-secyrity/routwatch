@@ -111,7 +111,8 @@ pub fn load(path: &Path) -> std::io::Result<Vec<RecordFrame>> {
         }
         // A line that is not UTF-8 is one damaged frame, the same way a line
         // that is not JSON is: the bytes are read first, so one bad byte costs
-        // that frame and not the file.
+        // that frame and not the file. A recording is written while the router
+        // is talking, and a byte can tear.
         let Ok(line) = std::str::from_utf8(&raw) else {
             continue;
         };
@@ -133,7 +134,8 @@ pub fn prune(path: &Path, keep: u64, now: u64) -> std::io::Result<usize> {
     let kept: Vec<RecordFrame> = frames.into_iter().filter(|f| f.at >= cutoff).collect();
     // Written beside the recording and renamed over it, because the recording
     // is the only copy: a kill between a truncate and the last rewritten line
-    // would otherwise leave nothing to replay.
+    // would otherwise leave nothing to replay. The new file is set 0600 before
+    // the rename.
     let tmp = path.with_extension("rwr.tmp");
     {
         let mut file = fs::File::create(&tmp)?;
@@ -237,8 +239,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A file that already existed with 0644 (an older build, another tool) must
-    /// be tightened on the next append: it now carries identity data.
     #[test]
     fn an_existing_loose_file_is_tightened_on_append() {
         use std::os::unix::fs::PermissionsExt;
@@ -254,8 +254,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// One line that is not UTF-8 is one damaged frame, not the end of the file:
-    /// a recording is written while the router is talking, and a byte can tear.
     #[test]
     fn a_bad_byte_costs_one_frame_not_the_file() {
         let dir = tmpdir("bad-byte");
@@ -277,8 +275,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The prune rewrites the only copy. A kill halfway through it must leave
-    /// the old frames readable, and the result must keep the tight mode.
     #[test]
     fn prune_keeps_the_frames_and_the_mode() {
         use std::os::unix::fs::PermissionsExt;

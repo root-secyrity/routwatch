@@ -187,11 +187,9 @@ pub fn reset(u: &mut Usage, now: u64, total: u64, has_quota: bool) {
     u.thr_95 = false;
 }
 
-/// Record a hole in the measurement. The cap keeps the file small, and a hole
-/// that falls off it is folded into the one after it instead of dropped: the
-/// projection subtracts the holes it holds, so a forgotten hole would be counted
-/// as watched time. A folded hole can only overstate the hole, never the
-/// measurement, which is the direction a coverage claim is allowed to err in.
+/// Record a hole. The cap keeps the file small, and a hole that falls off it
+/// folds into the one after it rather than being dropped: the projection
+/// subtracts the holes it holds, so folding can only overstate the hole.
 fn push_gap(u: &mut Usage, from: u64, to: u64) {
     if u.gaps.len() >= KEEP_GAPS {
         let oldest = u.gaps.remove(0);
@@ -300,10 +298,8 @@ pub fn observe_day(
     if u.last_at != 0 {
         let dt = now.saturating_sub(u.last_at);
         // A counter that went backwards inside the window is not a delta: the
-        // router restarted its own counters, so the interval between the two
-        // samples was not measured. It is a hole, like a sample that arrived
-        // after the window, and counting it as watched time inflates the
-        // coverage the projection reports.
+        // interval was not measured, so it is a hole, and the projection does
+        // not count it as watched.
         let went_back = tr.total_dl_bytes < u.last_dl || tr.total_ul_bytes < u.last_ul;
         if dt <= GAP_SECS && !went_back {
             let ddl = tr.total_dl_bytes - u.last_dl;
@@ -805,8 +801,6 @@ mod tests {
         observe_day(&mut u, 1_200, day(20_700, 4), &tr(10, 0), None, 1);
         assert!(u.days.is_empty());
         assert_eq!(u.last_dl, 10);
-        // The interval between the two samples was not measured, so it is a hole
-        // rather than a 0-byte delta.
         assert_eq!(
             u.gaps,
             vec![Gap {
@@ -817,8 +811,7 @@ mod tests {
     }
 
     /// A registered counter that restarts inside the window (the month counters
-    /// keep the cycle alive, so this is not a baseline restart) leaves a hole,
-    /// and the projection must not count that interval as watched.
+    /// keep the cycle alive, so this is not a baseline restart) leaves a hole.
     #[test]
     fn a_backwards_counter_inside_the_window_is_a_gap() {
         let mut u = Usage::default();
@@ -852,8 +845,6 @@ mod tests {
         assert_eq!(p.watched_secs, 100, "the 200 s hole is not watched: {p:?}");
     }
 
-    /// Past the gap cap the oldest holes fold into one instead of falling off, so
-    /// a long run cannot report a fully watched window out of forgotten holes.
     #[test]
     fn dropped_gaps_stay_unwatched() {
         let mut u = Usage::default();
