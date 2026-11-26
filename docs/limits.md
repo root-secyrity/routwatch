@@ -91,7 +91,8 @@ why each one is stated instead of hidden.
   `monitoring/month_statistics`, the number is the router's own month counter;
   otherwise it is the lifetime counters, so it survives a reboot but not a
   counter clear. The per-day ledger behind the usage table only counts while
-  routwatch runs, gaps over five minutes are marked rather than spread, and the
+  routwatch runs, a gap over five minutes or a counter that went backwards is
+  marked as a hole rather than spread, and the
   panel prints how many days it covers.
 - **The budget report is arithmetic over the ledger, and says how much of the
   window was watched**: `routwatch budget` reads `$XDG_DATA_HOME/routwatch/usage.json`
