@@ -219,6 +219,14 @@ pub fn load(explicit: Option<PathBuf>) -> Result<Config, ApiError> {
     let path = config_path(explicit)?;
     let meta =
         fs::metadata(&path).map_err(|e| ApiError::Config(format!("{}: {e}", path.display())))?;
+    // A directory reads as mode 0755 and the chmod advice below would be
+    // nonsense: --config takes the path of a file.
+    if meta.is_dir() {
+        return Err(ApiError::Config(format!(
+            "{} is a directory; --config takes the path of a file",
+            path.display()
+        )));
+    }
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
         return Err(ApiError::Config(format!(

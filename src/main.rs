@@ -689,6 +689,12 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Budget { .. })
             | Some(Cmd::Antenna { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
+            | Some(Cmd::Incidents { .. })
+            | Some(Cmd::Report { .. })
+            // The flags that reach the router keep the strict loader.
+            | Some(Cmd::Doctor { live: false, .. })
+            | Some(Cmd::Capabilities { probe: false, .. })
+            | Some(Cmd::Config { .. })
     );
     let cfg = if offline {
         config::load_or_default(cli.config.clone())?
@@ -1114,7 +1120,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                             snap
                         };
                         record::append(&path, &record::RecordFrame::capture(snap))
-                            .map_err(|e| ApiError::Config(format!("recording: {e}")))?;
+                            .map_err(|e| ApiError::Usage(format!("recording: {e}")))?;
                         written += 1;
                         failures = 0;
                         eprintln!("recorded {written} → {}", path.display());
@@ -1138,16 +1144,16 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 std::thread::sleep(std::time::Duration::from_secs(interval.max(1)));
             }
             let kept = record::prune(&path, keep_secs, record::now_unix())
-                .map_err(|e| ApiError::Config(format!("recording: {e}")))?;
+                .map_err(|e| ApiError::Usage(format!("recording: {e}")))?;
             eprintln!("kept {kept} frames in {}", path.display());
             Ok(())
         }
         Some(Cmd::Replay { file, json, speed }) => {
             let frames = record::load(&file)
-                .map_err(|e| ApiError::Config(format!("{}: {e}", file.display())))?;
+                .map_err(|e| ApiError::Usage(format!("recording {}: {e}", file.display())))?;
             if frames.is_empty() {
-                return Err(ApiError::Config(format!(
-                    "{} holds no frames",
+                return Err(ApiError::Usage(format!(
+                    "recording {} holds no frames",
                     file.display()
                 )));
             }
@@ -2160,7 +2166,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 eprintln!(
                     "history: only the signal log is saved so far: pass --signal (speed runs are `speedtest --history`)"
                 );
-                return Err(ApiError::Quiet(2));
+                return Err(ApiError::Quiet(3));
             }
             let Some(p) = routwatch::signal_history::path() else {
                 eprintln!("history: this platform has no data directory, so no log is kept");
@@ -2622,6 +2628,11 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
 }
 
 fn parse_size(s: &str) -> Result<(u16, u16), ApiError> {
+    // The frame is a buffer of cells, so a size is a memory budget: 512x256 is
+    // already larger than any terminal, and a stray exponent must not ask the
+    // renderer for gigabytes.
+    const MAX_W: u16 = 512;
+    const MAX_H: u16 = 256;
     let (w, h) = s
         .split_once(['x', 'X'])
         .ok_or_else(|| ApiError::Usage(format!("bad size {s:?}; expected WIDTHxHEIGHT")))?;
@@ -2636,6 +2647,11 @@ fn parse_size(s: &str) -> Result<(u16, u16), ApiError> {
     if w < 24 || h < 6 {
         return Err(ApiError::Usage(format!(
             "{w}x{h} is below the 24x6 minimum the frame can draw"
+        )));
+    }
+    if w > MAX_W || h > MAX_H {
+        return Err(ApiError::Usage(format!(
+            "{w}x{h} is above the {MAX_W}x{MAX_H} ceiling; a frame that size is not a terminal"
         )));
     }
     Ok((w, h))

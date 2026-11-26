@@ -1057,8 +1057,10 @@ fn a_row_from_a_newer_build_is_counted_out_loud_by_both_readers() {
     }
 }
 
+/// A missing flag is a usage mistake, so it exits 3, the code the docs reserve
+/// for usage. 2 is the network code.
 #[test]
-fn history_without_signal_says_why_and_exits_two() {
+fn history_without_signal_says_why_and_exits_three() {
     let home = temp_data_home("sighint");
     let out = bin()
         .env("XDG_DATA_HOME", &*home)
@@ -1066,7 +1068,7 @@ fn history_without_signal_says_why_and_exits_two() {
         .args(["history"])
         .output()
         .expect("run");
-    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("--signal"), "{}", stderr(&out));
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
 }
@@ -1764,4 +1766,68 @@ fn speedtest_history_json_lists_the_rows() {
         !text.contains("idle"),
         "the text table's header must not appear: {text}"
     );
+}
+
+/// A recording that cannot be read is a file problem, not a config one: the
+/// message names the file and the exit code stays 3.
+#[test]
+fn a_missing_recording_is_not_a_config_error() {
+    let out = run(
+        &["replay", "/nonexistent-routwatch-recording.rwr", "--json"],
+        &[("XDG_CONFIG_HOME", NO_CONFIG)],
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(3), "stderr: {err}");
+    assert!(
+        err.contains("recording /nonexistent-routwatch-recording.rwr"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("config:"),
+        "a file error was labelled config: {err}"
+    );
+}
+
+/// The frame is a cell buffer, so a size is a memory budget: the ceiling is
+/// refused with the number in the message instead of aborting on allocation.
+#[test]
+fn an_absurd_size_is_refused() {
+    let out = run(
+        &["preview", "--size", "9999x9999"],
+        &[("XDG_CONFIG_HOME", NO_CONFIG)],
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(3), "stderr: {err}");
+    assert!(err.contains("512x256"), "{err}");
+}
+
+/// `--config` takes the path of a file: a directory is refused as that, not
+/// told to chmod itself 0600.
+#[test]
+fn a_config_directory_is_not_a_config_file() {
+    let dir = std::env::temp_dir().join(format!("routwatch-cfgdir-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let out = run(
+        &["--config", dir.to_str().expect("utf-8 path"), "status"],
+        &[],
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(3), "stderr: {err}");
+    assert!(err.contains("is a directory"), "{err}");
+    assert!(!err.contains("chmod"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `doctor` is the first step the platform docs ask for, so it runs on a
+/// machine that has no config file yet.
+#[test]
+fn a_doctor_run_needs_no_config() {
+    let out = run(&["doctor"], &[("XDG_CONFIG_HOME", NO_CONFIG)]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    assert!(text.contains("config"), "{text}");
 }
