@@ -169,7 +169,8 @@ from.
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
 IMEI, MACs, WAN IP, client names and addresses, and the operator name with
 `(hidden)`, `dump --redact` does the same to the raw XML (keeping every tag name,
-and covering wifi keys and every `*ssid`/`*ipaddress` spelling), and
+and covering wifi keys, every `*macaddr` tag (the radios report
+`WifiMacAddrWl0` and `WifiMacAddrWl1`), and every `*ssid`/`*ipaddress` spelling), and
 `snapshot --raw --redact` is refused outright rather than pretending to be safe.
 `--redact` also covers `status`, `record`, `replay` and `preview`, so the flag
 means the same thing on every command.

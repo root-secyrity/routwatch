@@ -85,8 +85,8 @@ struct Cli {
     #[arg(long)]
     allow_write: bool,
 
-    /// Hide serial, IMEI, MACs, WAN IP and client names in `snapshot`, so the
-    /// output can be pasted in a public issue
+    /// Hide serial, IMEI, MACs, WAN IP and client names in any output, so it
+    /// can be pasted in a public issue
     #[arg(long, global = true)]
     redact: bool,
 
