@@ -1595,9 +1595,9 @@ fn cells_changes_window_keeps_the_tail_of_the_log() {
     assert!(text.contains("cell-1700090000"), "{text}");
 }
 
-/// `replay --json` prints the frames and returns before `run_replay` reads
-/// `--redact`, so the flag has to hide identity on this path too: one flag,
-/// one meaning on every command.
+/// `replay --json` serialises the frames itself, so it redacts before printing:
+/// a recording pasted in an issue carries the same hidden values as
+/// `snapshot --json --redact`.
 #[test]
 fn a_json_replay_honours_redact() {
     let home = temp_data_home("replay-json");

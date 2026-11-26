@@ -85,8 +85,8 @@ struct Cli {
     #[arg(long)]
     allow_write: bool,
 
-    /// Hide serial, IMEI, MACs, WAN IP and client names in any output, so it
-    /// can be pasted in a public issue
+    /// Hide serial, IMEI, MACs, WAN IP and client names in every command that
+    /// prints router data, so the output can be pasted in a public issue
     #[arg(long, global = true)]
     redact: bool,
 
@@ -1152,8 +1152,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 )));
             }
             if json {
-                // `--redact` applies on this path too: one flag, one meaning on
-                // every command.
+                // Redact before the frames reach stdout: a replay pasted into an
+                // issue carries the same hidden values as `snapshot --json --redact`.
                 let frames = if cli.redact {
                     frames
                         .into_iter()

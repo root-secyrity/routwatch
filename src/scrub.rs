@@ -46,8 +46,9 @@ pub const IDENTITY_TAGS: &[&str] = &[
 pub const HIDDEN: &str = "(hidden)";
 
 /// A firmware is free to spell the same field `GuestSsid` or
-/// `Ipv6IpAddress`; the fixed list would miss those. Suffix rules cover the
-/// families without pretending every `*name` is identity (`DeviceName` is not).
+/// `Ipv6IpAddress`; the fixed list would miss those. Suffix and substring rules
+/// cover the families without pretending every `*name` is identity (`DeviceName`
+/// is not).
 fn is_identity(tag: &str) -> bool {
     let lower = tag.to_ascii_lowercase();
     IDENTITY_TAGS.contains(&lower.as_str())

@@ -169,11 +169,11 @@ from.
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
 IMEI, MACs, WAN IP, client names and addresses, and the operator name with
 `(hidden)`, `dump --redact` does the same to the raw XML (keeping every tag name,
-and covering wifi keys, every `*macaddr` tag (the radios report
-`WifiMacAddrWl0` and `WifiMacAddrWl1`), and every `*ssid`/`*ipaddress` spelling), and
-`snapshot --raw --redact` is refused outright rather than pretending to be safe.
-`--redact` also covers `status`, `record`, `replay` and `preview`, so the flag
-means the same thing on every command.
+and covering wifi keys, every tag whose name carries `macaddr`, and every
+`*ssid`/`*ipaddress` spelling), and `snapshot --raw --redact` is refused outright
+rather than pretending to be safe.
+`--redact` also covers `status`, `record`, `replay` and `preview`, so the same flag
+covers every command that prints a snapshot or a frame.
 `routwatch share` writes the whole ask-for-a-model document - capabilities,
 endpoint field names, redacted snapshot - as `0600` in the current directory.
 `dump` follows the same rule for its output (json or text): `0600` inside a

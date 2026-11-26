@@ -88,8 +88,8 @@ fn hidden_str(value: &str) -> String {
 /// Someone who owns a cellular router and wants it supported has nothing to
 /// hide behind: they must paste what their firmware reported. This keeps every
 /// field a maintainer needs to write a parser - model, firmware, signal shape,
-/// band list, which endpoints answered - and replaces the six fields that
-/// identify the person, the SIM or their network. No screenshots, no raw XML,
+/// band list, which endpoints answered - and replaces every field that
+/// identifies the person, the SIM or their network. No screenshots, no raw XML,
 /// no IMEI.
 pub fn redacted(snap: &Snapshot) -> Snapshot {
     let mut out = snap.clone();
@@ -355,8 +355,8 @@ mod tests {
 
     /// The point of `snapshot --json --redact`: a person who owns a router nobody
     /// has ever tested can paste the whole thing in a public issue. Every field a
-    /// maintainer needs to write a parser survives; the six that identify the
-    /// person, the SIM or the network do not.
+    /// maintainer needs to write a parser survives; no field that identifies the
+    /// person, the SIM or the network does.
     #[test]
     fn the_shareable_snapshot_keeps_the_shape_and_drops_the_identity() {
         let shared = redacted(&sample());
