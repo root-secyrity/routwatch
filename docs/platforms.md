@@ -27,6 +27,10 @@ failure. [`../CONTRIBUTING.md`](../CONTRIBUTING.md) explains what happens to tha
 report: it becomes a mock profile plus a test, so your router is covered by CI
 even though no build machine can reach it.
 
+`doctor --json` needs no config file: a machine that has never been set up gets the
+capability table and a `next_check` per row instead of a missing-config error, so it
+is the first command to run after an install.
+
 ## Supported Linux
 
 | Distribution | Verified | Notes |

@@ -85,8 +85,8 @@ struct Cli {
     #[arg(long)]
     allow_write: bool,
 
-    /// Hide serial, IMEI, MACs, WAN IP and client names in `snapshot`, so the
-    /// output can be pasted in a public issue
+    /// Hide serial, IMEI, MACs, WAN IP and client names in every command that
+    /// prints router data, so the output can be pasted in a public issue
     #[arg(long, global = true)]
     redact: bool,
 
@@ -472,7 +472,7 @@ enum SmsCmd {
     },
     /// Delete messages - destructive, needs --allow-write and --yes
     Delete {
-        /// Indexes to delete, one per argument
+        /// Indexes to delete, one per argument (or pass --all)
         indexes: Vec<String>,
         /// Delete every message in the inbox
         #[arg(long)]
@@ -689,6 +689,16 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Budget { .. })
             | Some(Cmd::Antenna { .. })
             | Some(Cmd::Scan { dry_run: true, .. })
+            | Some(Cmd::Incidents { .. })
+            | Some(Cmd::Report { .. })
+            // The flags that reach the router keep the strict loader.
+            | Some(Cmd::Doctor { live: false, .. })
+            | Some(Cmd::Capabilities { probe: false, .. })
+            // `config list` reads the snapshots on disk; the config operations
+            // that log in keep the strict loader.
+            | Some(Cmd::Config {
+                op: ConfigCmd::List { .. },
+            })
     );
     let cfg = if offline {
         config::load_or_default(cli.config.clone())?
@@ -1114,7 +1124,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                             snap
                         };
                         record::append(&path, &record::RecordFrame::capture(snap))
-                            .map_err(|e| ApiError::Config(format!("recording: {e}")))?;
+                            .map_err(|e| ApiError::Usage(format!("recording: {e}")))?;
                         written += 1;
                         failures = 0;
                         eprintln!("recorded {written} → {}", path.display());
@@ -1138,20 +1148,32 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 std::thread::sleep(std::time::Duration::from_secs(interval.max(1)));
             }
             let kept = record::prune(&path, keep_secs, record::now_unix())
-                .map_err(|e| ApiError::Config(format!("recording: {e}")))?;
+                .map_err(|e| ApiError::Usage(format!("recording: {e}")))?;
             eprintln!("kept {kept} frames in {}", path.display());
             Ok(())
         }
         Some(Cmd::Replay { file, json, speed }) => {
             let frames = record::load(&file)
-                .map_err(|e| ApiError::Config(format!("{}: {e}", file.display())))?;
+                .map_err(|e| ApiError::Usage(format!("recording {}: {e}", file.display())))?;
             if frames.is_empty() {
-                return Err(ApiError::Config(format!(
-                    "{} holds no frames",
+                return Err(ApiError::Usage(format!(
+                    "recording {} holds no frames",
                     file.display()
                 )));
             }
             if json {
+                // Redact before the frames reach stdout: a replay pasted into an
+                // issue carries the same hidden values as `snapshot --json --redact`.
+                let frames = if cli.redact {
+                    frames
+                        .into_iter()
+                        .map(|f| {
+                            record::RecordFrame::new(f.at, routwatch::report::redacted(&f.snapshot))
+                        })
+                        .collect()
+                } else {
+                    frames
+                };
                 println!("{}", serde_json::to_string(&frames).unwrap());
                 return Ok(());
             }
@@ -1907,6 +1929,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     println!("no saved speed runs");
                     return Ok(());
                 }
+                if json {
+                    // The saved rows already have a shape (the file they came
+                    // from); --json prints that shape instead of a second table.
+                    let rows = serde_json::to_string_pretty(&l.rows)
+                        .map_err(|e| ApiError::Usage(format!("history: {e}")))?;
+                    println!("{rows}");
+                    return Ok(());
+                }
                 println!(
                     "{:<10} {:>12} {:>12} {:>6} {:>7} {:<9} host",
                     "age", "down", "up", "idle", "loaded", "status"
@@ -2140,7 +2170,7 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 eprintln!(
                     "history: only the signal log is saved so far: pass --signal (speed runs are `speedtest --history`)"
                 );
-                return Err(ApiError::Quiet(2));
+                return Err(ApiError::Quiet(3));
             }
             let Some(p) = routwatch::signal_history::path() else {
                 eprintln!("history: this platform has no data directory, so no log is kept");
@@ -2602,6 +2632,11 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
 }
 
 fn parse_size(s: &str) -> Result<(u16, u16), ApiError> {
+    // The frame is a buffer of cells, so a size is a memory budget: 512x256 is
+    // already larger than any terminal, and `u16::MAX` squared must not ask the
+    // renderer for a four-gigabyte allocation.
+    const MAX_W: u16 = 512;
+    const MAX_H: u16 = 256;
     let (w, h) = s
         .split_once(['x', 'X'])
         .ok_or_else(|| ApiError::Usage(format!("bad size {s:?}; expected WIDTHxHEIGHT")))?;
@@ -2616,6 +2651,11 @@ fn parse_size(s: &str) -> Result<(u16, u16), ApiError> {
     if w < 24 || h < 6 {
         return Err(ApiError::Usage(format!(
             "{w}x{h} is below the 24x6 minimum the frame can draw"
+        )));
+    }
+    if w > MAX_W || h > MAX_H {
+        return Err(ApiError::Usage(format!(
+            "{w}x{h} is above the {MAX_W}x{MAX_H} ceiling; a frame that size is not a terminal"
         )));
     }
     Ok((w, h))
@@ -2780,6 +2820,15 @@ fn sms_read_cmd(
     Ok(())
 }
 
+/// What a delete will remove, printed before it removes anything, whether or not
+/// `--yes` is passed: a bulk delete that hides its own list is a wipe.
+fn sms_plan(targets: &[String]) {
+    println!("plan: delete {} messages", targets.len());
+    for i in targets {
+        println!("  index {i}");
+    }
+}
+
 fn sms_delete_cmd(
     cfg: &config::Config,
     stdin_password: bool,
@@ -2789,15 +2838,28 @@ fn sms_delete_cmd(
     yes: bool,
     dry_run: bool,
 ) -> Result<(), ApiError> {
+    // An empty argument list is not `--all`: the two spellings differ by the
+    // whole inbox, so the shorter one is refused before the device is touched.
+    if indexes.is_empty() && !all {
+        eprintln!("sms delete needs at least one index, or --all to delete the whole inbox");
+        return Err(ApiError::Quiet(3));
+    }
     if !dry_run && !allow_write {
         eprintln!(
             "sms delete writes to the router: pass --allow-write, or --dry-run to see the plan"
         );
         return Err(ApiError::Quiet(3));
     }
-    let mut client = connect(cfg, stdin_password)?;
     let mut targets: Vec<String> = indexes.to_vec();
-    if all || targets.is_empty() {
+    if !all {
+        // The list came from the command line, so the plan needs no device.
+        sms_plan(&targets);
+        if dry_run {
+            return Ok(());
+        }
+    }
+    let mut client = connect(cfg, stdin_password)?;
+    if all {
         // The plan is read from the device, not assumed: every index the inbox
         // answers with, page after page.
         targets.clear();
@@ -2820,23 +2882,18 @@ fn sms_delete_cmd(
                 }
             }
         }
-    }
-    if targets.is_empty() {
-        client.logout();
-        println!("nothing to delete: the inbox is empty");
-        return Ok(());
+        if targets.is_empty() {
+            client.logout();
+            println!("nothing to delete: the inbox is empty");
+            return Ok(());
+        }
+        sms_plan(&targets);
     }
     if dry_run || !yes {
         client.logout();
-        if dry_run {
-            println!("plan: delete {} messages", targets.len());
-        } else {
-            println!("plan: delete {} messages", targets.len());
+        if !dry_run {
             eprintln!("nothing was sent: pass --yes to confirm the delete");
             return Err(ApiError::Quiet(3));
-        }
-        for i in &targets {
-            println!("  index {i}");
         }
         return Ok(());
     }
@@ -3325,12 +3382,32 @@ fn install_restore_hook() {
     });
 }
 
+/// Set by the stop handler and read on every pass of a screen loop: a signal
+/// never runs a destructor, so the loop leaves through the path that puts the
+/// tty back, on SIGHUP from a closed window and SIGTERM from a logout.
+static TERMINATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_terminate(_sig: libc::c_int) {
+    TERMINATED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Installed before raw mode is entered, so the two signals that end a session
+/// from outside are handled for the whole time the screen owns the tty.
+fn install_stop_handler() {
+    let handler: extern "C" fn(libc::c_int) = on_terminate;
+    unsafe {
+        libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, handler as libc::sighandler_t);
+    }
+}
+
 fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), ApiError> {
     // The ledger lives beside the recordings, under the user's data dir. One
     // writer at a time: a second window runs read-only rather than racing.
     let usage_path = routwatch::usage::path();
     let (tx, rx) = worker::spawn(cfg, password);
 
+    install_stop_handler();
     install_restore_hook();
     enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
     let _restore = RestoreOnDrop(Some(restore_terminal));
@@ -3378,6 +3455,12 @@ fn run_tui(mut app: App, cfg: config::Config, password: String) -> Result<(), Ap
     app.mark_dirty();
 
     while !app.quit {
+        if TERMINATED.load(std::sync::atomic::Ordering::SeqCst) {
+            // Leaving through the same break a closed window takes: the usage
+            // file is saved, the worker is told to log out, and the guard
+            // restores the tty.
+            break;
+        }
         drain(&mut app, &rx);
         if incidents_at.elapsed().as_secs() >= 60 {
             app.load_incidents();
@@ -3473,6 +3556,7 @@ fn run_replay(
     speed: u64,
     redact: bool,
 ) -> Result<(), ApiError> {
+    install_stop_handler();
     install_restore_hook();
     enable_raw_mode().map_err(|e| ApiError::Config(format!("raw mode: {e}")))?;
     let _restore = RestoreOnDrop(Some(restore_terminal));
@@ -3501,6 +3585,10 @@ fn run_replay(
 
         let mut held = Duration::ZERO;
         while held < tick || paused {
+            if TERMINATED.load(std::sync::atomic::Ordering::SeqCst) {
+                quit = true;
+                break;
+            }
             if event::poll(Duration::from_millis(50)).unwrap_or(false) {
                 match event::read() {
                     Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => match k.code {

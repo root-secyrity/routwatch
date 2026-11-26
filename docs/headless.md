@@ -28,7 +28,7 @@ Waybar module:
 
 Exit codes: `0` ok · `1` router or write failure (the real reason is printed) ·
 `2` network/unreachable (the Waybar document still prints, `class: "offline"`) ·
-`3` usage, credentials or config.
+`3` usage, credentials, config, or a local file the command cannot read.
 
 The Waybar `class` is one of `good`, `fair`, `poor`, `unknown` (a live link the
 firmware gives no RSRP for) or `offline` (no link). `status --json` reports
@@ -167,14 +167,21 @@ as four lines, and `docs/limits.md` states where the cuts and the baseline come
 from.
 
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
-IMEI, MACs, WAN IP, client names and addresses, and the operator name with
-`(hidden)`, `dump --redact` does the same to the raw XML (keeping every tag name,
-and covering wifi keys and every `*ssid`/`*ipaddress` spelling), and
-`snapshot --raw --redact` is refused outright rather than pretending to be safe.
-`--redact` also covers `status`, `record`, `replay` and `preview`, so the flag
-means the same thing on every command.
+IMEI, MACs, WAN IP, client addresses, the DNS resolvers and the operator name
+with `(hidden)` and client names with `(client N)`, `dump --redact` does the same to
+the raw XML
+(keeping every tag name and the document's shape, and hiding the value of every
+element or attribute whose name is an identity word: wifi keys and passwords,
+`*ssid` and `*ipaddress` spellings, every name carrying `macaddr`, the SIM and
+operator fields, the SMS sender, body and service centre, and the DNS
+resolvers), and `snapshot --raw --redact` is refused outright
+rather than pretending to be safe.
+`--redact` also covers `status`, `record`, `replay` and `preview`, so the same flag
+covers every command that prints a snapshot or a frame.
 `routwatch share` writes the whole ask-for-a-model document - capabilities,
-endpoint field names, redacted snapshot - as `0600` in the current directory.
+endpoint field names, redacted snapshot - as `0600` in the current directory, and the
+directory it has to create is `0700` (one that already exists keeps its own mode,
+and a parent created above it follows the umask).
 `dump` follows the same rule for its output (json or text): `0600` inside a
 `0700` directory, and an existing file is replaced only with `--force`.
 
@@ -193,7 +200,8 @@ A run that succeeds is appended to `$XDG_DATA_HOME/routwatch/speed-history.jsonl
 ping figures, because the CLI does not ping and a saved row must describe what
 was measured. `--no-save` leaves that run out of the file, and
 `speedtest --history` lists the saved rows without touching the network or the
-file, so it works offline and needs no `--allow-data`.
+file, so it works offline and needs no `--allow-data`; with `--json` it prints
+the rows in the shape the file holds instead of the text table.
 
 If you are publishing the output of `dump` somewhere else, prefer
 `dump --redact` over editing a raw file by hand; see

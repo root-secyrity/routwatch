@@ -159,6 +159,9 @@ routwatch sms delete 4001 --allow-write --yes
 routwatch sms delete --all --allow-write        # prints the plan, sends nothing
 ```
 
+A delete needs indexes or `--all`: an empty list is refused rather than read as
+"the whole inbox", and the plan is printed even with `--yes`.
+
 Delete and mark-read are the only SMS writes. Both need the same gate as band
 changes: `--allow-write` on the CLI, `--dry-run` (or no `--yes`) to see the payload,
 and `y` inside the TUI. Every delete is verified by re-reading the inbox and
@@ -238,7 +241,8 @@ confidence levels are stated in [`docs/limits.md`](docs/limits.md).
   month counter is used when the firmware answers it; otherwise the lifetime
   counters are. The per-day table only counts while routwatch runs.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown with IMEI,
-  serial, WAN IP, MACs and SSIDs hidden, because these files get pasted in public.
+  serial, WAN IP, MACs, SSIDs and the DNS resolvers hidden, because these files
+  get pasted in public.
 - **The speed test measures this host, not the router**: `T` on Network runs a
   single plain-HTTP stream from this machine through the CPE, so the number
   includes the local Wi-Fi or LAN path and spends data that counts in the router's

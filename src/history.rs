@@ -211,7 +211,10 @@ impl Entry {
             ping_idle_ms: idle,
             ping_loaded_ms: loaded,
             ping_bloat_ms: match (idle, loaded) {
-                (Some(i), Some(l)) => Some(l - i),
+                // Bloat is how much the loaded set is worse than the idle one. A
+                // loaded set that came back faster is noise, not a negative
+                // promise about the link.
+                (Some(i), Some(l)) => Some((l - i).max(0.0)),
                 _ => None,
             },
             ping_host: pings
@@ -372,8 +375,9 @@ fn fsync_dir(path: &Path) -> io::Result<()> {
     std::fs::File::open(dir)?.sync_all()
 }
 
-/// Append one row: O_APPEND, one `write_all`, 0600 when the file is created.
-/// An existing file keeps the mode the user chose.
+/// Append one row: O_APPEND, one `write_all`, and 0600 whether or not this call
+/// created the file. A run names the network it measured, so a file another
+/// build or another tool left looser is tightened rather than inherited.
 pub fn append(path: &Path, e: &Entry) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut line = to_line(e)?;
@@ -385,9 +389,11 @@ pub fn append(path: &Path, e: &Entry) -> io::Result<()> {
         .append(true)
         .mode(0o600)
         .open(path)?;
-    if created {
+    {
         use std::os::unix::fs::PermissionsExt;
         f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    if created {
         // A new directory entry is not durable until the directory is synced.
         fsync_dir(path)?;
     }
@@ -739,6 +745,29 @@ mod tests {
         assert!(!e.band_changed);
         assert_eq!(e.status, Status::Ok);
         assert_eq!(e.app_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn a_negative_bloat_floors_at_zero() {
+        let pings = Pings {
+            host: Some("1.1.1.1".into()),
+            idle: Some(ping(40.0, 0)),
+            loaded: Some(ping(12.0, 0)),
+        };
+        let e = Entry::from_result(&result(), &cfg(), Source::Tui, None, pings, 9_000, 0);
+        assert_eq!(e.ping_bloat_ms, Some(0.0));
+    }
+
+    #[test]
+    fn an_existing_loose_history_file_is_tightened_on_append() {
+        use std::os::unix::fs::PermissionsExt;
+        let p = scratch("loose");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        append(&p, &entry(1_763_300_000, 1.0)).unwrap();
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the history kept its loose bits");
     }
 
     #[test]

@@ -179,7 +179,10 @@ pub fn gap_p95(gaps: &mut [u64]) -> Option<u64> {
         return None;
     }
     gaps.sort_unstable();
-    Some(gaps[(gaps.len() * 95) / 100])
+    // Nearest rank: ceil(95/100 * n), one-based. From 20 gaps up the rank falls
+    // short of the last element, so one outlier cannot win the percentile.
+    let rank = (gaps.len() * 95).div_ceil(100).max(1);
+    Some(gaps[rank - 1])
 }
 
 /// The smear that covers a window: the 95th percentile gap between the samples
@@ -449,14 +452,27 @@ mod tests {
         );
     }
 
-    /// The max is what made every event look unresolved: a 58 000 s overnight gap
-    /// outranked every real cadence gap. One outlier must not win the rank.
+    /// One outlier must not win the rank: a 58 000 s overnight gap would outrank
+    /// every real cadence gap.
     #[test]
     fn the_rank_is_the_95th_percentile_not_the_widest_gap() {
         let mut samples: Vec<u64> = (0..100).map(|i| i * 10).collect();
         samples.push(1_990);
         let smear = smear_in_window(&samples, 0, 1_990).expect("a hundred gaps");
         assert_eq!(smear, 10_000, "99 short gaps outrank the one 1000 s gap");
+    }
+
+    #[test]
+    fn the_percentile_is_nearest_rank_for_a_small_window() {
+        let mut twenty: Vec<u64> = (1..=20).collect();
+        assert_eq!(gap_p95(&mut twenty), Some(19), "ceil(0.95 * 20) is 19");
+        assert_eq!(gap_p95(&mut []), None);
+        assert_eq!(gap_p95(&mut [7]), Some(7));
+        assert_eq!(
+            gap_p95(&mut [5, 9]),
+            Some(9),
+            "ceil(1.9) is the second value"
+        );
     }
 
     #[test]
@@ -534,8 +550,8 @@ mod tests {
     }
 
     /// Two events carry their own stamps, so one second apart is ordered. The
-    /// signal log is empty here on purpose: a log with no reads used to turn this
-    /// pair into "the samples do not bracket both moments".
+    /// signal log is empty on purpose: no reads must not make the pair read as
+    /// "the samples do not bracket both moments".
     #[test]
     fn two_events_a_second_apart_are_ordered() {
         let out = detect(&src(vec![

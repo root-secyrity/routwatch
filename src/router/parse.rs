@@ -1,5 +1,8 @@
-//! XML -> typed structs. Every numeric field is Option: a missing or `" "`
-//! placeholder value must stay absent, never become 0.
+//! XML -> typed structs. Two kinds of field live here. A value the firmware may
+//! simply not report (signal, status, identity, the WAN address) is Option, so a
+//! missing field stays absent and never reads as 0. A counter the UI always sums
+//! (traffic, quota) reads 0 when it is absent: absence and zero lead the same
+//! decision on screen, and a sum has no way to tell them apart once added.
 
 use crate::error::ApiError;
 use crate::model::*;
@@ -233,8 +236,10 @@ pub fn parse_quota(month: &Node, start: Option<&Node>) -> Quota {
     let ul = u64_of(month, "CurrentMonthUpload").unwrap_or(0);
     let start_day = start
         .and_then(|n| u32_of(n, "StartDay"))
-        .filter(|d| (1..=28).contains(d))
-        .map(|d| d as u8)
+        // The ledger clamps a cycle day to 1..=28, so the parser clamps the same
+        // way: a StartDay of 31 must read as the last valid day, not as day 1,
+        // or the panel and the ledger name two cycles three weeks apart.
+        .map(|d| d.clamp(1, 28) as u8)
         .unwrap_or(1);
     // The device puts the unit inside the value: `<DataLimit>0GB</DataLimit>`.
     // Zero means "no limit set", which is not the same as a limit of zero.
@@ -273,10 +278,15 @@ fn limit_bytes(raw: &str) -> Option<u64> {
 }
 
 pub fn parse_connection(n: &Node) -> Connection {
-    let status_code = u32_of(n, "ConnectionStatus").unwrap_or(0) as u16;
-    let status = match status_code {
-        900 => "connecting",
-        901 => "connected",
+    // The firmware sends a small code. It is range-checked before it is
+    // narrowed into the struct, so a code that does not fit lands on the unknown
+    // word instead of wrapping into a code that does.
+    let raw = u32_of(n, "ConnectionStatus").unwrap_or(0);
+    let status_code = u16::try_from(raw).unwrap_or(0);
+    let status = match raw {
+        // 900 is connected and 901 is connected with the WAN up, the same rule
+        // the status doc below states and the event feed counts as up.
+        900 | 901 => "connected",
         902 => "disconnected",
         905 => "no_connection",
         906 => "error",
@@ -785,11 +795,24 @@ mod tests {
     }
 
     #[test]
-    fn a_start_day_outside_one_to_28_is_not_trusted() {
+    fn a_start_day_above_28_is_the_last_valid_day() {
         let month =
             parse("<response><CurrentMonthDownload>1</CurrentMonthDownload></response>").unwrap();
-        let start = parse("<response><StartDay>31</StartDay></response>").unwrap();
-        assert_eq!(parse_quota(&month, Some(&start)).start_day, 1);
+        // The ledger clamps to 28; a parser that answered 1 would put the panel
+        // and the ledger three weeks apart on the same device answer.
+        for day in ["29", "30", "31"] {
+            let start =
+                parse(&format!("<response><StartDay>{day}</StartDay></response>")).expect("xml");
+            assert_eq!(
+                parse_quota(&month, Some(&start)).start_day,
+                28,
+                "StartDay {day} must read as the last valid day"
+            );
+        }
+        let zero = parse("<response><StartDay>0</StartDay></response>").unwrap();
+        assert_eq!(parse_quota(&month, Some(&zero)).start_day, 1);
+        let fifteen = parse("<response><StartDay>15</StartDay></response>").unwrap();
+        assert_eq!(parse_quota(&month, Some(&fifteen)).start_day, 15);
     }
 
     #[test]
@@ -839,6 +862,36 @@ mod tests {
         );
         let n = parse(raw).expect("xml");
         assert_eq!(connection_status(&n), Some(901));
+    }
+
+    /// 900 is connected, not connecting: the event feed counts a link as up on
+    /// that word, and the doc above the status reader states the same rule.
+    #[test]
+    fn nine_hundred_is_connected() {
+        let raw = concat!(
+            "<response><ConnectionStatus>900</ConnectionStatus>",
+            "<SignalIcon>5</SignalIcon><SignalIconNr>3</SignalIconNr></response>"
+        );
+        let c = parse_connection(&parse(raw).expect("xml"));
+        assert_eq!(c.status_code, 900);
+        assert_eq!(c.status, "connected");
+        let up = parse("<response><ConnectionStatus>901</ConnectionStatus></response>").unwrap();
+        assert_eq!(parse_connection(&up).status, "connected");
+    }
+
+    /// A code that does not fit the field must not wrap into a code that does:
+    /// 66436 narrowed to 16 bits is 900, a connected link the router never said.
+    #[test]
+    fn the_status_code_is_range_checked() {
+        let n =
+            parse("<response><ConnectionStatus>66436</ConnectionStatus></response>").expect("xml");
+        let c = parse_connection(&n);
+        assert_eq!(c.status_code, 0);
+        assert_eq!(c.status, "unknown");
+        let n = parse("<response><ConnectionStatus>65537</ConnectionStatus></response>").unwrap();
+        assert_eq!(parse_connection(&n).status_code, 0);
+        let down = parse("<response><ConnectionStatus>902</ConnectionStatus></response>").unwrap();
+        assert_eq!(parse_connection(&down).status, "disconnected");
     }
 
     #[test]

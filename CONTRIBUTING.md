@@ -56,7 +56,7 @@ build that must stay under 10 MiB, plus the same source in five containers
 (debian 12, ubuntu 22.04, ubuntu 24.04, fedora 41, alpine 3.20) to catch a libc
 or toolchain surprise early.
 
-`make test` currently runs 731 unit + 32 binary + 117 CLI tests (the CLI files are
+`make test` currently runs 747 unit + 32 binary + 126 CLI tests (the CLI files are
 published; the unit tests read `fixtures/`). That number is a promise:
 change it here, in the same PR that changes the count. It counts what passed:
 the library target lists one more than it runs because `src/speedtest.rs` carries
@@ -101,8 +101,9 @@ already carry that.
   it unnamed; if a number has to appear in prose, a test asserts it.
 - A claim about a device names the firmware and the date it was measured, or it is called
   unverified in that word.
-- One note per fact. If the same sentence would sit above four different fields, write it once
-  at module level or drop it.
+- One note per fact, and the fact lives in the production comment: a test doc says what no other
+  comment says, or it is absent. If the same sentence would sit above four different fields,
+  write it once at module level or drop it.
 - Do not sweep comments wholesale. In this repository a "why" comment is often the only public
   record of a firmware behaviour, because the build log and the real captures are not tracked.
 

@@ -109,13 +109,17 @@ pub fn render(
 }
 
 /// Write the document at 0600 and never over an existing file, the same rule
-/// the report writer follows.
+/// the report writer follows. The directory the document sits in is 0700 when
+/// this call creates it; a directory that already existed keeps its own mode,
+/// and a parent created above it follows the umask.
 pub fn write(text: &str, path: &std::path::Path) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
-        if !dir.as_os_str().is_empty() {
+        if !dir.as_os_str().is_empty() && !dir.exists() {
             std::fs::create_dir_all(dir)?;
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         }
     }
     let mut file = std::fs::OpenOptions::new()
@@ -256,6 +260,27 @@ mod tests {
         assert_eq!(mode, 0o600, "share file is not private");
         let err = write("second", &path).expect_err("second write must be refused");
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_share_directory_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("routwatch-share-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        let fresh = base.join("fresh");
+        write("doc", &fresh.join("share.md")).expect("write into a missing directory");
+        let mode = std::fs::metadata(&fresh).expect("dir").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "the share directory is not private");
+
+        let mine = base.join("mine");
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write("doc", &mine.join("share.md")).expect("write into an existing directory");
+        let mode = std::fs::metadata(&mine).expect("dir").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "the writer changed a directory the user made");
+
         let _ = std::fs::remove_dir_all(&base);
     }
 }

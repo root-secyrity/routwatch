@@ -1057,8 +1057,10 @@ fn a_row_from_a_newer_build_is_counted_out_loud_by_both_readers() {
     }
 }
 
+/// A missing flag is a usage mistake, so it exits 3, the code the docs reserve
+/// for usage. 2 is the network code.
 #[test]
-fn history_without_signal_says_why_and_exits_two() {
+fn history_without_signal_says_why_and_exits_three() {
     let home = temp_data_home("sighint");
     let out = bin()
         .env("XDG_DATA_HOME", &*home)
@@ -1066,7 +1068,7 @@ fn history_without_signal_says_why_and_exits_two() {
         .args(["history"])
         .output()
         .expect("run");
-    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("--signal"), "{}", stderr(&out));
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
 }
@@ -1593,4 +1595,278 @@ fn cells_changes_window_keeps_the_tail_of_the_log() {
     let text = stdout(&out);
     assert!(text.starts_with("Cell changes · 1\n"), "{text}");
     assert!(text.contains("cell-1700090000"), "{text}");
+}
+
+#[test]
+fn a_json_replay_honours_redact() {
+    let home = temp_data_home("replay-json");
+    let file = home.join("one.rwr");
+
+    // Documentation ranges only: a serial, an IMEI, a radio MAC and an operator
+    // name that must never reach a redacted replay.
+    let mut snap = routwatch::model::Snapshot::default();
+    snap.device.serial = Some("SYNTHSERIAL0001".into());
+    snap.device.imei = Some("000000000000000".into());
+    snap.device.mac = Some("02:00:00:00:0A:01".into());
+    snap.plmn.name = "Test Net".into();
+    let frame = routwatch::record::RecordFrame::new(1, snap);
+    std::fs::write(
+        &file,
+        format!("{}\n", serde_json::to_string(&frame).expect("frame json")),
+    )
+    .expect("write recording");
+
+    let envs = [("XDG_CONFIG_HOME", NO_CONFIG)];
+    let path = file.to_str().expect("path");
+    let plain = run(&["replay", "--json", path], &envs);
+    let redacted = run(&["replay", "--json", "--redact", path], &envs);
+
+    assert_eq!(plain.status.code(), Some(0), "stderr: {}", stderr(&plain));
+    assert_eq!(
+        redacted.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&redacted)
+    );
+    let plain = stdout(&plain);
+    let text = stdout(&redacted);
+    assert!(
+        plain.contains("SYNTHSERIAL0001"),
+        "the plain run must carry the router's value: {plain}"
+    );
+    for (label, secret) in [
+        ("serial", "SYNTHSERIAL0001"),
+        ("IMEI", "000000000000000"),
+        ("radio MAC", "02:00:00:00:0A:01"),
+        ("operator name", "Test Net"),
+    ] {
+        assert!(
+            !text.contains(secret),
+            "a redacted replay still carries the {label}: {text}"
+        );
+    }
+    assert!(text.contains(routwatch::scrub::HIDDEN), "{text}");
+}
+
+/// A config that points at a port nothing listens on. A test that must reach
+/// the connect step uses this rather than the shared `config()`, so it can never
+/// talk to whatever answers at the default address.
+fn dead_config(name: &str) -> TempConfig {
+    let dir = std::env::temp_dir().join(format!("routwatch-it-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        r#"[router]
+ip = "127.0.0.1:1"
+username = "admin"
+
+[app]
+refresh_ms = 2000
+timeout_ms = 200
+theme = "terminal"
+view = "full"
+graph_style = "dots"
+budget_gb = 100
+"#,
+    )
+    .expect("write config");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    TempConfig(path)
+}
+
+/// A delete with no index and no --all is refused before the device is touched:
+/// the short spelling must never mean the whole inbox.
+#[test]
+fn a_bare_sms_delete_refuses() {
+    let cfg = dead_config("sms-bare");
+    let path = cfg.to_str().expect("utf-8 path");
+    let out = run(
+        &["--config", path, "sms", "delete", "--allow-write", "--yes"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    let text = stderr(&out);
+    assert!(
+        text.contains("--all"),
+        "the refusal must name the way out: {text}"
+    );
+    assert!(
+        !stdout(&out).contains("plan:"),
+        "a refused delete plans nothing: {}",
+        stdout(&out)
+    );
+}
+
+/// The plan goes out even with --yes: the list is what stands between a piped
+/// confirmation and an inbox wipe. The router here is dead, so the run must end
+/// in the network class after the plan, never in a delete.
+#[test]
+fn a_delete_prints_its_plan() {
+    let cfg = dead_config("sms-plan");
+    let path = cfg.to_str().expect("utf-8 path");
+    let out = run(
+        &[
+            "--config",
+            path,
+            "sms",
+            "delete",
+            "4001",
+            "4002",
+            "--allow-write",
+            "--yes",
+        ],
+        &[],
+    );
+    let text = stdout(&out);
+    assert!(text.contains("plan: delete 2 messages"), "{text}");
+    assert!(text.contains("index 4002"), "{text}");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the plan precedes the connection, so the run ends at it: {}",
+        stderr(&out)
+    );
+}
+
+/// `speedtest --history --json` prints the saved rows in the shape the file
+/// holds: a JSON array, never the text table.
+#[test]
+fn speedtest_history_json_lists_the_rows() {
+    let home = temp_data_home("speed-history-json");
+    let dir = home.join("routwatch");
+    std::fs::create_dir_all(&dir).expect("data dir");
+    let path = dir.join("speed-history.jsonl");
+    // Built through the crate's own blank row, so a field added to the format
+    // later cannot turn this fixture into a damaged line.
+    let mut row = routwatch::history::Entry::blank();
+    row.status = routwatch::history::Status::Ok;
+    row.started_unix = 1_761_000_000;
+    row.ended_unix = 1_761_000_030;
+    row.elapsed_ms = 30_000;
+    row.download_bps = 42_000_000.0;
+    row.upload_bps = 8_000_000.0;
+    let line = serde_json::to_string(&row).expect("serialize the row");
+    std::fs::write(&path, format!("{line}\n")).expect("write rows");
+
+    let home_str = home.to_str().expect("utf-8 path");
+    let out = run(
+        &["speedtest", "--history", "--json"],
+        &[("XDG_DATA_HOME", home_str), ("XDG_CONFIG_HOME", NO_CONFIG)],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.trim_start().starts_with('['), "a json array: {text}");
+    assert!(text.contains("download_bps"), "{text}");
+    assert!(text.contains("42000000"), "{text}");
+    assert!(
+        !text.contains("idle"),
+        "the text table's header must not appear: {text}"
+    );
+}
+
+/// A recording that cannot be read is a file problem, not a config one: the
+/// message names the file and the exit code stays 3.
+#[test]
+fn a_missing_recording_is_not_a_config_error() {
+    let out = run(
+        &["replay", "/nonexistent-routwatch-recording.rwr", "--json"],
+        &[("XDG_CONFIG_HOME", NO_CONFIG)],
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(3), "stderr: {err}");
+    assert!(
+        err.contains("recording /nonexistent-routwatch-recording.rwr"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("config:"),
+        "a file error was labelled config: {err}"
+    );
+}
+
+/// The ceiling is refused with the number in the message instead of aborting on
+/// allocation.
+#[test]
+fn an_absurd_size_is_refused() {
+    let out = run(
+        &["preview", "--size", "9999x9999"],
+        &[("XDG_CONFIG_HOME", NO_CONFIG)],
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(3), "stderr: {err}");
+    assert!(err.contains("512x256"), "{err}");
+}
+
+#[test]
+fn a_config_directory_is_not_a_config_file() {
+    let dir = std::env::temp_dir().join(format!("routwatch-cfgdir-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let out = run(
+        &["--config", dir.to_str().expect("utf-8 path"), "status"],
+        &[],
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(3), "stderr: {err}");
+    assert!(err.contains("is a directory"), "{err}");
+    assert!(!err.contains("chmod"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `doctor` is the first step the platform docs ask for, so it runs on a
+/// machine that has no config file yet.
+#[test]
+fn a_doctor_run_needs_no_config() {
+    let out = run(&["doctor"], &[("XDG_CONFIG_HOME", NO_CONFIG)]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    assert!(text.contains("config"), "{text}");
+}
+
+/// `config snapshot` logs in, so a missing or loose config stops it before any
+/// socket is opened.
+#[test]
+fn config_list_needs_no_config_but_snapshot_checks_the_config() {
+    let out = run(&["config", "list"], &[("XDG_CONFIG_HOME", NO_CONFIG)]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    // A machine with no config file must be told so rather than dialling a
+    // default address, which ROUTWATCH_IP points at a closed port: exit 3, not 2.
+    let out = run(
+        &["config", "snapshot"],
+        &[
+            ("XDG_CONFIG_HOME", NO_CONFIG),
+            ("ROUTWATCH_IP", "127.0.0.1:1"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("config.toml"), "{}", stderr(&out));
+
+    let dir = std::env::temp_dir().join(format!("routwatch-it-{}-cfg-mode", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        r#"[router]
+ip = "127.0.0.1:1"
+username = "admin"
+"#,
+    )
+    .expect("write config");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let out = run(
+        &[
+            "--config",
+            path.to_str().expect("utf-8 path"),
+            "config",
+            "snapshot",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("chmod 600"), "{}", stderr(&out));
 }

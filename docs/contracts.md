@@ -5,8 +5,10 @@ Nothing here is a feature description: each row is a behaviour a future change
 could quietly undo, so it is listed with its guard.
 
 This table is checked by `src/contracts.rs`: every row must name a file in this
-repository and a test function that exists in it. Renaming a test therefore
-breaks `cargo test` here rather than leaving the promise unattended.
+repository and a test function that exists in it, and that function must carry
+`#[test]` - a helper or a call site with the same name guards nothing. Renaming a
+test therefore breaks `cargo test` here rather than leaving the promise
+unattended.
 
 | Contract | Guarded by | File |
 | --- | --- | --- |

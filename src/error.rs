@@ -21,7 +21,8 @@ pub enum ApiError {
     Parse(String),
     Auth(String),
     Config(String),
-    /// Bad arguments or an unsupported value on the command line (exit 3).
+    /// Bad arguments, an unsupported value, or a local file the command cannot
+    /// read as asked: a recording, a snapshot (exit 3).
     Usage(String),
     /// The command already printed its own verdict; only the exit code matters.
     Quiet(i32),
