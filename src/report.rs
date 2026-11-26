@@ -101,6 +101,13 @@ pub fn redacted(snap: &Snapshot) -> Snapshot {
     out.device.wan_ip = hidden(&out.device.wan_ip);
     out.device.wan_ipv6 = hidden(&out.device.wan_ipv6);
     out.device.mac = hidden(&out.device.mac);
+    // The resolvers the LAN hands out: a custom pair names a provider or a
+    // private resolver, and that is where the owner lives. `lan_ip` stays
+    // because it is the router's own address, which `router` already prints.
+    if let Some(dns) = out.dns.as_mut() {
+        dns.primary = hidden(&dns.primary);
+        dns.secondary = hidden(&dns.secondary);
+    }
     for (i, client) in out.clients.iter_mut().enumerate() {
         client.name = if client.name.is_some() {
             Some(format!("(client {})", i + 1))
@@ -439,6 +446,33 @@ mod tests {
         assert!(bare.device.serial.is_none());
         assert!(bare.device.imei.is_none());
         assert!(bare.clients.is_empty());
+    }
+
+    /// The DHCP resolvers are identity too: a custom pair names a provider or a
+    /// private resolver. `lan_ip` stays, because it is the router's own address
+    /// and the report prints `router` beside it.
+    #[test]
+    fn a_redacted_snapshot_hides_the_dns_servers() {
+        let mut s = sample();
+        s.dns = Some(DnsInfo {
+            status: Some("0".into()),
+            primary: Some("203.0.113.53".into()),
+            secondary: Some("203.0.113.54".into()),
+            lan_ip: Some("192.168.8.1".into()),
+            editable: Some(true),
+        });
+        let json = serde_json::to_string(&redacted(&s)).expect("serialize");
+        assert!(!json.contains("203.0.113.53"), "{json}");
+        assert!(!json.contains("203.0.113.54"), "{json}");
+        assert!(
+            json.contains("192.168.8.1"),
+            "the LAN address stays: {json}"
+        );
+        // A field the router never sent stays absent, never invented.
+        let mut bare = sample();
+        bare.dns = Some(DnsInfo::default());
+        let json = serde_json::to_string(&redacted(&bare)).expect("serialize");
+        assert!(json.contains("\"primary\":null"), "{json}");
     }
 
     /// Without the flag nothing changes - the local view still shows what the

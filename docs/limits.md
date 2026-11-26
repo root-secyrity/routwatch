@@ -121,9 +121,10 @@ why each one is stated instead of hidden.
   zero baseline. The contract version stays 1 on purpose: the file must keep
   reading in both directions, and a lost baseline is the stated cost of that.
 - **Reports are redacted unless you ask**: `e` writes `0600` Markdown in a `0700`
-  directory, with IMEI, serial, WAN IP, MACs and SSIDs hidden - these files get
-  pasted in public. `report_identity`, `--report-identity` or `i` in the settings
-  overlay writes the full version, and a report never overwrites another.
+  directory, with IMEI, serial, WAN IP, MACs, SSIDs and the DNS resolvers hidden,
+  because these files get pasted in public. `report_identity`, `--report-identity`
+  or `i` in the settings overlay writes the full version, and a report never
+  overwrites another.
   The month counters are traffic totals, not identities, so they survive
   redaction on purpose.
 - **`auto` theme is best-effort**: it reads the running desktop's published colours
