@@ -101,9 +101,8 @@ pub fn redacted(snap: &Snapshot) -> Snapshot {
     out.device.wan_ip = hidden(&out.device.wan_ip);
     out.device.wan_ipv6 = hidden(&out.device.wan_ipv6);
     out.device.mac = hidden(&out.device.mac);
-    // The resolvers the LAN hands out: a custom pair names a provider or a
-    // private resolver, and that is where the owner lives. `lan_ip` stays
-    // because it is the router's own address, which `router` already prints.
+    // Both resolvers are identity by the scrub rule. `lan_ip` stays: it is the
+    // router's own address, which `router` already prints.
     if let Some(dns) = out.dns.as_mut() {
         dns.primary = hidden(&dns.primary);
         dns.secondary = hidden(&dns.secondary);
@@ -448,9 +447,6 @@ mod tests {
         assert!(bare.clients.is_empty());
     }
 
-    /// The DHCP resolvers are identity too: a custom pair names a provider or a
-    /// private resolver. `lan_ip` stays, because it is the router's own address
-    /// and the report prints `router` beside it.
     #[test]
     fn a_redacted_snapshot_hides_the_dns_servers() {
         let mut s = sample();

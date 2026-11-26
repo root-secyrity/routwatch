@@ -1733,7 +1733,7 @@ fn a_delete_prints_its_plan() {
 }
 
 /// `speedtest --history --json` prints the saved rows in the shape the file
-/// holds. The flag used to fall through to the text table.
+/// holds: a JSON array, never the text table.
 #[test]
 fn speedtest_history_json_lists_the_rows() {
     let home = temp_data_home("speed-history-json");
@@ -1788,8 +1788,8 @@ fn a_missing_recording_is_not_a_config_error() {
     );
 }
 
-/// The frame is a cell buffer, so a size is a memory budget: the ceiling is
-/// refused with the number in the message instead of aborting on allocation.
+/// The ceiling is refused with the number in the message instead of aborting on
+/// allocation.
 #[test]
 fn an_absurd_size_is_refused() {
     let out = run(

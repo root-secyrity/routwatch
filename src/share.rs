@@ -109,8 +109,9 @@ pub fn render(
 }
 
 /// Write the document at 0600 and never over an existing file, the same rule
-/// the report writer follows. A directory this call creates is 0700; a
-/// directory that already existed is left as its owner set it.
+/// the report writer follows. The directory the document sits in is 0700 when
+/// this call creates it; a directory that already existed keeps its own mode,
+/// and a parent created above it follows the umask.
 pub fn write(text: &str, path: &std::path::Path) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
@@ -262,8 +263,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// The directory is created 0700 because the document names the network, and
-    /// one the user already made keeps its own mode.
     #[test]
     fn the_share_directory_is_private() {
         use std::os::unix::fs::PermissionsExt;

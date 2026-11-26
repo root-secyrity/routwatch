@@ -494,8 +494,6 @@ mod tests {
         );
     }
 
-    /// The first chunk's own transfer time is inside the window: a transfer that
-    /// completes in one read must not divide its bytes by a near-zero window.
     #[test]
     fn the_first_read_counts_toward_the_rate() {
         struct SlowFirst {

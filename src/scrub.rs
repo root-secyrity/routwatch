@@ -39,9 +39,9 @@ pub const IDENTITY_TAGS: &[&str] = &[
     "fullname",
     "shortname",
     "numeric",
-    // The SMS surfaces: the body, the sender and the service centre. Two
-    // firmwares spell the sender `Phone` and `phone_number`, so the comparison
-    // strips the underscore before it looks at this list.
+    // The SMS surfaces: the body, the sender and the service centre. H122-373
+    // (capture of 2026-11-22) spells the sender `Phone` in one document and
+    // `phone_number` in another, so the comparison strips the underscore.
     "phone",
     "phonenumber",
     "sca",
@@ -93,9 +93,10 @@ fn is_identity(tag: &str) -> bool {
 }
 
 /// The open tag as it should be written: `<`, the head, `>`. An identity
-/// attribute has its value replaced, because this firmware family puts a MAC in
-/// `macaddr="..."` on a host row as often as it puts one in an element. The
-/// rule follows the attribute NAME, never the element that owns it.
+/// attribute has its value replaced, because H122-373 (capture of 2026-11-22)
+/// carries a MAC in `macaddr="..."` on a host row as often as it carries one in
+/// an element. The rule follows the attribute NAME, never the element that owns
+/// it.
 fn open_tag(head: &str, is_open: bool) -> String {
     let mut out = String::with_capacity(head.len() + 2);
     out.push('<');
@@ -153,10 +154,10 @@ fn mask_attributes(head: &str) -> String {
     out
 }
 
-/// Where the element `name` ends, from `from`. The close tag is not guaranteed
-/// to repeat the open tag's letter case (this firmware family serves
-/// `<Imei>..</imei>`), so a fixed-case string search would miss it and copy the
-/// value through.
+/// Where the element `name` ends, from `from`. The close tag does not have to
+/// repeat the open tag's letter case; the case rule is unverified against a
+/// device, so the search compares the name case-insensitively rather than
+/// trusting the open tag's spelling.
 fn find_close(raw: &str, from: usize, name: &str) -> Option<usize> {
     let mut at = from;
     while let Some(off) = raw[at..].find("</") {

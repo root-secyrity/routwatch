@@ -747,8 +747,6 @@ mod tests {
         assert_eq!(e.app_version, env!("CARGO_PKG_VERSION"));
     }
 
-    /// Bloat is how much the loaded set is worse than the idle one. A loaded set
-    /// that came back faster is noise, never a negative promise about the link.
     #[test]
     fn a_negative_bloat_floors_at_zero() {
         let pings = Pings {

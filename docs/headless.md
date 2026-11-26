@@ -167,8 +167,9 @@ as four lines, and `docs/limits.md` states where the cuts and the baseline come
 from.
 
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
-IMEI, MACs, WAN IP, client names and addresses, the DNS resolvers and the
-operator name with `(hidden)`, `dump --redact` does the same to the raw XML
+IMEI, MACs, WAN IP, client addresses, the DNS resolvers and the operator name
+with `(hidden)` and client names with `(client N)`, `dump --redact` does the same to
+the raw XML
 (keeping every tag name and the document's shape, and hiding the value of every
 element or attribute whose name is an identity word: wifi keys and passwords,
 `*ssid` and `*ipaddress` spellings, every name carrying `macaddr`, the SIM and
@@ -178,8 +179,9 @@ rather than pretending to be safe.
 `--redact` also covers `status`, `record`, `replay` and `preview`, so the same flag
 covers every command that prints a snapshot or a frame.
 `routwatch share` writes the whole ask-for-a-model document - capabilities,
-endpoint field names, redacted snapshot - as `0600` in the current directory, and a
-directory it has to create is `0700` (one that already exists keeps its own mode).
+endpoint field names, redacted snapshot - as `0600` in the current directory, and the
+directory it has to create is `0700` (one that already exists keeps its own mode,
+and a parent created above it follows the umask).
 `dump` follows the same rule for its output (json or text): `0600` inside a
 `0700` directory, and an existing file is replaced only with `--force`.
 
