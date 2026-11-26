@@ -691,6 +691,8 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             | Some(Cmd::Scan { dry_run: true, .. })
             | Some(Cmd::Incidents { .. })
             | Some(Cmd::Report { .. })
+            // A ping runs on this machine and reads no router data.
+            | Some(Cmd::Ping { .. })
             // The flags that reach the router keep the strict loader.
             | Some(Cmd::Doctor { live: false, .. })
             | Some(Cmd::Capabilities { probe: false, .. })
