@@ -100,9 +100,11 @@ pub struct ReadOutcome {
 }
 
 /// Read until the budget, the byte cap or a cancellation wins. The window runs
-/// from the first payload byte to the last one, so connect time, server think
-/// time and a socket that closes slowly stay out of the rate. A read error
-/// keeps the bytes already measured and hands the error back beside them.
+/// from just before the first read to the last payload byte: server think time
+/// before the first read and a socket that closes slowly stay out of the rate,
+/// while a slow first chunk is counted, because its bytes were transferred
+/// inside the window. A read error keeps the bytes already measured and hands
+/// the error back beside them.
 pub fn read_for<R: Read>(
     reader: &mut R,
     budget: Duration,
@@ -112,6 +114,10 @@ pub fn read_for<R: Read>(
 ) -> ReadOutcome {
     let mut buf = vec![0u8; CHUNK];
     let deadline = Instant::now() + budget;
+    // Opened here, not after the first read returns: a transfer that completes
+    // in one chunk would otherwise divide its bytes by the microseconds between
+    // the read returning and the timestamp being taken.
+    let started = Instant::now();
     let mut bytes: u64 = 0;
     let mut first: Option<Instant> = None;
     let mut last: Option<Instant> = None;
@@ -133,7 +139,7 @@ pub fn read_for<R: Read>(
             break;
         }
         let now = Instant::now();
-        let start = *first.get_or_insert(now);
+        let start = *first.get_or_insert(started);
         last = Some(now);
         bytes += n as u64;
         if last_tick.elapsed() >= Duration::from_millis(250) {
@@ -486,6 +492,37 @@ mod tests {
             "the 200 ms tail entered the window: {}",
             out.secs
         );
+    }
+
+    /// The first chunk's own transfer time is inside the window: a transfer that
+    /// completes in one read must not divide its bytes by a near-zero window.
+    #[test]
+    fn the_first_read_counts_toward_the_rate() {
+        struct SlowFirst {
+            sent: bool,
+        }
+        impl Read for SlowFirst {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.sent {
+                    return Ok(0);
+                }
+                self.sent = true;
+                std::thread::sleep(Duration::from_millis(120));
+                let n = buf.len().min(1024);
+                Ok(n)
+            }
+        }
+        let mut src = SlowFirst { sent: false };
+        let open = AtomicBool::new(false);
+        let out = read_for(&mut src, Duration::from_secs(60), 1_000_000, &open, |_| {});
+        assert_eq!(out.bytes, 1024);
+        assert!(
+            out.secs >= 0.1,
+            "the first read is in the window: {}",
+            out.secs
+        );
+        let bps = rate_bps(out.bytes, Duration::from_secs_f64(out.secs));
+        assert!(bps < 1_000_000.0, "one slow chunk is not a gigabit: {bps}");
     }
 
     #[test]

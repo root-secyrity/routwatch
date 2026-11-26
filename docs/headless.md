@@ -197,7 +197,8 @@ A run that succeeds is appended to `$XDG_DATA_HOME/routwatch/speed-history.jsonl
 ping figures, because the CLI does not ping and a saved row must describe what
 was measured. `--no-save` leaves that run out of the file, and
 `speedtest --history` lists the saved rows without touching the network or the
-file, so it works offline and needs no `--allow-data`.
+file, so it works offline and needs no `--allow-data`; with `--json` it prints
+the rows in the shape the file holds instead of the text table.
 
 If you are publishing the output of `dump` somewhere else, prefer
 `dump --redact` over editing a raw file by hand; see

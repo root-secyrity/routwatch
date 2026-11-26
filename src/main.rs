@@ -1919,6 +1919,14 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                     println!("no saved speed runs");
                     return Ok(());
                 }
+                if json {
+                    // The saved rows already have a shape (the file they came
+                    // from); --json prints that shape instead of a second table.
+                    let rows = serde_json::to_string_pretty(&l.rows)
+                        .map_err(|e| ApiError::Usage(format!("history: {e}")))?;
+                    println!("{rows}");
+                    return Ok(());
+                }
                 println!(
                     "{:<10} {:>12} {:>12} {:>6} {:>7} {:<9} host",
                     "age", "down", "up", "idle", "loaded", "status"

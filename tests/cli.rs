@@ -1729,3 +1729,39 @@ fn a_delete_prints_its_plan() {
         stderr(&out)
     );
 }
+
+/// `speedtest --history --json` prints the saved rows in the shape the file
+/// holds. The flag used to fall through to the text table.
+#[test]
+fn speedtest_history_json_lists_the_rows() {
+    let home = temp_data_home("speed-history-json");
+    let dir = home.join("routwatch");
+    std::fs::create_dir_all(&dir).expect("data dir");
+    let path = dir.join("speed-history.jsonl");
+    // Built through the crate's own blank row, so a field added to the format
+    // later cannot turn this fixture into a damaged line.
+    let mut row = routwatch::history::Entry::blank();
+    row.status = routwatch::history::Status::Ok;
+    row.started_unix = 1_761_000_000;
+    row.ended_unix = 1_761_000_030;
+    row.elapsed_ms = 30_000;
+    row.download_bps = 42_000_000.0;
+    row.upload_bps = 8_000_000.0;
+    let line = serde_json::to_string(&row).expect("serialize the row");
+    std::fs::write(&path, format!("{line}\n")).expect("write rows");
+
+    let home_str = home.to_str().expect("utf-8 path");
+    let out = run(
+        &["speedtest", "--history", "--json"],
+        &[("XDG_DATA_HOME", home_str), ("XDG_CONFIG_HOME", NO_CONFIG)],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.trim_start().starts_with('['), "a json array: {text}");
+    assert!(text.contains("download_bps"), "{text}");
+    assert!(text.contains("42000000"), "{text}");
+    assert!(
+        !text.contains("idle"),
+        "the text table's header must not appear: {text}"
+    );
+}
