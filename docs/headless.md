@@ -28,7 +28,7 @@ Waybar module:
 
 Exit codes: `0` ok · `1` router or write failure (the real reason is printed) ·
 `2` network/unreachable (the Waybar document still prints, `class: "offline"`) ·
-`3` usage, credentials or config.
+`3` usage, credentials, config, or a local file the command cannot read.
 
 The Waybar `class` is one of `good`, `fair`, `poor`, `unknown` (a live link the
 firmware gives no RSRP for) or `offline` (no link). `status --json` reports

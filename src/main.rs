@@ -472,7 +472,7 @@ enum SmsCmd {
     },
     /// Delete messages - destructive, needs --allow-write and --yes
     Delete {
-        /// Indexes to delete, one per argument
+        /// Indexes to delete, one per argument (or pass --all)
         indexes: Vec<String>,
         /// Delete every message in the inbox
         #[arg(long)]
@@ -694,7 +694,11 @@ fn run(cli: Cli) -> Result<(), ApiError> {
             // The flags that reach the router keep the strict loader.
             | Some(Cmd::Doctor { live: false, .. })
             | Some(Cmd::Capabilities { probe: false, .. })
-            | Some(Cmd::Config { .. })
+            // `config list` reads the snapshots on disk; `snapshot` and `diff`
+            // log in, so they keep the strict loader.
+            | Some(Cmd::Config {
+                op: ConfigCmd::List { .. },
+            })
     );
     let cfg = if offline {
         config::load_or_default(cli.config.clone())?
@@ -2629,8 +2633,8 @@ fn build_app(cli: &Cli, cfg: &config::Config) -> Result<App, ApiError> {
 
 fn parse_size(s: &str) -> Result<(u16, u16), ApiError> {
     // The frame is a buffer of cells, so a size is a memory budget: 512x256 is
-    // already larger than any terminal, and a stray exponent must not ask the
-    // renderer for gigabytes.
+    // already larger than any terminal, and `u16::MAX` squared must not ask the
+    // renderer for a four-gigabyte allocation.
     const MAX_W: u16 = 512;
     const MAX_H: u16 = 256;
     let (w, h) = s

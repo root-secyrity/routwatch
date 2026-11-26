@@ -1831,3 +1831,49 @@ fn a_doctor_run_needs_no_config() {
     let text = stdout(&out);
     assert!(text.contains("config"), "{text}");
 }
+
+/// `config list` reads the snapshots on disk, so it runs without a config file.
+/// `config snapshot` logs in, so a missing or loose config stops it before any
+/// socket is opened.
+#[test]
+fn config_list_needs_no_config_but_snapshot_checks_the_config() {
+    let out = run(&["config", "list"], &[("XDG_CONFIG_HOME", NO_CONFIG)]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    // A machine with no config file must be told so rather than dialling a
+    // default address: ROUTWATCH_IP points that dial at a closed port, so the
+    // unfixed path fails as a network error (2) and the fixed one as config (3).
+    let out = run(
+        &["config", "snapshot"],
+        &[
+            ("XDG_CONFIG_HOME", NO_CONFIG),
+            ("ROUTWATCH_IP", "127.0.0.1:1"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("config.toml"), "{}", stderr(&out));
+
+    let dir = std::env::temp_dir().join(format!("routwatch-it-{}-cfg-mode", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        r#"[router]
+ip = "127.0.0.1:1"
+username = "admin"
+"#,
+    )
+    .expect("write config");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let out = run(
+        &[
+            "--config",
+            path.to_str().expect("utf-8 path"),
+            "config",
+            "snapshot",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("chmod 600"), "{}", stderr(&out));
+}
