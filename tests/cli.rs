@@ -1594,3 +1594,57 @@ fn cells_changes_window_keeps_the_tail_of_the_log() {
     assert!(text.starts_with("Cell changes · 1\n"), "{text}");
     assert!(text.contains("cell-1700090000"), "{text}");
 }
+
+/// `replay --json` prints the frames and returns before `run_replay` reads
+/// `--redact`, so the flag has to hide identity on this path too: one flag,
+/// one meaning on every command.
+#[test]
+fn a_json_replay_honours_redact() {
+    let home = temp_data_home("replay-json");
+    let file = home.join("one.rwr");
+
+    // Documentation ranges only: a serial, an IMEI, a radio MAC and an operator
+    // name that must never reach a redacted replay.
+    let mut snap = routwatch::model::Snapshot::default();
+    snap.device.serial = Some("SYNTHSERIAL0001".into());
+    snap.device.imei = Some("000000000000000".into());
+    snap.device.mac = Some("02:00:00:00:0A:01".into());
+    snap.plmn.name = "Test Net".into();
+    let frame = routwatch::record::RecordFrame::new(1, snap);
+    std::fs::write(
+        &file,
+        format!("{}\n", serde_json::to_string(&frame).expect("frame json")),
+    )
+    .expect("write recording");
+
+    let envs = [("XDG_CONFIG_HOME", NO_CONFIG)];
+    let path = file.to_str().expect("path");
+    let plain = run(&["replay", "--json", path], &envs);
+    let redacted = run(&["replay", "--json", "--redact", path], &envs);
+
+    assert_eq!(plain.status.code(), Some(0), "stderr: {}", stderr(&plain));
+    assert_eq!(
+        redacted.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&redacted)
+    );
+    let plain = stdout(&plain);
+    let text = stdout(&redacted);
+    assert!(
+        plain.contains("SYNTHSERIAL0001"),
+        "the plain run must carry the router's value: {plain}"
+    );
+    for secret in [
+        "SYNTHSERIAL0001",
+        "000000000000000",
+        "02:00:00:00:0A:01",
+        "Test Net",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "{secret} survived a redacted replay: {text}"
+        );
+    }
+    assert!(text.contains(routwatch::scrub::HIDDEN), "{text}");
+}

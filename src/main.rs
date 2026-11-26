@@ -1152,6 +1152,18 @@ fn run(cli: Cli) -> Result<(), ApiError> {
                 )));
             }
             if json {
+                // `--redact` applies on this path too: one flag, one meaning on
+                // every command.
+                let frames = if cli.redact {
+                    frames
+                        .into_iter()
+                        .map(|f| {
+                            record::RecordFrame::new(f.at, routwatch::report::redacted(&f.snapshot))
+                        })
+                        .collect()
+                } else {
+                    frames
+                };
                 println!("{}", serde_json::to_string(&frames).unwrap());
                 return Ok(());
             }
