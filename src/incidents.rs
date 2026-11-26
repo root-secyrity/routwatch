@@ -179,7 +179,11 @@ pub fn gap_p95(gaps: &mut [u64]) -> Option<u64> {
         return None;
     }
     gaps.sort_unstable();
-    Some(gaps[(gaps.len() * 95) / 100])
+    // Nearest rank: ceil(95/100 * n), one-based. A floor index, `n * 95 / 100`,
+    // lands on the last element whenever n is 20 or less, so a short window
+    // reports its widest gap as the 95th percentile.
+    let rank = (gaps.len() * 95).div_ceil(100).max(1);
+    Some(gaps[rank - 1])
 }
 
 /// The smear that covers a window: the 95th percentile gap between the samples
@@ -457,6 +461,21 @@ mod tests {
         samples.push(1_990);
         let smear = smear_in_window(&samples, 0, 1_990).expect("a hundred gaps");
         assert_eq!(smear, 10_000, "99 short gaps outrank the one 1000 s gap");
+    }
+
+    /// Nearest rank, not a floor index: a window of 20 gaps ranks its second
+    /// largest, so the widest gap cannot win by being the last element.
+    #[test]
+    fn the_percentile_is_nearest_rank_for_a_small_window() {
+        let mut twenty: Vec<u64> = (1..=20).collect();
+        assert_eq!(gap_p95(&mut twenty), Some(19), "ceil(0.95 * 20) is 19");
+        assert_eq!(gap_p95(&mut []), None);
+        assert_eq!(gap_p95(&mut [7]), Some(7));
+        assert_eq!(
+            gap_p95(&mut [5, 9]),
+            Some(9),
+            "ceil(1.9) is the second value"
+        );
     }
 
     #[test]
