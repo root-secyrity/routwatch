@@ -167,10 +167,13 @@ as four lines, and `docs/limits.md` states where the cuts and the baseline come
 from.
 
 Identity never leaves by accident: `snapshot --json --redact` replaces serial,
-IMEI, MACs, WAN IP, client names and addresses, and the operator name with
-`(hidden)`, `dump --redact` does the same to the raw XML (keeping every tag name,
-and covering wifi keys, every tag whose name carries `macaddr`, and every
-`*ssid`/`*ipaddress` spelling), and `snapshot --raw --redact` is refused outright
+IMEI, MACs, WAN IP, client names and addresses, the DNS resolvers and the
+operator name with `(hidden)`, `dump --redact` does the same to the raw XML
+(keeping every tag name and the document's shape, and hiding the value of every
+element or attribute whose name is an identity word: wifi keys and passwords,
+`*ssid` and `*ipaddress` spellings, every name carrying `macaddr`, the SIM and
+operator fields, the SMS sender, body and service centre, and the DNS
+resolvers), and `snapshot --raw --redact` is refused outright
 rather than pretending to be safe.
 `--redact` also covers `status`, `record`, `replay` and `preview`, so the same flag
 covers every command that prints a snapshot or a frame.

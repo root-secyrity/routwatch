@@ -39,6 +39,27 @@ pub const IDENTITY_TAGS: &[&str] = &[
     "fullname",
     "shortname",
     "numeric",
+    // The SMS surfaces: the body, the sender and the service centre. Two
+    // firmwares spell the sender `Phone` and `phone_number`, so the comparison
+    // strips the underscore before it looks at this list.
+    "phone",
+    "phonenumber",
+    "sca",
+    "content",
+    // Operator and SIM identity: the MCC/MNC pair, and the element name the
+    // status document uses for the same thing.
+    "mccmnc",
+    "plmn",
+    // The resolvers the LAN hands out. A custom pair names a provider or a
+    // private resolver, and that is where the owner lives, not how the router
+    // behaves. `lan_ip` is deliberately absent: it is the router's own address,
+    // which every report prints anyway.
+    "primarydns",
+    "secondarydns",
+    "primaryipv6dns",
+    "secondaryipv6dns",
+    "wandnsaddress",
+    "wanipv6dnsaddress",
 ];
 
 /// What an identity value is replaced with. Same word the report and the parsed
@@ -51,7 +72,16 @@ pub const HIDDEN: &str = "(hidden)";
 /// is not).
 fn is_identity(tag: &str) -> bool {
     let lower = tag.to_ascii_lowercase();
-    IDENTITY_TAGS.contains(&lower.as_str())
+    // `wan_dns_address` and `WanDNSAddress` are one field: an underscore is
+    // punctuation between the words, not part of the name.
+    let stripped;
+    let key: &str = if lower.contains('_') {
+        stripped = lower.replace('_', "");
+        &stripped
+    } else {
+        &lower
+    };
+    IDENTITY_TAGS.contains(&key)
         || lower.ends_with("ssid")
         || lower.ends_with("ipaddress")
         || lower.ends_with("psk")
@@ -60,6 +90,92 @@ fn is_identity(tag: &str) -> bool {
         // `WifiMacAddrWl0` and `WifiMacAddrWl1`, so a fixed list can never
         // finish this family; the tag carries the index.
         || lower.contains("macaddr")
+}
+
+/// The open tag as it should be written: `<`, the head, `>`. An identity
+/// attribute has its value replaced, because this firmware family puts a MAC in
+/// `macaddr="..."` on a host row as often as it puts one in an element. The
+/// rule follows the attribute NAME, never the element that owns it.
+fn open_tag(head: &str, is_open: bool) -> String {
+    let mut out = String::with_capacity(head.len() + 2);
+    out.push('<');
+    if is_open && head.contains('=') {
+        out.push_str(&mask_attributes(head));
+    } else {
+        out.push_str(head);
+    }
+    out.push('>');
+    out
+}
+
+fn mask_attributes(head: &str) -> String {
+    let mut out = String::with_capacity(head.len());
+    let mut rest = head;
+    while let Some(eq) = rest.find('=') {
+        let before = &rest[..eq];
+        // The name is the last word before the `=`.
+        let (prefix, name) = match before.rfind(|c: char| c.is_whitespace() || c == '/') {
+            Some(cut) => (&before[..cut + 1], &before[cut + 1..]),
+            None => ("", before),
+        };
+        out.push_str(prefix);
+        let hide = !name.is_empty() && is_identity(name);
+        out.push_str(name);
+        out.push('=');
+        let after = &rest[eq + 1..];
+        // A quoted value ends at its own quote; an unquoted one at the first
+        // space. A hidden value is written in double quotes, the word every
+        // other hidden field uses.
+        let (value, tail) = if let Some(body) = after.strip_prefix('"') {
+            match body.find('"') {
+                Some(end) => (&after[..end + 2], &after[end + 2..]),
+                None => (after, ""),
+            }
+        } else if let Some(body) = after.strip_prefix('\'') {
+            match body.find('\'') {
+                Some(end) => (&after[..end + 2], &after[end + 2..]),
+                None => (after, ""),
+            }
+        } else {
+            let end = after.find(char::is_whitespace).unwrap_or(after.len());
+            (&after[..end], &after[end..])
+        };
+        if hide {
+            out.push('"');
+            out.push_str(HIDDEN);
+            out.push('"');
+        } else {
+            out.push_str(value);
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Where the element `name` ends, from `from`. The close tag is not guaranteed
+/// to repeat the open tag's letter case (this firmware family serves
+/// `<Imei>..</imei>`), so a fixed-case string search would miss it and copy the
+/// value through.
+fn find_close(raw: &str, from: usize, name: &str) -> Option<usize> {
+    let mut at = from;
+    while let Some(off) = raw[at..].find("</") {
+        let tag = at + off;
+        let rest = &raw[tag + 2..];
+        let got: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':'))
+            .collect();
+        let ends = rest[got.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c == '>' || c.is_whitespace());
+        if got.eq_ignore_ascii_case(name) && ends {
+            return Some(tag);
+        }
+        at = tag + 2;
+    }
+    None
 }
 
 /// Replace the *text* of every identity element, leaving the tag names, the
@@ -95,18 +211,20 @@ pub fn scrub_xml(raw: &str) -> String {
         let is_open = !head.starts_with('/') && !head.starts_with('!') && !head.starts_with('?');
 
         if is_open && !self_closing && is_identity(&name) {
-            let end_tag = format!("</{name}>");
             // An unclosed element falls through: keep the tag, drop nothing.
-            if let Some(rel) = raw[close + 1..].find(&end_tag) {
-                let value_end = close + 1 + rel;
-                out.push_str(&raw[i..close + 1]);
-                out.push_str(HIDDEN);
-                out.push_str(&end_tag);
-                i = value_end + end_tag.len();
-                continue;
+            if let Some(value_end) = find_close(raw, close + 1, &name) {
+                if let Some(gt) = raw[value_end..].find('>') {
+                    let end_at = value_end + gt + 1;
+                    out.push_str(&open_tag(head, is_open));
+                    out.push_str(HIDDEN);
+                    // The close tag goes back exactly as the router spelled it.
+                    out.push_str(&raw[value_end..end_at]);
+                    i = end_at;
+                    continue;
+                }
             }
         }
-        out.push_str(&raw[i..close + 1]);
+        out.push_str(&open_tag(head, is_open));
         i = close + 1;
     }
     out
@@ -151,6 +269,13 @@ mod tests {
 <WifiMacAddrWl0>02:00:00:00:0A:10</WifiMacAddrWl0>
 <WifiMacAddrWl1>02:00:00:00:0A:11</WifiMacAddrWl1>
 <WanIPAddress>203.0.113.77</WanIPAddress>
+<Mccmnc>00101</Mccmnc>
+<plmn>001-01</plmn>
+<Sca>+12055550100</Sca>
+<phone_number>+12055550101</phone_number>
+<PrimaryDns>203.0.113.53</PrimaryDns>
+<SecondaryDns>203.0.113.54</SecondaryDns>
+<wan_dns_address>203.0.113.55</wan_dns_address>
 <rsrp>-95dBm</rsrp>
 <Hosts><Host><HostName>living-room-tv</HostName><IpAddress>192.168.8.101</IpAddress></Host></Hosts>
 </response>"#;
@@ -180,6 +305,13 @@ mod tests {
             "02:00:00:00:0A:11",
             "203.0.113.77",
             "living-room-tv",
+            "00101",
+            "001-01",
+            "+12055550100",
+            "+12055550101",
+            "203.0.113.53",
+            "203.0.113.54",
+            "203.0.113.55",
         ] {
             assert!(!out.contains(secret), "{secret} survived:\n{out}");
         }
@@ -191,6 +323,10 @@ mod tests {
             "<WifiMacAddrWl1>",
             "<WanIPAddress>",
             "<HostName>",
+            "<Mccmnc>",
+            "<Sca>",
+            "<PrimaryDns>",
+            "<wan_dns_address>",
         ] {
             assert!(out.contains(name), "{name} was dropped:\n{out}");
         }
@@ -218,6 +354,35 @@ mod tests {
             scrub_xml(r#"<response><MacAddress idx="1">AA:BB:CC:DD:EE:FF</MacAddress></response>"#);
         assert!(!out.contains("AA:BB:CC:DD:EE:FF"), "{out}");
         assert!(out.contains(r#"<MacAddress idx="1">"#), "{out}");
+    }
+
+    /// A close tag in another case must not win the scrub: the search matches
+    /// the name, not one spelling of it.
+    #[test]
+    fn a_mixed_case_close_tag_is_still_hidden() {
+        let raw = "<response><Imei>000000000000000</imei><SerialNumber>MOCKSERIAL0002</SerialNumber ></response>";
+        let out = scrub_xml(raw);
+        assert!(!out.contains("000000000000000"), "{out}");
+        assert!(!out.contains("MOCKSERIAL0002"), "{out}");
+        assert!(out.contains("<Imei>(hidden)</imei>"), "{out}");
+        assert!(
+            out.contains("<SerialNumber>(hidden)</SerialNumber >"),
+            "the close tag goes back as the router spelled it: {out}"
+        );
+    }
+
+    /// A MAC is as often an attribute as an element; the rule follows the
+    /// attribute name and leaves an attribute that identifies nothing.
+    #[test]
+    fn identity_attributes_are_hidden() {
+        let raw = r#"<response><Host macaddr="02:00:00:00:0A:21" idx="3"><HostName>tv</HostName></Host><Entry ssid='HomeNet' count="4"/></response>"#;
+        let out = scrub_xml(raw);
+        assert!(!out.contains("02:00:00:00:0A:21"), "{out}");
+        assert!(!out.contains("HomeNet"), "{out}");
+        assert!(out.contains(r#"macaddr="(hidden)""#), "{out}");
+        assert!(out.contains(r#"idx="3""#), "{out}");
+        assert!(out.contains(r#"count="4""#), "{out}");
+        assert!(out.contains("<HostName>(hidden)</HostName>"), "{out}");
     }
 
     /// Everything else passes through byte for byte, including a value that
