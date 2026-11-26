@@ -159,6 +159,9 @@ routwatch sms delete 4001 --allow-write --yes
 routwatch sms delete --all --allow-write        # prints the plan, sends nothing
 ```
 
+A delete needs indexes or `--all`: an empty list is refused rather than read as
+"the whole inbox", and the plan is printed even with `--yes`.
+
 Delete and mark-read are the only SMS writes. Both need the same gate as band
 changes: `--allow-write` on the CLI, `--dry-run` (or no `--yes`) to see the payload,
 and `y` inside the TUI. Every delete is verified by re-reading the inbox and

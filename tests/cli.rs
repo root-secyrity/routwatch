@@ -1648,3 +1648,84 @@ fn a_json_replay_honours_redact() {
     }
     assert!(text.contains(routwatch::scrub::HIDDEN), "{text}");
 }
+
+/// A config that points at a port nothing listens on. A test that must reach
+/// the connect step uses this rather than the shared `config()`, so it can never
+/// talk to whatever answers at the default address.
+fn dead_config(name: &str) -> TempConfig {
+    let dir = std::env::temp_dir().join(format!("routwatch-it-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        r#"[router]
+ip = "127.0.0.1:1"
+username = "admin"
+
+[app]
+refresh_ms = 2000
+timeout_ms = 200
+theme = "terminal"
+view = "full"
+graph_style = "dots"
+budget_gb = 100
+"#,
+    )
+    .expect("write config");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    TempConfig(path)
+}
+
+/// A delete with no index and no --all is refused before the device is touched:
+/// the short spelling must never mean the whole inbox.
+#[test]
+fn a_bare_sms_delete_refuses() {
+    let cfg = dead_config("sms-bare");
+    let path = cfg.to_str().expect("utf-8 path");
+    let out = run(
+        &["--config", path, "sms", "delete", "--allow-write", "--yes"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", stderr(&out));
+    let text = stderr(&out);
+    assert!(
+        text.contains("--all"),
+        "the refusal must name the way out: {text}"
+    );
+    assert!(
+        !stdout(&out).contains("plan:"),
+        "a refused delete plans nothing: {}",
+        stdout(&out)
+    );
+}
+
+/// The plan goes out even with --yes: the list is what stands between a piped
+/// confirmation and an inbox wipe. The router here is dead, so the run must end
+/// in the network class after the plan, never in a delete.
+#[test]
+fn a_delete_prints_its_plan() {
+    let cfg = dead_config("sms-plan");
+    let path = cfg.to_str().expect("utf-8 path");
+    let out = run(
+        &[
+            "--config",
+            path,
+            "sms",
+            "delete",
+            "4001",
+            "4002",
+            "--allow-write",
+            "--yes",
+        ],
+        &[],
+    );
+    let text = stdout(&out);
+    assert!(text.contains("plan: delete 2 messages"), "{text}");
+    assert!(text.contains("index 4002"), "{text}");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the plan precedes the connection, so the run ends at it: {}",
+        stderr(&out)
+    );
+}

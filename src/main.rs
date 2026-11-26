@@ -2792,6 +2792,15 @@ fn sms_read_cmd(
     Ok(())
 }
 
+/// What a delete will remove, printed before it removes anything, whether or not
+/// `--yes` is passed: a bulk delete that hides its own list is a wipe.
+fn sms_plan(targets: &[String]) {
+    println!("plan: delete {} messages", targets.len());
+    for i in targets {
+        println!("  index {i}");
+    }
+}
+
 fn sms_delete_cmd(
     cfg: &config::Config,
     stdin_password: bool,
@@ -2801,15 +2810,28 @@ fn sms_delete_cmd(
     yes: bool,
     dry_run: bool,
 ) -> Result<(), ApiError> {
+    // An empty argument list is not `--all`: the two spellings differ by the
+    // whole inbox, so the shorter one is refused before the device is touched.
+    if indexes.is_empty() && !all {
+        eprintln!("sms delete needs at least one index, or --all to delete the whole inbox");
+        return Err(ApiError::Quiet(3));
+    }
     if !dry_run && !allow_write {
         eprintln!(
             "sms delete writes to the router: pass --allow-write, or --dry-run to see the plan"
         );
         return Err(ApiError::Quiet(3));
     }
-    let mut client = connect(cfg, stdin_password)?;
     let mut targets: Vec<String> = indexes.to_vec();
-    if all || targets.is_empty() {
+    if !all {
+        // The list came from the command line, so the plan needs no device.
+        sms_plan(&targets);
+        if dry_run {
+            return Ok(());
+        }
+    }
+    let mut client = connect(cfg, stdin_password)?;
+    if all {
         // The plan is read from the device, not assumed: every index the inbox
         // answers with, page after page.
         targets.clear();
@@ -2832,23 +2854,18 @@ fn sms_delete_cmd(
                 }
             }
         }
-    }
-    if targets.is_empty() {
-        client.logout();
-        println!("nothing to delete: the inbox is empty");
-        return Ok(());
+        if targets.is_empty() {
+            client.logout();
+            println!("nothing to delete: the inbox is empty");
+            return Ok(());
+        }
+        sms_plan(&targets);
     }
     if dry_run || !yes {
         client.logout();
-        if dry_run {
-            println!("plan: delete {} messages", targets.len());
-        } else {
-            println!("plan: delete {} messages", targets.len());
+        if !dry_run {
             eprintln!("nothing was sent: pass --yes to confirm the delete");
             return Err(ApiError::Quiet(3));
-        }
-        for i in &targets {
-            println!("  index {i}");
         }
         return Ok(());
     }
