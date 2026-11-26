@@ -102,12 +102,23 @@ pub fn append(path: &Path, frame: &RecordFrame) -> std::io::Result<()> {
 pub fn load(path: &Path) -> std::io::Result<Vec<RecordFrame>> {
     let file = fs::File::open(path)?;
     let mut out = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
+    let mut reader = BufReader::new(file);
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        if reader.read_until(b'\n', &mut raw)? == 0 {
+            break;
+        }
+        // A line that is not UTF-8 is one damaged frame, the same way a line
+        // that is not JSON is: the bytes are read first, so one bad byte costs
+        // that frame and not the file.
+        let Ok(line) = std::str::from_utf8(&raw) else {
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(frame) = serde_json::from_str::<RecordFrame>(&line) {
+        if let Ok(frame) = serde_json::from_str::<RecordFrame>(line) {
             out.push(frame);
         }
     }
@@ -120,11 +131,24 @@ pub fn prune(path: &Path, keep: u64, now: u64) -> std::io::Result<usize> {
     let frames = load(path)?;
     let cutoff = now.saturating_sub(keep);
     let kept: Vec<RecordFrame> = frames.into_iter().filter(|f| f.at >= cutoff).collect();
-    let mut file = fs::File::create(path)?;
-    for frame in &kept {
-        let line = serde_json::to_string(frame).map_err(std::io::Error::other)?;
-        writeln!(file, "{line}")?;
+    // Written beside the recording and renamed over it, because the recording
+    // is the only copy: a kill between a truncate and the last rewritten line
+    // would otherwise leave nothing to replay.
+    let tmp = path.with_extension("rwr.tmp");
+    {
+        let mut file = fs::File::create(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+        }
+        for frame in &kept {
+            let line = serde_json::to_string(frame).map_err(std::io::Error::other)?;
+            writeln!(file, "{line}")?;
+        }
+        file.sync_all()?;
     }
+    fs::rename(&tmp, path)?;
     Ok(kept.len())
 }
 
@@ -227,6 +251,60 @@ mod tests {
 
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "record kept the world-readable bits");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// One line that is not UTF-8 is one damaged frame, not the end of the file:
+    /// a recording is written while the router is talking, and a byte can tear.
+    #[test]
+    fn a_bad_byte_costs_one_frame_not_the_file() {
+        let dir = tmpdir("bad-byte");
+        let path = dir.join("session.rwr");
+        let first = serde_json::to_string(&RecordFrame::new(1_000, Snapshot::default())).unwrap();
+        let last = serde_json::to_string(&RecordFrame::new(1_200, Snapshot::default())).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(first.as_bytes());
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&[0xff, 0xfe, b'{', b'\n']);
+        bytes.extend_from_slice(last.as_bytes());
+        bytes.push(b'\n');
+        fs::write(&path, &bytes).unwrap();
+
+        let frames = load(&path).expect("one bad line must not abort the load");
+        assert_eq!(frames.len(), 2, "{}", frames.len());
+        assert_eq!(frames[0].at, 1_000);
+        assert_eq!(frames[1].at, 1_200);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The prune rewrites the only copy. A kill halfway through it must leave
+    /// the old frames readable, and the result must keep the tight mode.
+    #[test]
+    fn prune_keeps_the_frames_and_the_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmpdir("prune-mode");
+        let path = dir.join("session.rwr");
+        for at in [1_000, 2_000, 3_000] {
+            append(&path, &RecordFrame::new(at, Snapshot::default())).unwrap();
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let kept = prune(&path, 1_000, 3_000).unwrap();
+        assert_eq!(kept, 2);
+        let frames = load(&path).unwrap();
+        assert_eq!(
+            frames.iter().map(|f| f.at).collect::<Vec<_>>(),
+            vec![2_000, 3_000]
+        );
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the rewrite must not loosen the file: {mode:o}"
+        );
+        assert!(
+            !path.with_extension("rwr.tmp").exists(),
+            "the temp file is renamed, never left beside the recording"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
